@@ -3,20 +3,23 @@ import type {
   Concept,
   Evaluation,
   IsomorphicProblem,
-  SocraticQuestion,
-  StressTest,
+  MasterMeQuestion,
+  EdgeCaseChallenge,
+  PracticeProjectContent,
+  PrioritizedConcept,
   StudyMaterial,
-} from '../domain/socratic';
+} from '../domain/masterme';
 import {
   EvaluationSchema,
+  GeminiEvaluationResponseSchema,
   ExtractedKnowledgeSchema,
   IsomorphicProblemSchema,
-  QuestionSchema,
   SinglePassKnowledgeResponseSchema,
-  StressTestSchema,
+  EdgeCaseChallengeSchema,
+  PracticeProjectContentSchema,
   type ExtractedKnowledge,
 } from '../schemas/llm.schema';
-import type { ExtractionProgress, SocraticLlmGateway } from './llm.gateway';
+import type { ExtractionProgress, MasterMeLlmGateway } from './llm.gateway';
 
 const asJson = (value: unknown): string => JSON.stringify(value);
 const EXTRACTION_CHUNK_SIZE = 12_000;
@@ -48,7 +51,7 @@ export const splitMaterialForExtraction = (
   return chunks;
 };
 
-export class GeminiSocraticGateway implements SocraticLlmGateway {
+export class GeminiMasterMeGateway implements MasterMeLlmGateway {
   public constructor(
     private readonly client: GeminiStructuredClient,
     private readonly maxConcepts = 12,
@@ -88,7 +91,7 @@ export class GeminiSocraticGateway implements SocraticLlmGateway {
     const indexedMaterial = paragraphs.map(({ id, text }) => `[${id}]\n${text}`).join('\n\n')
     return this.client.generateStructured(
       SinglePassKnowledgeResponseSchema,
-      `Você analisa um material técnico de engenharia de software. Extraia no máximo ${this.maxConcepts} conceitos centrais que estejam EXPLICITAMENTE no material inteiro. Priorize os conceitos que desbloqueiam a compreensão dos demais e descarte detalhes repetidos. Para cada conceito, retorne nome curto e único, descrição concisa, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, uma premissa fundamental, um caso de borda e prerequisiteNames contendo somente nomes de outros conceitos retornados. Também retorne questionText: uma pergunta socrática específica e natural sobre ESTE conceito, que faça sentido sem supor que pré-requisitos ou nós relacionados formam uma cadeia causal; targetPremise: a premissa que a resposta deve explicar; e expectedReasoningSteps: 2 a 4 passos de raciocínio esperados. A pergunta deve ser respondível exclusivamente pelo trecho indicado e não pode ser uma pergunta de definição direta. Não copie o parágrafo e não invente IDs, conteúdo ou relações.\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
+      `Você analisa um material técnico de engenharia de software. Extraia no máximo ${this.maxConcepts} conceitos centrais que estejam EXPLICITAMENTE no material inteiro. Priorize os conceitos que desbloqueiam a compreensão dos demais e descarte detalhes repetidos. Para cada conceito, retorne nome curto e único, descrição concisa, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, uma premissa fundamental, um caso de borda, edgeCaseQuestion com uma pergunta específica que confronte esse caso de borda e prerequisiteNames contendo somente nomes de outros conceitos retornados. Também retorne questionText: uma pergunta socrática específica e natural sobre ESTE conceito, que faça sentido sem supor que pré-requisitos ou nós relacionados formam uma cadeia causal; targetPremise: a premissa que a resposta deve explicar; e expectedReasoningSteps: 2 a 4 passos de raciocínio esperados. A pergunta deve ser respondível exclusivamente pelo trecho indicado e não pode ser uma pergunta de definição direta. Não copie o parágrafo e não invente IDs, conteúdo ou relações.\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
       { operation: 'EXTRACTION', maxOutputTokens: 2500 },
     );
   }
@@ -103,27 +106,46 @@ export class GeminiSocraticGateway implements SocraticLlmGateway {
     });
   }
 
-  public evaluateAnswer(
+  public async evaluateAnswer(
     concept: Concept,
-    question: SocraticQuestion,
+    question: MasterMeQuestion,
     answer: string,
   ): Promise<Evaluation> {
-    return this.client.generateStructured(
-      EvaluationSchema,
+    const response = await this.client.generateStructured(
+      GeminiEvaluationResponseSchema,
       `Avalie a explicação usando somente a evidência fornecida. A rubrica para ${concept.kind} é: ${this.evaluationRubric(concept.kind)} Jargão sem mecanismo não é suficiente. Se falhar, indique o primeiro salto lógico ou premissa omitida sem entregar a resposta pronta.\nCONCEITO: ${concept.name}\nTIPO: ${concept.kind}\nPREMISSA-ALVO: ${question.targetPremise}\nPASSOS ESPERADOS: ${asJson(question.expectedReasoningSteps)}\nEVIDÊNCIA: ${concept.sourceExcerpt}\nPERGUNTA: ${question.text}\nRESPOSTA: ${answer}`,
       { operation: 'INITIAL_EVALUATION', maxOutputTokens: 400 },
     );
+    return EvaluationSchema.parse({ ...response, logicalBreak: response.logicalBreak.trim() || null });
   }
 
-  public evaluateStressReply(
+  public async evaluateEdgeCaseAnswer(
     concept: Concept,
-    stressTest: StressTest,
+    stressTest: EdgeCaseChallenge,
     answer: string,
   ): Promise<Evaluation> {
-    return this.client.generateStructured(
-      EvaluationSchema,
+    const response = await this.client.generateStructured(
+      GeminiEvaluationResponseSchema,
       `Avalie se a réplica responde ao caso-limite usando somente a evidência e as premissas fornecidas. A rubrica para ${concept.kind} é: ${this.evaluationRubric(concept.kind)} A resposta só passa se preservar, restringir ou rejeitar a premissa de modo causal e coerente. Não forneça gabarito.\nCONCEITO: ${concept.name}\nTIPO: ${concept.kind}\nPREMISSAS: ${asJson(concept.fundamentalPremises)}\nEVIDÊNCIA: ${concept.sourceExcerpt}\nCASO-LIMITE: ${stressTest.scenario}\nPERGUNTA: ${stressTest.question}\nRÉPLICA: ${answer}`,
-      { operation: 'STRESS_EVALUATION', maxOutputTokens: 400 },
+      { operation: 'EDGE_CASE_EVALUATION', maxOutputTokens: 400 },
+    );
+    return EvaluationSchema.parse({ ...response, logicalBreak: response.logicalBreak.trim() || null });
+  }
+
+  public generateEdgeCaseChallenge(concept: Concept): Promise<EdgeCaseChallenge> {
+    return this.client.generateStructured(
+      EdgeCaseChallengeSchema,
+      'Crie um teste de caso-limite específico usando somente o conceito e sua evidência. Não use pergunta genérica.\nCONCEITO: ' + concept.name + '\nPREMISSAS: ' + asJson(concept.fundamentalPremises) + '\nCASOS DE BORDA: ' + asJson(concept.edgeCases) + '\nEVIDÊNCIA: ' + concept.sourceExcerpt,
+      { operation: 'EDGE_CASE_GENERATION', maxOutputTokens: 350 },
+    );
+  }
+
+  public generatePracticeProject(material: StudyMaterial, concepts: Concept[], priorities: PrioritizedConcept[]): Promise<PracticeProjectContent> {
+    const context = concepts.map((concept) => ({ name: concept.name, description: concept.description, premises: concept.fundamentalPremises, edgeCases: concept.edgeCases, sourceExcerpt: concept.sourceExcerpt, reason: priorities.find((item) => item.conceptId === concept.id)?.reason }));
+    return this.client.generateStructured(
+      PracticeProjectContentSchema,
+      'Gere um Projeto de prática executável e autônomo para aplicar os conceitos priorizados. Não peça ao estudante para enviar uma solução e não prometa avaliação. Use somente tecnologias sustentadas pelo material ou restrições genéricas.\nMATERIAL: ' + material.title + '\nCONCEITOS PRIORIZADOS EM ORDEM: ' + asJson(context),
+      { operation: 'PRACTICE_PROJECT', maxOutputTokens: 1000 },
     );
   }
 

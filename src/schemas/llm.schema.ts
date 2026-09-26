@@ -1,11 +1,23 @@
 import { z } from 'zod'
 import {
   EvaluationSchema,
+  EdgeCaseChallengeSchema,
+  PracticeProjectContentSchema,
+  EvaluationStatusSchema,
   FragmentKindSchema,
   IsomorphicProblemSchema,
   QuestionSchema,
-  StressTestSchema,
-} from '../domain/socratic'
+} from '../domain/masterme'
+
+// A ausência de salto lógico é representada por string vazia no transporte e
+// convertida novamente para null pelo gateway.
+export const GeminiEvaluationResponseSchema = z.object({
+  status: EvaluationStatusSchema,
+  missingPremises: z.array(z.string()),
+  logicalBreak: z.string(),
+  feedback: z.string(),
+})
+export type GeminiEvaluationResponse = z.infer<typeof GeminiEvaluationResponseSchema>
 
 export const ExtractedFragmentSchema = z.object({
   name: z.string().min(1).max(160),
@@ -14,6 +26,7 @@ export const ExtractedFragmentSchema = z.object({
   sourceExcerpt: z.string().min(1),
   fundamentalPremises: z.array(z.string().min(1)).min(1),
   edgeCases: z.array(z.string().min(1)).min(1),
+  edgeCaseQuestion: z.string().min(1),
   studyQuestion: QuestionSchema,
   prerequisiteNames: z.array(z.string().min(1)),
 })
@@ -32,6 +45,7 @@ export const ExtractedFragmentResponseSchema = z.object({
   sourceParagraphId: z.string(),
   fundamentalPremises: z.array(z.string()),
   edgeCases: z.array(z.string()),
+  edgeCaseQuestion: z.string(),
   questionText: z.string(),
   targetPremise: z.string(),
   expectedReasoningSteps: z.array(z.string()),
@@ -56,4 +70,4 @@ export const ReducedKnowledgeResponseSchema = z.object({
 })
 export type ReducedKnowledgeResponse = z.infer<typeof ReducedKnowledgeResponseSchema>
 
-export { EvaluationSchema, IsomorphicProblemSchema, QuestionSchema, StressTestSchema }
+export { EdgeCaseChallengeSchema, EvaluationSchema, IsomorphicProblemSchema, PracticeProjectContentSchema, QuestionSchema }

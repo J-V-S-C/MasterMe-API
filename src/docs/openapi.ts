@@ -1,6 +1,6 @@
 export const openApiDocument = {
   openapi: '3.0.3',
-  info: { title: 'Socratic Game API', version: '0.1.0' },
+  info: { title: 'MasterMe API', version: '0.1.0' },
   paths: {
     '/health': {
       get: {
@@ -41,6 +41,7 @@ export const openApiDocument = {
     },
     '/api/materials/{id}/status': { get: { summary: 'Consulta o status de processamento do material', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Status do material' } } } },
     '/api/events': { get: { summary: 'Eventos SSE de processamento e operações de IA', responses: { '200': { description: 'text/event-stream' } } } },
+    '/api/processing/overview': { get: { summary: 'Resumo operacional da fila de processamento', responses: { '200': { description: 'Contagens de jobs e processamento mais antigo' } } } },
     '/api/materials/{id}/extract': {
       post: {
         summary: 'Extrai fragmentos do material',
@@ -89,7 +90,7 @@ export const openApiDocument = {
         ],
         responses: {
           '201': { description: 'Sessão criada' },
-          '409': { description: 'Pré-requisito bloqueado' },
+          '409': { description: 'Transição inválida' },
         },
       },
     },
@@ -117,13 +118,20 @@ export const openApiDocument = {
           },
         },
         responses: {
-          '200': { description: 'Avaliação e possível stress test' },
+          '200': { description: 'Avaliação; PASSED conclui a explicação sem criar caso-limite' },
         },
       },
     },
+    '/api/sessions/{id}/edge-case': { post: { summary: 'Cria ou recupera um Teste de caso-limite opt-in', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Sessão com caso-limite' }, '409': { description: 'Explicação ainda não aprovada' } } } },
+    '/api/sessions/{id}/edge-case/answers': { post: { summary: 'Avalia resposta ao caso-limite sem alterar a aprovação da explicação', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string', minLength: 20 } } } } } }, responses: { '200': { description: 'Estado separado do caso-limite' }, '409': { description: 'Transição inválida' } } } },
+    '/api/materials/{id}/confidences': { get: { summary: 'Lista autoconfianças existentes do material', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Autoconfianças' } } } },
+    '/api/concepts/{id}/confidence': { put: { summary: 'Cria ou atualiza autoconfiança de 1 a 5', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['value'], properties: { value: { type: 'integer', minimum: 1, maximum: 5 } } } } } }, responses: { '200': { description: 'Autoconfiança persistida' }, '400': { description: 'Valor inválido' } } }, delete: { summary: 'Remove a autoconfiança', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '204': { description: 'Removida' } } } },
+    '/api/materials/{id}/performance': { get: { summary: 'Desempenho determinístico por conceito usando apenas tentativas iniciais', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Contagens e fraqueza por conceito' } } } },
+    '/api/materials/{id}/practice-projects': { get: { summary: 'Lista Projetos de prática mais recentes primeiro', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Projetos' } } }, post: { summary: 'Gera ou recupera do cache um Projeto de prática', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['focusMode'], properties: { focusMode: { type: 'string', enum: ['OVERVIEW','MANUAL','CONFIDENCE','PERFORMANCE','COMBINED'] }, conceptIds: { type: 'array', maxItems: 5, uniqueItems: true, items: { type: 'string', format: 'uuid' } } } } } } }, responses: { '201': { description: 'Projeto de prática' }, '400': { description: 'Payload inválido' }, '422': { description: 'Sinal escolhido sem dados' } } } },
+    '/api/practice-projects/{id}': { get: { summary: 'Recupera um Projeto de prática', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Projeto' }, '404': { description: 'Não encontrado' } } } },
     '/api/sessions/{id}/stress-replies': {
       post: {
-        summary: 'Avalia réplica ao stress test',
+        summary: 'Compatibilidade temporária: avalia resposta ao caso-limite',
         parameters: [
           {
             name: 'id',
@@ -148,6 +156,11 @@ export const openApiDocument = {
       },
     },
     '/api/materials/{id}/isomorphic-problem': {
+      get: {
+        summary: 'Consulta problema isomórfico em cache para o estado atual do material',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+        responses: { '200': { description: 'Problema salvo ou null' } },
+      },
       post: {
         summary: 'Gera problema isomórfico',
         parameters: [

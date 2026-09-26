@@ -8,6 +8,12 @@ export class AppError extends Error {
   }
 }
 
+export class UnprocessableEntityError extends AppError {
+  public constructor(message: string) {
+    super(422, 'INSUFFICIENT_DATA', message)
+  }
+}
+
 export class NotFoundError extends AppError {
   public constructor(resource: string) {
     super(404, 'NOT_FOUND', `${resource} não encontrado.`)

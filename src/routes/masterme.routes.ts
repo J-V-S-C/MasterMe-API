@@ -1,19 +1,21 @@
 import { Router } from 'express';
-import { SocraticController } from '../controllers/socratic.controller';
+import { MasterMeController } from '../controllers/masterme.controller';
 import { validateRequest } from '../middleware/validate-request';
 import {
   AnswerBodySchema,
+  ConfidenceBodySchema,
+  CreatePracticeProjectBodySchema,
   CreateMaterialBodySchema,
   IdParamsSchema,
 } from '../schemas/http.schema';
-import type { SocraticService } from '../services/socratic.service';
+import type { MasterMeService } from '../services/masterme.service';
 import multer from 'multer';
-import { IngestionController } from '../controllers/socratic.controller';
+import { IngestionController } from '../controllers/masterme.controller';
 import type { IngestionService } from '../services/ingestion.service';
 
-export const createSocraticRouter = (service: SocraticService, ingestion?: IngestionService): Router => {
+export const createMasterMeRouter = (service: MasterMeService, ingestion?: IngestionService): Router => {
   const router = Router();
-  const controller = new SocraticController(service);
+  const controller = new MasterMeController(service);
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
   if (ingestion) {
     const files = new IngestionController(ingestion);
@@ -26,7 +28,7 @@ export const createSocraticRouter = (service: SocraticService, ingestion?: Inges
 
   router.get('/', (_req, res) => {
     res.json({
-      name: 'Socratic Game API',
+      name: 'MasterMe API',
       version: 'mvp',
       endpoints: [
         'GET /docs',
@@ -39,8 +41,18 @@ export const createSocraticRouter = (service: SocraticService, ingestion?: Inges
         'POST /api/concepts/:id/sessions',
         'GET /api/sessions/:id',
         'POST /api/sessions/:id/answers',
+        'POST /api/sessions/:id/edge-case',
+        'POST /api/sessions/:id/edge-case/answers',
+        'GET /api/materials/:id/confidences',
+        'PUT /api/concepts/:id/confidence',
+        'DELETE /api/concepts/:id/confidence',
+        'GET /api/materials/:id/performance',
+        'POST /api/materials/:id/practice-projects',
+        'GET /api/materials/:id/practice-projects',
+        'GET /api/practice-projects/:id',
         'POST /api/sessions/:id/stress-replies',
         'POST /api/materials/:id/isomorphic-problem',
+        'GET /api/materials/:id/isomorphic-problem',
         'GET /api/ai-usage/today',
       ],
     });
@@ -97,6 +109,20 @@ export const createSocraticRouter = (service: SocraticService, ingestion?: Inges
     validateRequest({ params: IdParamsSchema }),
     controller.generateIsomorphicProblem,
   );
+  router.get(
+    '/materials/:id/isomorphic-problem',
+    validateRequest({ params: IdParamsSchema }),
+    controller.getIsomorphicProblem,
+  );
+  router.post('/sessions/:id/edge-case', validateRequest({ params: IdParamsSchema }), controller.requestEdgeCase);
+  router.post('/sessions/:id/edge-case/answers', validateRequest({ params: IdParamsSchema, body: AnswerBodySchema }), controller.evaluateEdgeCaseAnswer);
+  router.get('/materials/:id/confidences', validateRequest({ params: IdParamsSchema }), controller.getConfidences);
+  router.put('/concepts/:id/confidence', validateRequest({ params: IdParamsSchema, body: ConfidenceBodySchema }), controller.saveConfidence);
+  router.delete('/concepts/:id/confidence', validateRequest({ params: IdParamsSchema }), controller.deleteConfidence);
+  router.get('/materials/:id/performance', validateRequest({ params: IdParamsSchema }), controller.getPerformance);
+  router.post('/materials/:id/practice-projects', validateRequest({ params: IdParamsSchema, body: CreatePracticeProjectBodySchema }), controller.generatePracticeProject);
+  router.get('/materials/:id/practice-projects', validateRequest({ params: IdParamsSchema }), controller.getPracticeProjects);
+  router.get('/practice-projects/:id', validateRequest({ params: IdParamsSchema }), controller.getPracticeProject);
   router.get('/ai-usage/today', controller.getAiUsageToday);
 
   return router;

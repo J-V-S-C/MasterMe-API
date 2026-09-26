@@ -1,4 +1,4 @@
-import type { Concept, Evaluation, IsomorphicProblem, StudyMaterial, StudySession } from '../domain/socratic';
+import type { Concept, ConceptConfidence, Evaluation, IsomorphicProblem, PracticeProject, StudyMaterial, StudySession } from '../domain/masterme';
 import type { AiUsageEvent } from '../config/llm';
 
 export type AiUsageSummary = {
@@ -11,7 +11,7 @@ export type AiUsageSummary = {
 
 type Awaitable<T> = T | Promise<T>;
 
-export interface SocraticRepository {
+export interface MasterMeRepository {
   saveMaterial(material: StudyMaterial): Awaitable<void>;
   findMaterial(id: string): Awaitable<StudyMaterial | undefined>;
   findAllMaterials(): Promise<StudyMaterial[]>;
@@ -26,6 +26,14 @@ export interface SocraticRepository {
     expectedState: StudySession['state'],
   ): Awaitable<boolean>;
   findValidatedConceptIds(): Awaitable<Set<string>>;
+  saveConfidence(confidence: ConceptConfidence): Awaitable<void>;
+  deleteConfidence(conceptId: string): Awaitable<void>;
+  findConfidencesByConceptIds(conceptIds: string[]): Awaitable<ConceptConfidence[]>;
+  updateConceptEdgeCaseQuestion(conceptId: string, question: string): Awaitable<void>;
+  findPracticeProjectByHash(inputHash: string): Awaitable<PracticeProject | undefined>;
+  findPracticeProject(id: string): Awaitable<PracticeProject | undefined>;
+  findPracticeProjectsByMaterial(materialId: string): Awaitable<PracticeProject[]>;
+  savePracticeProject(project: PracticeProject, inputHash: string): Awaitable<void>;
   findEvaluation(requestHash: string): Awaitable<Evaluation | undefined>;
   saveEvaluation(requestHash: string, evaluation: Evaluation): Awaitable<void>;
   findIsomorphicProblem(inputHash: string): Awaitable<IsomorphicProblem | undefined>;
@@ -34,12 +42,15 @@ export interface SocraticRepository {
   getAiUsageToday(): Awaitable<AiUsageSummary>;
 }
 
-export class InMemorySocraticRepository implements SocraticRepository {
+export class InMemoryMasterMeRepository implements MasterMeRepository {
   private readonly materials = new Map<string, StudyMaterial>();
   private readonly concepts = new Map<string, Concept>();
   private readonly sessions = new Map<string, StudySession>();
   private readonly evaluations = new Map<string, Evaluation>();
   private readonly isomorphicProblems = new Map<string, IsomorphicProblem>();
+  private readonly confidences = new Map<string, ConceptConfidence>();
+  private readonly practiceProjects = new Map<string, PracticeProject>();
+  private readonly practiceHashes = new Map<string, string>();
   private readonly aiUsage: Array<AiUsageEvent & { createdAt: Date }> = [];
 
   public saveMaterial(material: StudyMaterial): void {
@@ -94,12 +105,17 @@ export class InMemorySocraticRepository implements SocraticRepository {
   }
 
   public findValidatedConceptIds(): Set<string> {
-    return new Set(
-      [...this.sessions.values()]
-        .filter((session) => session.state === 'VALIDATED')
-        .map((session) => session.conceptId),
-    );
+    return new Set([...this.sessions.values()].filter((session) => session.state === 'EXPLANATION_PASSED').map((session) => session.conceptId));
   }
+
+  public saveConfidence(confidence: ConceptConfidence): void { this.confidences.set(confidence.conceptId, confidence) }
+  public deleteConfidence(conceptId: string): void { this.confidences.delete(conceptId) }
+  public findConfidencesByConceptIds(conceptIds: string[]): ConceptConfidence[] { const ids = new Set(conceptIds); return [...this.confidences.values()].filter((item) => ids.has(item.conceptId)) }
+  public updateConceptEdgeCaseQuestion(conceptId: string, question: string): void { const concept = this.concepts.get(conceptId); if (concept) this.concepts.set(conceptId, { ...concept, edgeCaseQuestion: question }) }
+  public findPracticeProjectByHash(inputHash: string): PracticeProject | undefined { const id = this.practiceHashes.get(inputHash); return id ? this.practiceProjects.get(id) : undefined }
+  public findPracticeProject(id: string): PracticeProject | undefined { return this.practiceProjects.get(id) }
+  public findPracticeProjectsByMaterial(materialId: string): PracticeProject[] { return [...this.practiceProjects.values()].filter((item) => item.materialId === materialId).sort((left, right) => right.createdAt.localeCompare(left.createdAt)) }
+  public savePracticeProject(project: PracticeProject, inputHash: string): void { this.practiceProjects.set(project.id, project); this.practiceHashes.set(inputHash, project.id) }
 
   public findEvaluation(requestHash: string): Evaluation | undefined { return this.evaluations.get(requestHash) }
   public saveEvaluation(requestHash: string, evaluation: Evaluation): void { this.evaluations.set(requestHash, evaluation) }

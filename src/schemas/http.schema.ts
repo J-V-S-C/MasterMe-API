@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { MAX_MATERIAL_LENGTH } from '../domain/socratic'
+import { ConfidenceValueSchema, MAX_MATERIAL_LENGTH, PracticeFocusModeSchema } from '../domain/masterme'
 
 export const CreateMaterialBodySchema = z.object({
   title: z.string().trim().min(1).max(160),
@@ -14,3 +14,20 @@ export const AnswerBodySchema = z.object({
   answer: z.string().trim().min(20).max(20_000),
 })
 export type AnswerBody = z.infer<typeof AnswerBodySchema>
+
+export const ConfidenceBodySchema = z.object({ value: ConfidenceValueSchema })
+export type ConfidenceBody = z.infer<typeof ConfidenceBodySchema>
+
+export const CreatePracticeProjectBodySchema = z.object({
+  focusMode: PracticeFocusModeSchema,
+  conceptIds: z.array(z.string().uuid()).max(5).optional(),
+}).superRefine((value, context) => {
+  const ids = value.conceptIds ?? []
+  if (new Set(ids).size !== ids.length)
+    context.addIssue({ code: 'custom', message: 'conceptIds não pode conter IDs repetidos.', path: ['conceptIds'] })
+  if (value.focusMode === 'OVERVIEW' && value.conceptIds !== undefined)
+    context.addIssue({ code: 'custom', message: 'OVERVIEW não aceita conceptIds.', path: ['conceptIds'] })
+  if (value.focusMode === 'MANUAL' && ids.length < 1)
+    context.addIssue({ code: 'custom', message: 'MANUAL exige de 1 a 5 conceptIds distintos.', path: ['conceptIds'] })
+})
+export type CreatePracticeProjectBody = z.infer<typeof CreatePracticeProjectBodySchema>

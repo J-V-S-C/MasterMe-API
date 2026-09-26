@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { PDFParse } from 'pdf-parse'
 import type { Pool } from 'pg'
-import type { SocraticService } from './socratic.service'
-import { AppError, ConflictError, NotFoundError } from './errors'
+import type { MasterMeService } from './masterme.service'
+import { AppError, NotFoundError } from './errors'
 
 export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 const allowed = new Map([['application/pdf', 'PDF'], ['text/plain', 'TXT'], ['text/markdown', 'MARKDOWN'], ['text/x-markdown', 'MARKDOWN']])
@@ -74,7 +74,7 @@ export class IngestionService {
 }
 
 export class ProcessingWorker {
-  public constructor(private readonly pool: Pool, private readonly study: SocraticService, private readonly ingestion: IngestionService) {}
+  public constructor(private readonly pool: Pool, private readonly study: MasterMeService, private readonly ingestion: IngestionService) {}
   public async processOnce(): Promise<boolean> {
     const client = await this.pool.connect(); let job: { id: string; material_id: string } | undefined
     try { await client.query('BEGIN'); await client.query("UPDATE processing_jobs SET status='PENDING',stage='RETRYING',locked_at=NULL WHERE status='PROCESSING' AND locked_at < now() - interval '5 minutes'"); const result = await client.query("SELECT id,material_id FROM processing_jobs WHERE status='PENDING' AND run_after<=now() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"); job = result.rows[0] as typeof job; if (job) await client.query("UPDATE processing_jobs SET status='PROCESSING',stage='PREPARING',attempts=attempts+1,locked_at=now(),started_at=COALESCE(started_at,now()),updated_at=now() WHERE id=$1", [job.id]); await client.query('COMMIT') } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }

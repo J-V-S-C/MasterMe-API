@@ -1,4 +1,4 @@
-import type { Concept, SocraticQuestion, StressTest } from '../domain/socratic'
+import type { Concept, MasterMeQuestion } from '../domain/masterme'
 
 const select = <T>(items: T[], seed: number): T | undefined => items.length ? items[seed % items.length] : undefined
 
@@ -10,8 +10,8 @@ const relationNames = (concept: Concept, concepts: Concept[]): { prerequisites: 
   }
 }
 
-export class SocraticTemplateService {
-  public generateQuestion(concept: Concept, concepts: Concept[], sessionNumber: number): SocraticQuestion {
+export class MasterMeTemplateService {
+  public generateQuestion(concept: Concept, concepts: Concept[], sessionNumber: number): MasterMeQuestion {
     const premise = select(concept.fundamentalPremises, sessionNumber) ?? concept.description
     const relations = relationNames(concept, concepts)
     const prerequisites = relations.prerequisites.length ? relations.prerequisites.join(', ') : 'as premissas apresentadas no trecho'
@@ -48,14 +48,4 @@ export class SocraticTemplateService {
     }
   }
 
-  public generateStressTest(concept: Concept, sessionId: string): StressTest {
-    const seed = [...sessionId].reduce((total, character) => total + character.charCodeAt(0), 0)
-    const edgeCase = select(concept.edgeCases, seed) ?? `A premissa central de ${concept.name} deixa de valer parcialmente.`
-    const question = concept.kind === 'AXIOM'
-      ? `Nesse caso, o axioma continua necessário? Identifique exatamente qual premissa permanece válida e qual precisa ser restringida.`
-      : concept.kind === 'NODE'
-        ? `Como o mecanismo de ${concept.name} deve reagir sem violar suas premissas fundamentais?`
-        : `A relação de ${concept.name} ainda é válida? Explique se ela deve ser preservada, invertida ou removida e por quê.`
-    return { scenario: edgeCase, edgeCaseTested: edgeCase, question: `${edgeCase} ${question}` }
-  }
 }

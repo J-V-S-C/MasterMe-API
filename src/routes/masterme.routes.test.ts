@@ -6,28 +6,30 @@ import type {
   Concept,
   Evaluation,
   IsomorphicProblem,
-  SocraticQuestion,
-  StressTest,
+  MasterMeQuestion,
+  EdgeCaseChallenge,
+  PracticeProjectContent,
   StudyMaterial,
-} from '../domain/socratic'
-import { InMemorySocraticRepository } from '../repositories/socratic.repository'
-import type { SocraticRepository } from '../repositories/socratic.repository'
-import { PostgresSocraticRepository } from '../repositories/postgres-socratic.repository'
+} from '../domain/masterme'
+import { InMemoryMasterMeRepository } from '../repositories/masterme.repository'
+import type { MasterMeRepository } from '../repositories/masterme.repository'
+import { PostgresMasterMeRepository } from '../repositories/postgres-masterme.repository'
 import type { ExtractedKnowledge } from '../schemas/llm.schema'
-import type { SocraticLlmGateway } from '../services/llm.gateway'
-import { SocraticService } from '../services/socratic.service'
+import type { MasterMeLlmGateway } from '../services/llm.gateway'
+import { MasterMeService } from '../services/masterme.service'
 
-class EmptyFakeLlm implements SocraticLlmGateway {
+class EmptyFakeLlm implements MasterMeLlmGateway {
   public async extractKnowledge(_material: StudyMaterial): Promise<ExtractedKnowledge> { return { fragments: [] } }
-  public async generateQuestion(_concept: Concept): Promise<SocraticQuestion> { throw new Error('Não usado neste teste.') }
-  public async evaluateAnswer(_concept: Concept, _question: SocraticQuestion, _answer: string): Promise<Evaluation> { throw new Error('Não usado neste teste.') }
-  public async generateStressTest(_concept: Concept, _answer: string): Promise<StressTest> { throw new Error('Não usado neste teste.') }
-  public async evaluateStressReply(_concept: Concept, _stressTest: StressTest, _answer: string): Promise<Evaluation> { throw new Error('Não usado neste teste.') }
+  public async generateQuestion(_concept: Concept): Promise<MasterMeQuestion> { throw new Error('Não usado neste teste.') }
+  public async evaluateAnswer(_concept: Concept, _question: MasterMeQuestion, _answer: string): Promise<Evaluation> { throw new Error('Não usado neste teste.') }
+  public async generateEdgeCaseChallenge(_concept: Concept): Promise<EdgeCaseChallenge> { throw new Error('Não usado neste teste.') }
+  public async evaluateEdgeCaseAnswer(_concept: Concept, _challenge: EdgeCaseChallenge, _answer: string): Promise<Evaluation> { throw new Error('Não usado neste teste.') }
+  public async generatePracticeProject(_material: StudyMaterial, _concepts: Concept[], _priorities: import('../domain/masterme').PrioritizedConcept[]): Promise<PracticeProjectContent> { throw new Error('Não usado neste teste.') }
   public async generateIsomorphicProblem(_concepts: Concept[], _observedFailures: string[]): Promise<IsomorphicProblem> { throw new Error('Não usado neste teste.') }
 }
 
-const withServer = async (run: (baseUrl: string) => Promise<void>, repository: SocraticRepository = new InMemorySocraticRepository()): Promise<void> => {
-  const service = new SocraticService(repository, new EmptyFakeLlm())
+const withServer = async (run: (baseUrl: string) => Promise<void>, repository: MasterMeRepository = new InMemoryMasterMeRepository()): Promise<void> => {
+  const service = new MasterMeService(repository, new EmptyFakeLlm())
   const server: Server = createApp(service).listen(0)
   await new Promise<void>((resolve) => server.once('listening', resolve))
   const address = server.address()
@@ -54,7 +56,7 @@ describe('rotas socráticas', () => {
           id: row.id, title: row.title, content: row.content, createdAt: row.created_at.toISOString(),
         })) })
         expect(query).toHaveBeenCalledTimes(1)
-      }, new PostgresSocraticRepository(pool))
+      }, new PostgresMasterMeRepository(pool))
     } finally {
       query.mockRestore()
       await pool.end()
@@ -72,5 +74,16 @@ describe('rotas socráticas', () => {
       const payload: unknown = await response.json()
       expect(payload).toMatchObject({ code: 'VALIDATION_ERROR' })
     })
+  })
+
+  test('consulta problema isomórfico por material sem gerar outro', async () => {
+    const repository = new InMemoryMasterMeRepository()
+    const service = new MasterMeService(repository, new EmptyFakeLlm())
+    const material = await service.createMaterial({ title: 'Exemplo', content: 'Texto de referência.' })
+    await withServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/materials/${material.id}/isomorphic-problem`)
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ data: null })
+    }, repository)
   })
 })
