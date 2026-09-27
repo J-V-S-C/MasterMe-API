@@ -44,7 +44,7 @@ export const openApiDocument = {
     '/api/processing/overview': { get: { summary: 'Resumo operacional da fila de processamento', responses: { '200': { description: 'Contagens de jobs e processamento mais antigo' } } } },
     '/api/materials/{id}/extract': {
       post: {
-        summary: 'Extrai fragmentos do material',
+        summary: 'Enfileira a extração do material',
         parameters: [
           {
             name: 'id',
@@ -53,7 +53,17 @@ export const openApiDocument = {
             schema: { type: 'string', format: 'uuid' },
           },
         ],
-        responses: { '201': { description: 'Fragmentos extraídos' } },
+        responses: { '202': { description: 'Extração enfileirada' } },
+      },
+      delete: {
+        summary: 'Cancela uma extração ativa',
+        parameters: [
+          {
+            name: 'id', in: 'path', required: true,
+            schema: { type: 'string', format: 'uuid' },
+          },
+        ],
+        responses: { '200': { description: 'Extração cancelada' }, '409': { description: 'Não há extração ativa' } },
       },
     },
     '/api/materials/{id}/concepts': {

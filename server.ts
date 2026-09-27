@@ -29,7 +29,7 @@ export const createApp = (service: MasterMeService, ingestion?: IngestionService
 }
 
 const startServer = (environment: Environment): void => {
-  const pool = new Pool({ connectionString: environment.DATABASE_URL }); const repository = new PostgresMasterMeRepository(pool)
+  const pool = new Pool({ connectionString: environment.DATABASE_URL, max: environment.DATABASE_POOL_MAX }); const repository = new PostgresMasterMeRepository(pool)
   const gateway = new GeminiMasterMeGateway(
     new GeminiStructuredClient(environment, (event) => repository.recordAiUsage(event)),
     environment.EXTRACTION_MAX_CONCEPTS,
@@ -37,7 +37,18 @@ const startServer = (environment: Environment): void => {
   const study = new MasterMeService(repository, gateway); const ingestion = new IngestionService(pool, new LocalMaterialStorage(environment.MATERIAL_STORAGE_PATH))
   const worker = new ProcessingWorker(pool, study, ingestion)
   if (process.argv.includes('--worker')) {
-    setInterval(() => { void worker.processOnce() }, 1_000)
+    let active = 0
+    setInterval(() => {
+      while (active < environment.EXTRACTION_CONCURRENCY) {
+        active += 1
+        void worker.processOnce()
+          .catch((error) => console.error(JSON.stringify({ level: 'error', operation: 'processing-loop', error: String(error) })))
+          .finally(() => { active -= 1 })
+        // Cada execução reivindica no máximo um job. O limite acima impede que
+        // o setInterval crie promessas ilimitadas enquanto o provedor demora.
+        if (active >= environment.EXTRACTION_CONCURRENCY) break
+      }
+    }, 1_000)
     return
   }
   const app = createApp(study, ingestion)

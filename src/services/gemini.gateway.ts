@@ -60,8 +60,11 @@ export class GeminiMasterMeGateway implements MasterMeLlmGateway {
   public async extractKnowledge(material: StudyMaterial, onProgress?: (progress: ExtractionProgress) => Promise<void>): Promise<ExtractedKnowledge> {
     await onProgress?.({ stage: 'PREPARING', totalChunks: 1, completedChunks: 0 });
     const paragraphs = indexMaterialParagraphs(material.content)
+    // A chamada ao provedor concentra quase todo o tempo da extração. Avise que
+    // ela começou antes de aguardá-la; caso contrário a UI fica presa em 1%.
+    await onProgress?.({ stage: 'EXTRACTING', totalChunks: 1, completedChunks: 0 });
     const response = await this.extractMaterial(paragraphs);
-    await onProgress?.({ stage: 'EXTRACTING', totalChunks: 1, completedChunks: 1 });
+    await onProgress?.({ stage: 'REDUCING', totalChunks: 1, completedChunks: 1 });
 
     const paragraphById = new Map(paragraphs.map((paragraph) => [paragraph.id, paragraph.text]))
     const fragments = this.uniqueFragments(response.fragments)
@@ -92,7 +95,7 @@ export class GeminiMasterMeGateway implements MasterMeLlmGateway {
     return this.client.generateStructured(
       SinglePassKnowledgeResponseSchema,
       `Você analisa um material técnico de engenharia de software. Extraia no máximo ${this.maxConcepts} conceitos centrais que estejam EXPLICITAMENTE no material inteiro. Priorize os conceitos que desbloqueiam a compreensão dos demais e descarte detalhes repetidos. Para cada conceito, retorne nome curto e único, descrição concisa, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, uma premissa fundamental, um caso de borda, edgeCaseQuestion com uma pergunta específica que confronte esse caso de borda e prerequisiteNames contendo somente nomes de outros conceitos retornados. Também retorne questionText: uma pergunta socrática específica e natural sobre ESTE conceito, que faça sentido sem supor que pré-requisitos ou nós relacionados formam uma cadeia causal; targetPremise: a premissa que a resposta deve explicar; e expectedReasoningSteps: 2 a 4 passos de raciocínio esperados. A pergunta deve ser respondível exclusivamente pelo trecho indicado e não pode ser uma pergunta de definição direta. Não copie o parágrafo e não invente IDs, conteúdo ou relações.\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
-      { operation: 'EXTRACTION', maxOutputTokens: 2500 },
+      { operation: 'EXTRACTION', maxOutputTokens: 6000 },
     );
   }
 

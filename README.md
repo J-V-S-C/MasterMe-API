@@ -39,6 +39,8 @@ bun test
 | --- | --- | --- |
 | POST | `/api/materials` | Cria material textual. |
 | POST | `/api/materials/upload` | Envia PDF, Markdown ou TXT. |
+| POST | `/api/materials/:id/extract` | Enfileira uma extração. |
+| DELETE | `/api/materials/:id/extract` | Cancela uma extração ativa e descarta seu resultado tardio. |
 | GET | `/api/materials/:id/status` | Consulta processamento assíncrono. |
 | GET | `/api/events` | Acompanha eventos via SSE. |
 | GET | `/api/materials/:id/knowledge-map` | Retorna mapa, status da explicação e do caso-limite. |
@@ -70,7 +72,7 @@ cache em `practice_projects`.
 
 ## Docker
 
-O Compose inicia PostgreSQL, API e worker; o frontend permanece fora do Docker.
+O Compose inicia API e worker; o PostgreSQL é externo no Supabase e o frontend permanece fora do Docker.
 
 ```bash
 docker compose up --build

@@ -23,6 +23,7 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
     router.get('/processing/overview', files.overview);
     router.post('/materials/upload', upload.single('file'), files.upload);
     router.post('/materials/:id/extract', validateRequest({ params: IdParamsSchema }), files.extract);
+    router.delete('/materials/:id/extract', validateRequest({ params: IdParamsSchema }), files.cancelExtraction);
     router.get('/materials/:id/status', validateRequest({ params: IdParamsSchema }), files.status);
   }
 

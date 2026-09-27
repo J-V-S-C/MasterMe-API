@@ -24,6 +24,11 @@ export const classifyProcessingFailure = (error: unknown): ProcessingFailure => 
     message: 'Os modelos Gemini estão indisponíveis ou retornaram uma resposta inválida. Tentaremos novamente em breve.',
     code: 'EXTRACTION_FAILED',
   }
+  if (details.includes('unable to connect') || details.includes('fetch failed') || details.includes('network')) return {
+    retryable: true,
+    message: 'A conexão com o provedor de IA foi interrompida. Tentaremos novamente em breve.',
+    code: 'EXTRACTION_FAILED',
+  }
   return { retryable: false, message: 'Não foi possível extrair os conceitos deste material. Revise o erro e tente novamente manualmente.', code: 'EXTRACTION_FAILED' }
 }
 
@@ -66,6 +71,14 @@ export class IngestionService {
     if (active.rows[0]) return active.rows[0] as object
     const id = randomUUID(); await this.pool.query("INSERT INTO processing_jobs (id,material_id,type,stage) VALUES ($1,$2,'EXTRACT','QUEUED')", [id, materialId]); await this.pool.query("UPDATE study_materials SET processing_status='PENDING',processing_error=NULL WHERE id=$1", [materialId]); await this.event('material.queued', { materialId, jobId: id, stage: 'QUEUED', progressPercent: 0 }); return { id, stage: 'QUEUED', progressPercent: 0 }
   }
+  public async cancel(materialId: string): Promise<object> {
+    await this.status(materialId)
+    const result = await this.pool.query("UPDATE processing_jobs SET status='CANCELLED',finished_at=now(),locked_at=NULL,updated_at=now() WHERE id=(SELECT id FROM processing_jobs WHERE material_id=$1 AND type='EXTRACT' AND status IN ('PENDING','PROCESSING') ORDER BY created_at DESC LIMIT 1) RETURNING id", [materialId])
+    if (!result.rows[0]) throw new AppError(409, 'EXTRACTION_NOT_ACTIVE', 'Não há extração ativa para cancelar.')
+    await this.pool.query("UPDATE study_materials SET processing_status='CANCELLED',processing_error=NULL WHERE id=$1", [materialId])
+    await this.event('material.cancelled', { materialId, jobId: result.rows[0].id })
+    return { id: result.rows[0].id, status: 'CANCELLED' }
+  }
   public async status(id: string): Promise<object> { const result = await this.pool.query("SELECT m.id,m.processing_status AS status,m.processing_error AS error,m.processed_at AS \"processedAt\",j.id AS \"jobId\",j.stage,j.total_chunks AS \"totalChunks\",j.completed_chunks AS \"completedChunks\",j.progress_percent AS \"progressPercent\",j.attempts,j.started_at AS \"startedAt\",j.finished_at AS \"finishedAt\" FROM study_materials m LEFT JOIN LATERAL (SELECT * FROM processing_jobs WHERE material_id=m.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE m.id=$1", [id]); if (!result.rows[0]) throw new NotFoundError('Material'); return result.rows[0] as object }
   public async event(type: string, payload: object): Promise<void> { await this.pool.query('INSERT INTO activity_events (type,payload) VALUES ($1,$2)', [type, JSON.stringify(payload)]) }
   public async events(after: number): Promise<Array<{ id: string; type: string; payload: object }>> { const result = await this.pool.query('SELECT id,type,payload FROM activity_events WHERE id > $1 ORDER BY id ASC LIMIT 100', [after]); return result.rows as Array<{ id: string; type: string; payload: object }> }
@@ -79,16 +92,35 @@ export class ProcessingWorker {
     const client = await this.pool.connect(); let job: { id: string; material_id: string } | undefined
     try { await client.query('BEGIN'); await client.query("UPDATE processing_jobs SET status='PENDING',stage='RETRYING',locked_at=NULL WHERE status='PROCESSING' AND locked_at < now() - interval '5 minutes'"); const result = await client.query("SELECT id,material_id FROM processing_jobs WHERE status='PENDING' AND run_after<=now() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"); job = result.rows[0] as typeof job; if (job) await client.query("UPDATE processing_jobs SET status='PROCESSING',stage='PREPARING',attempts=attempts+1,locked_at=now(),started_at=COALESCE(started_at,now()),updated_at=now() WHERE id=$1", [job.id]); await client.query('COMMIT') } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
     if (!job) return false
+    // Renove o lease durante chamadas longas para impedir que o mesmo job seja
+    // retomado em paralelo como se este worker tivesse morrido.
+    const heartbeat = setInterval(() => {
+      void this.pool.query("UPDATE processing_jobs SET locked_at=now(),updated_at=now() WHERE id=$1 AND status='PROCESSING'", [job!.id]).catch((error) => console.warn(JSON.stringify({ level: 'warn', operation: 'processing-heartbeat', jobId: job!.id, error: String(error) })))
+    }, 60_000)
     await this.pool.query("UPDATE study_materials SET processing_status='PROCESSING' WHERE id=$1", [job.material_id]); await this.ingestion.event('material.progress', { materialId: job.material_id, stage: 'PREPARING', progressPercent: 1 })
-    try { await this.study.extractConcepts(job.material_id, async (progress) => { const percent = progress.stage === 'REDUCING' ? 90 : Math.max(1, Math.round((progress.completedChunks / Math.max(progress.totalChunks, 1)) * 85)); await this.pool.query('UPDATE processing_jobs SET stage=$2,total_chunks=$3,completed_chunks=$4,progress_percent=$5,started_at=COALESCE(started_at,now()),updated_at=now() WHERE id=$1', [job.id, progress.stage, progress.totalChunks, progress.completedChunks, percent]); await this.ingestion.event('material.progress', { materialId: job.material_id, stage: progress.stage, totalChunks: progress.totalChunks, completedChunks: progress.completedChunks, progressPercent: percent }) }); await this.pool.query("UPDATE processing_jobs SET status='DONE',stage='READY',progress_percent=100,finished_at=now(),updated_at=now() WHERE id=$1", [job.id]); await this.pool.query("UPDATE study_materials SET processing_status='READY',processed_at=now(),processing_error=NULL WHERE id=$1", [job.material_id]); await this.ingestion.event('material.ready', { materialId: job.material_id, stage: 'READY', progressPercent: 100 })
+    try {
+      await this.study.extractConcepts(job.material_id, async (progress) => {
+        const percent = progress.stage === 'REDUCING' ? 90 : Math.max(1, Math.round((progress.completedChunks / Math.max(progress.totalChunks, 1)) * 85))
+        const updated = await this.pool.query("UPDATE processing_jobs SET stage=$2,total_chunks=$3,completed_chunks=$4,progress_percent=$5,started_at=COALESCE(started_at,now()),updated_at=now() WHERE id=$1 AND status='PROCESSING' RETURNING id", [job!.id, progress.stage, progress.totalChunks, progress.completedChunks, percent])
+        if (updated.rows[0]) await this.ingestion.event('material.progress', { materialId: job!.material_id, stage: progress.stage, totalChunks: progress.totalChunks, completedChunks: progress.completedChunks, progressPercent: percent })
+      }, async () => this.isActive(job!.id))
+      const completed = await this.pool.query("UPDATE processing_jobs SET status='DONE',stage='READY',progress_percent=100,finished_at=now(),updated_at=now() WHERE id=$1 AND status='PROCESSING' RETURNING id", [job.id])
+      if (!completed.rows[0]) return true
+      await this.pool.query("UPDATE study_materials SET processing_status='READY',processed_at=now(),processing_error=NULL WHERE id=$1", [job.material_id])
+      await this.ingestion.event('material.ready', { materialId: job.material_id, stage: 'READY', progressPercent: 100 })
     } catch (error) {
+      if (!(await this.isActive(job.id))) return true
       const failure = classifyProcessingFailure(error)
-      const retried = await this.pool.query("UPDATE processing_jobs SET status=CASE WHEN $3::boolean OR attempts>=3 THEN 'FAILED' ELSE 'PENDING' END,run_after=now()+interval '30 seconds',last_error=$2,updated_at=now() WHERE id=$1 RETURNING status", [job.id, String(error), !failure.retryable])
+      const retried = await this.pool.query("UPDATE processing_jobs SET status=CASE WHEN $3::boolean OR attempts>=3 THEN 'FAILED' ELSE 'PENDING' END,run_after=now()+interval '30 seconds',last_error=$2,updated_at=now() WHERE id=$1 AND status='PROCESSING' RETURNING status", [job.id, String(error), !failure.retryable])
       const status = retried.rows[0]?.status === 'FAILED' ? 'FAILED' : 'PENDING'
       await this.pool.query('UPDATE study_materials SET processing_status=$2,processing_error=$3 WHERE id=$1', [job.material_id, status, failure.message])
       console.error(JSON.stringify({ level: 'error', operation: 'extract-material', materialId: job.material_id, jobId: job.id, code: failure.code, error: String(error) }))
       await this.ingestion.event(status === 'FAILED' ? 'material.failed' : 'material.queued', { materialId: job.material_id, message: failure.message, code: failure.code })
-    }
+    } finally { clearInterval(heartbeat) }
     return true
+  }
+  private async isActive(jobId: string): Promise<boolean> {
+    const result = await this.pool.query("SELECT 1 FROM processing_jobs WHERE id=$1 AND status='PROCESSING'", [jobId])
+    return Boolean(result.rows[0])
   }
 }

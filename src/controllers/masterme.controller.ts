@@ -161,6 +161,10 @@ export class IngestionController {
     const { id } = getValidated(res, 'params', IdParamsSchema);
     res.status(202).json({ data: await this.ingestion.enqueue(id) });
   };
+  public readonly cancelExtraction: RequestHandler = async (_req, res) => {
+    const { id } = getValidated(res, 'params', IdParamsSchema);
+    res.json({ data: await this.ingestion.cancel(id) });
+  };
   public readonly overview: RequestHandler = async (_req, res) => {
     res.json({ data: await this.ingestion.overview() });
   };

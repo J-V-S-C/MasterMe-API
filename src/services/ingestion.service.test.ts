@@ -11,8 +11,8 @@ describe('classifyProcessingFailure', () => {
     })
   })
 
-  test('não repete automaticamente falhas de extração', () => {
-    expect(classifyProcessingFailure(new Error('network timeout'))).toEqual({
+  test('não repete automaticamente falhas definitivas de extração', () => {
+    expect(classifyProcessingFailure(new Error('material schema conflict'))).toEqual({
       retryable: false,
       message: 'Não foi possível extrair os conceitos deste material. Revise o erro e tente novamente manualmente.',
       code: 'EXTRACTION_FAILED',
@@ -23,6 +23,14 @@ describe('classifyProcessingFailure', () => {
     expect(classifyProcessingFailure(new Error('Gemini quota or availability exhausted for all configured models: gemini-3.5-flash-lite'))).toEqual({
       retryable: true,
       message: 'Os modelos Gemini estão indisponíveis ou retornaram uma resposta inválida. Tentaremos novamente em breve.',
+      code: 'EXTRACTION_FAILED',
+    })
+  })
+
+  test('repete falhas transitórias de rede', () => {
+    expect(classifyProcessingFailure(new Error('Unable to connect. Is the computer able to access the url?'))).toEqual({
+      retryable: true,
+      message: 'A conexão com o provedor de IA foi interrompida. Tentaremos novamente em breve.',
       code: 'EXTRACTION_FAILED',
     })
   })

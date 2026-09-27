@@ -48,9 +48,14 @@ export class MasterMeService {
 
   public getAllMaterials(): Promise<StudyMaterial[]> { return this.repository.findAllMaterials(); }
 
-  public async extractConcepts(materialId: string, onProgress?: (progress: ExtractionProgress) => Promise<void>): Promise<Concept[]> {
+  public async extractConcepts(
+    materialId: string,
+    onProgress?: (progress: ExtractionProgress) => Promise<void>,
+    shouldPersist: () => Promise<boolean> = async () => true,
+  ): Promise<Concept[]> {
     const material = await this.getMaterial(materialId);
     const extracted = await this.llm.extractKnowledge(material, onProgress);
+    if (!(await shouldPersist())) throw new ConflictError('A extração foi cancelada.');
     const idsByName = new Map<string, string>();
     for (const fragment of extracted.fragments) {
       const name = fragment.name.trim().toLocaleLowerCase();
