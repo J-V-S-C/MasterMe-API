@@ -7,9 +7,8 @@ Zod e contexto explícito; não usa RAG, embeddings, LangChain ou LangGraph.
 
 ## Acesso
 
-- API de produção: <https://masterme-api.duckdns.org>
+- Swagger da API de produção: <https://masterme-api.duckdns.org/docs>
 - Health check: <https://masterme-api.duckdns.org/health>
-- Swagger local: <http://localhost:3333/docs>
 
 O domínio público é atendido pelo Caddy na OCI, que encerra HTTPS e encaminha
 as requisições para a API disponível somente em `127.0.0.1:3333` na VPS.
