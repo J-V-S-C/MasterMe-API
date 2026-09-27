@@ -9,6 +9,7 @@ Zod e contexto explícito; não usa RAG, embeddings, LangChain ou LangGraph.
 
 - Swagger da API de produção: <https://masterme-api.duckdns.org/docs>
 - Health check: <https://masterme-api.duckdns.org/health>
+- Frontend Repo: <https://github.com/J-V-S-C/MasterMe-Front>
 
 O domínio público é atendido pelo Caddy na OCI, que encerra HTTPS e encaminha
 as requisições para a API disponível somente em `127.0.0.1:3333` na VPS.
@@ -43,26 +44,26 @@ bun test
 
 ## Rotas principais
 
-| Método | Rota | Finalidade |
-| --- | --- | --- |
-| POST | `/api/materials` | Cria material textual. |
-| POST | `/api/materials/upload` | Envia PDF, Markdown ou TXT. |
-| POST | `/api/materials/:id/extract` | Enfileira uma extração. |
-| DELETE | `/api/materials/:id/extract` | Cancela uma extração ativa e descarta seu resultado tardio. |
-| GET | `/api/materials/:id/status` | Consulta processamento assíncrono. |
-| GET | `/api/events` | Acompanha eventos via SSE. |
-| GET | `/api/materials/:id/knowledge-map` | Retorna mapa, status da explicação e do caso-limite. |
-| POST | `/api/concepts/:id/sessions` | Inicia explicação de qualquer conceito. |
-| POST | `/api/sessions/:id/answers` | Avalia resposta inicial; `PASSED` conclui a explicação. |
-| POST | `/api/sessions/:id/edge-case` | Cria ou recupera caso-limite opt-in. |
-| POST | `/api/sessions/:id/edge-case/answers` | Avalia o caso sem rebaixar a explicação. |
-| GET | `/api/materials/:id/confidences` | Lista autoconfianças existentes. |
-| PUT | `/api/concepts/:id/confidence` | Cria ou atualiza confiança de 1 a 5. |
-| DELETE | `/api/concepts/:id/confidence` | Remove confiança. |
-| GET | `/api/materials/:id/performance` | Expõe desempenho determinístico por conceito. |
-| POST | `/api/materials/:id/practice-projects` | Gera ou recupera do cache um Projeto de prática. |
-| GET | `/api/materials/:id/practice-projects` | Lista projetos do material. |
-| GET | `/api/practice-projects/:id` | Recupera um projeto. |
+| Método | Rota                                   | Finalidade                                                  |
+| ------ | -------------------------------------- | ----------------------------------------------------------- |
+| POST   | `/api/materials`                       | Cria material textual.                                      |
+| POST   | `/api/materials/upload`                | Envia PDF, Markdown ou TXT.                                 |
+| POST   | `/api/materials/:id/extract`           | Enfileira uma extração.                                     |
+| DELETE | `/api/materials/:id/extract`           | Cancela uma extração ativa e descarta seu resultado tardio. |
+| GET    | `/api/materials/:id/status`            | Consulta processamento assíncrono.                          |
+| GET    | `/api/events`                          | Acompanha eventos via SSE.                                  |
+| GET    | `/api/materials/:id/knowledge-map`     | Retorna mapa, status da explicação e do caso-limite.        |
+| POST   | `/api/concepts/:id/sessions`           | Inicia explicação de qualquer conceito.                     |
+| POST   | `/api/sessions/:id/answers`            | Avalia resposta inicial; `PASSED` conclui a explicação.     |
+| POST   | `/api/sessions/:id/edge-case`          | Cria ou recupera caso-limite opt-in.                        |
+| POST   | `/api/sessions/:id/edge-case/answers`  | Avalia o caso sem rebaixar a explicação.                    |
+| GET    | `/api/materials/:id/confidences`       | Lista autoconfianças existentes.                            |
+| PUT    | `/api/concepts/:id/confidence`         | Cria ou atualiza confiança de 1 a 5.                        |
+| DELETE | `/api/concepts/:id/confidence`         | Remove confiança.                                           |
+| GET    | `/api/materials/:id/performance`       | Expõe desempenho determinístico por conceito.               |
+| POST   | `/api/materials/:id/practice-projects` | Gera ou recupera do cache um Projeto de prática.            |
+| GET    | `/api/materials/:id/practice-projects` | Lista projetos do material.                                 |
+| GET    | `/api/practice-projects/:id`           | Recupera um projeto.                                        |
 
 `/api/sessions/:id/stress-replies` e as rotas de `isomorphic-problem` continuam
 temporariamente disponíveis para o frontend legado. Novos consumidores devem
@@ -89,7 +90,6 @@ docker compose up --build
 O PostgreSQL de produção fica no Supabase. Apenas os arquivos enviados ficam no
 volume Docker `material_uploads` da VPS; por isso esse volume deve ser incluído
 na estratégia de backup enquanto não houver object storage.
-
 
 ## CI/CD e produção
 
