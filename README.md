@@ -5,6 +5,15 @@ navegáveis, avalia explicações por conceito e gera Projetos de prática com f
 determinístico. Usa o SDK oficial `@google/genai`, structured output validado por
 Zod e contexto explícito; não usa RAG, embeddings, LangChain ou LangGraph.
 
+## Acesso
+
+- API de produção: <https://masterme-api.duckdns.org>
+- Health check: <https://masterme-api.duckdns.org/health>
+- Swagger local: <http://localhost:3333/docs>
+
+O domínio público é atendido pelo Caddy na OCI, que encerra HTTPS e encaminha
+as requisições para a API disponível somente em `127.0.0.1:3333` na VPS.
+
 ## Executar
 
 ```bash
@@ -60,7 +69,7 @@ bun test
 temporariamente disponíveis para o frontend legado. Novos consumidores devem
 usar Teste de caso-limite e Projeto de prática.
 
-Swagger UI: `http://localhost:3333/docs`. Documento bruto: `/openapi.json`.
+Swagger UI local: `http://localhost:3333/docs`. Documento bruto: `/openapi.json`.
 
 ## Projeto de prática
 
@@ -78,9 +87,29 @@ O Compose inicia API e worker; o PostgreSQL é externo no Supabase e o frontend 
 docker compose up --build
 ```
 
-Volumes preservam banco e uploads. Ao reutilizar um volume criado antes da
-renomeação do projeto, mantenha as credenciais internas desse banco ou migre
-explicitamente role/database antes de recriar os containers.
+O PostgreSQL de produção fica no Supabase. Apenas os arquivos enviados ficam no
+volume Docker `material_uploads` da VPS; por isso esse volume deve ser incluído
+na estratégia de backup enquanto não houver object storage.
+
+
+## CI/CD e produção
+
+Todo `push` para `main` dispara dois workflows independentes:
+
+1. `CI` instala dependências com lockfile, executa typecheck e testes.
+2. `Deploy backend to OCI` repete as validações, cria a imagem Docker para
+   `linux/amd64` e `linux/arm64`, publica no GHCR com tags do commit e `latest`,
+   conecta à OCI por SSH, executa as migrations, atualiza API e worker e aguarda
+   o health check.
+
+O deploy usa o environment `production` do GitHub. Ele requer os secrets
+`OCI_HOST`, `OCI_SSH_USER`, `OCI_SSH_KEY` e `OCI_KNOWN_HOSTS`. As variáveis da
+aplicação permanecem exclusivamente em `/opt/masterme/.env` na VPS e não são
+armazenadas no repositório.
+
+Como CI e CD são disparados em paralelo, o CD possui suas próprias validações e
+não depende do resultado do workflow de CI. Um deploy só é considerado concluído
+depois de migrations, atualização dos containers e health check bem-sucedidos.
 
 ## Limites do MVP
 
