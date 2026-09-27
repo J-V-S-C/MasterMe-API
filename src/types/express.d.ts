@@ -5,6 +5,7 @@ declare global {
     interface Locals {
       requestId?: string
       validated?: ValidatedRequestData
+      userId?: string
     }
   }
 }

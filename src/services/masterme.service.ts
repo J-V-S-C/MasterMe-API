@@ -36,9 +36,9 @@ export class MasterMeService {
     private readonly focus = new PracticeFocusService(),
   ) {}
 
-  public async createMaterial(input: CreateMaterialBody): Promise<StudyMaterial> {
+  public async createMaterial(input: CreateMaterialBody, ownerId: string): Promise<StudyMaterial> {
     const material = { id: randomUUID(), title: input.title, content: input.content, createdAt: now() };
-    await this.repository.saveMaterial(material);
+    await this.repository.saveMaterial(material, ownerId);
     return material;
   }
 
@@ -46,7 +46,7 @@ export class MasterMeService {
     return (await this.repository.findMaterial(id)) ?? this.throwNotFound('Material');
   }
 
-  public getAllMaterials(): Promise<StudyMaterial[]> { return this.repository.findAllMaterials(); }
+  public getAllMaterials(ownerId: string): Promise<StudyMaterial[]> { return this.repository.findAllMaterials(ownerId); }
 
   public async extractConcepts(
     materialId: string,

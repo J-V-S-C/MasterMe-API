@@ -20,7 +20,7 @@ class ApiFakeLlm implements MasterMeLlmGateway {
 const setup = async (run: (baseUrl: string, material: StudyMaterial, concept: Concept) => Promise<void>) => {
   const repository = new InMemoryMasterMeRepository();
   const service = new MasterMeService(repository, new ApiFakeLlm());
-  const material = await service.createMaterial({ title: 'Material', content: 'Trecho técnico.' });
+  const material = await service.createMaterial({ title: 'Material', content: 'Trecho técnico.' }, '00000000-0000-0000-0000-000000000001');
   const concept: Concept = { id: '11111111-1111-4111-8111-111111111111', materialId: material.id, name: 'Contrato', description: 'Separa política de detalhe.', kind: 'AXIOM', sourceExcerpt: 'Trecho técnico.', fundamentalPremises: ['Detalhes variam.'], edgeCases: ['Não há variação.'], edgeCaseQuestion: 'Quando o contrato não compensa?', studyQuestion: { text: 'Como o contrato protege a política?', targetPremise: 'Detalhes variam.', expectedReasoningSteps: ['Separar política e detalhe'] }, prerequisiteIds: [], nextIds: [] };
   await repository.saveConcepts([concept]);
   const server: Server = createApp(service).listen(0);

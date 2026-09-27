@@ -15,7 +15,7 @@ import { IngestionService, LocalMaterialStorage, ProcessingWorker } from './src/
 
 dotenv.config()
 
-export const createApp = (service: MasterMeService, ingestion?: IngestionService): Express => {
+export const createApp = (service: MasterMeService, ingestion?: IngestionService, pool?: Pool): Express => {
   const app = express()
   app.disable('x-powered-by')
   app.use(express.json({ limit: '110kb' }))
@@ -23,7 +23,7 @@ export const createApp = (service: MasterMeService, ingestion?: IngestionService
   app.get('/health', (_req, res) => res.json({ status: 'ok' }))
   app.get('/openapi.json', (_req, res) => res.json(openApiDocument))
   app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument))
-  app.use('/api', createMasterMeRouter(service, ingestion))
+  app.use('/api', createMasterMeRouter(service, ingestion, pool))
   app.use(errorHandler)
   return app
 }
@@ -51,7 +51,7 @@ const startServer = (environment: Environment): void => {
     }, 1_000)
     return
   }
-  const app = createApp(study, ingestion)
+  const app = createApp(study, ingestion, pool)
   app.listen(environment.PORT, () => {
     console.info(`MasterMe Backend rodando na porta ${environment.PORT}`)
   })

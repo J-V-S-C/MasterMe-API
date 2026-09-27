@@ -27,7 +27,7 @@ const setup = async () => {
   const repository = new InMemoryMasterMeRepository();
   const llm = new FakeLlm();
   const service = new MasterMeService(repository, llm);
-  const material = await service.createMaterial({ title: 'Arquitetura', content: 'Regras dependem de abstrações. Dependências são fornecidas externamente.' });
+  const material = await service.createMaterial({ title: 'Arquitetura', content: 'Regras dependem de abstrações. Dependências são fornecidas externamente.' }, '00000000-0000-0000-0000-000000000001');
   const concepts = await service.extractConcepts(material.id);
   return { service, llm, material, concepts };
 };

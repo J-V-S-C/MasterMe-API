@@ -8,6 +8,7 @@ services:
     environment: &backend-environment
       PORT: 3333
       DATABASE_URL: ${DATABASE_URL:?Configure a Session pooler URL do Supabase}
+      SUPABASE_URL: ${SUPABASE_URL:?Configure SUPABASE_URL}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-3}
       GEMINI_API_KEY: ${GEMINI_API_KEY:?Configure GEMINI_API_KEY}
       MODEL_NAME: ${MODEL_NAME:-gemini-3.5-flash-lite}

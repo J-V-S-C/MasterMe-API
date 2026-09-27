@@ -12,11 +12,15 @@ import type { MasterMeService } from '../services/masterme.service';
 import multer from 'multer';
 import { IngestionController } from '../controllers/masterme.controller';
 import type { IngestionService } from '../services/ingestion.service';
+import type { Pool } from 'pg';
+import { authenticate } from '../middleware/authenticate';
+import { authorizeResource } from '../middleware/authorize-resource';
 
-export const createMasterMeRouter = (service: MasterMeService, ingestion?: IngestionService): Router => {
+export const createMasterMeRouter = (service: MasterMeService, ingestion?: IngestionService, pool?: Pool): Router => {
   const router = Router();
   const controller = new MasterMeController(service);
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
+  if (pool) router.use(authenticate, authorizeResource(pool));
   if (ingestion) {
     const files = new IngestionController(ingestion);
     router.get('/events', files.events);
@@ -54,7 +58,6 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
         'POST /api/sessions/:id/stress-replies',
         'POST /api/materials/:id/isomorphic-problem',
         'GET /api/materials/:id/isomorphic-problem',
-        'GET /api/ai-usage/today',
       ],
     });
   });
@@ -124,7 +127,6 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
   router.post('/materials/:id/practice-projects', validateRequest({ params: IdParamsSchema, body: CreatePracticeProjectBodySchema }), controller.generatePracticeProject);
   router.get('/materials/:id/practice-projects', validateRequest({ params: IdParamsSchema }), controller.getPracticeProjects);
   router.get('/practice-projects/:id', validateRequest({ params: IdParamsSchema }), controller.getPracticeProject);
-  router.get('/ai-usage/today', controller.getAiUsageToday);
 
   return router;
 };

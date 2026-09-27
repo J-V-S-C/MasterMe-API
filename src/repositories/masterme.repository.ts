@@ -12,9 +12,9 @@ export type AiUsageSummary = {
 type Awaitable<T> = T | Promise<T>;
 
 export interface MasterMeRepository {
-  saveMaterial(material: StudyMaterial): Awaitable<void>;
+  saveMaterial(material: StudyMaterial, ownerId: string): Awaitable<void>;
   findMaterial(id: string): Awaitable<StudyMaterial | undefined>;
-  findAllMaterials(): Promise<StudyMaterial[]>;
+  findAllMaterials(ownerId: string): Promise<StudyMaterial[]>;
   saveConcepts(concepts: Concept[]): Awaitable<void>;
   findConcept(id: string): Awaitable<Concept | undefined>;
   findConceptsByMaterial(materialId: string): Awaitable<Concept[]>;
@@ -52,17 +52,21 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
   private readonly practiceProjects = new Map<string, PracticeProject>();
   private readonly practiceHashes = new Map<string, string>();
   private readonly aiUsage: Array<AiUsageEvent & { createdAt: Date }> = [];
+  private readonly materialOwners = new Map<string, string>();
 
-  public saveMaterial(material: StudyMaterial): void {
+  public saveMaterial(material: StudyMaterial, ownerId: string): void {
     this.materials.set(material.id, material);
+    this.materialOwners.set(material.id, ownerId);
   }
 
   public findMaterial(id: string): StudyMaterial | undefined {
     return this.materials.get(id);
   }
 
-  public async findAllMaterials(): Promise<StudyMaterial[]> {
-    return Array.from(this.materials.values());
+  public async findAllMaterials(ownerId: string): Promise<StudyMaterial[]> {
+    return Array.from(this.materials.values()).filter(
+      (material) => this.materialOwners.get(material.id) === ownerId,
+    );
   }
 
   public saveConcepts(concepts: Concept[]): void {

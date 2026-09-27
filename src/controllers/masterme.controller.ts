@@ -15,12 +15,12 @@ export class MasterMeController {
 
   public readonly createMaterial: RequestHandler = async (_req, res) => {
     const body = getValidated(res, 'body', CreateMaterialBodySchema);
-    const material = await this.service.createMaterial(body);
+    const material = await this.service.createMaterial(body, res.locals.userId!);
     res.status(201).json({ data: material });
   };
 
   public readonly getAllMaterials: RequestHandler = async (_req, res) => {
-    res.json({ data: await this.service.getAllMaterials() });
+    res.json({ data: await this.service.getAllMaterials(res.locals.userId!) });
   };
 
   public readonly getMaterial: RequestHandler = async (_req, res) => {
@@ -113,6 +113,7 @@ export class IngestionController {
       data: await this.ingestion.upload(
         req.file,
         typeof req.body.title === 'string' ? req.body.title : undefined,
+        res.locals.userId!,
       ),
     });
   };
@@ -125,7 +126,7 @@ export class IngestionController {
     const cursor = req.header('last-event-id') ?? req.query.after;
     let after =
       cursor === undefined
-        ? await this.ingestion.latestEventId()
+        ? await this.ingestion.latestEventId(res.locals.userId!)
         : Number(cursor);
     res
       .status(200)
@@ -140,6 +141,7 @@ export class IngestionController {
     const send = async () => {
       for (const event of await this.ingestion.events(
         Number.isSafeInteger(after) ? after : 0,
+        res.locals.userId!,
       )) {
         after = Number(event.id);
         res.write(
@@ -159,13 +161,13 @@ export class IngestionController {
   };
   public readonly extract: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
-    res.status(202).json({ data: await this.ingestion.enqueue(id) });
+    res.status(202).json({ data: await this.ingestion.enqueue(id, res.locals.userId!) });
   };
   public readonly cancelExtraction: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
-    res.json({ data: await this.ingestion.cancel(id) });
+    res.json({ data: await this.ingestion.cancel(id, res.locals.userId!) });
   };
   public readonly overview: RequestHandler = async (_req, res) => {
-    res.json({ data: await this.ingestion.overview() });
+    res.json({ data: await this.ingestion.overview(res.locals.userId!) });
   };
 }

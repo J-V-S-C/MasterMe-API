@@ -79,7 +79,7 @@ describe('rotas socráticas', () => {
   test('consulta problema isomórfico por material sem gerar outro', async () => {
     const repository = new InMemoryMasterMeRepository()
     const service = new MasterMeService(repository, new EmptyFakeLlm())
-    const material = await service.createMaterial({ title: 'Exemplo', content: 'Texto de referência.' })
+    const material = await service.createMaterial({ title: 'Exemplo', content: 'Texto de referência.' }, '00000000-0000-0000-0000-000000000001')
     await withServer(async (baseUrl) => {
       const response = await fetch(`${baseUrl}/api/materials/${material.id}/isomorphic-problem`)
       expect(response.status).toBe(200)

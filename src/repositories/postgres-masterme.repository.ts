@@ -9,8 +9,8 @@ const DatabaseDateSchema = z.coerce.date()
 export class PostgresMasterMeRepository implements MasterMeRepository {
   public constructor(private readonly pool: Pool) {}
 
-  public async saveMaterial(material: StudyMaterial): Promise<void> {
-    await this.pool.query('INSERT INTO study_materials (id, title, content, created_at) VALUES ($1, $2, $3, $4)', [material.id, material.title, material.content, material.createdAt])
+  public async saveMaterial(material: StudyMaterial, ownerId: string): Promise<void> {
+    await this.pool.query('INSERT INTO study_materials (id, title, content, created_at, owner_id) VALUES ($1, $2, $3, $4, $5)', [material.id, material.title, material.content, material.createdAt, ownerId])
   }
 
   public async findMaterial(id: string): Promise<StudyMaterial | undefined> {
@@ -20,8 +20,8 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
     return MaterialSchema.parse({ id: row.id, title: row.title, content: row.content, createdAt: DatabaseDateSchema.parse(row.created_at).toISOString() })
   }
 
-  public async findAllMaterials(): Promise<StudyMaterial[]> {
-    const result = await this.pool.query('SELECT id, title, content, created_at FROM study_materials ORDER BY created_at ASC, id ASC')
+  public async findAllMaterials(ownerId: string): Promise<StudyMaterial[]> {
+    const result = await this.pool.query('SELECT id, title, content, created_at FROM study_materials WHERE owner_id=$1 ORDER BY created_at ASC, id ASC', [ownerId])
     return result.rows.map((row) => MaterialSchema.parse({
       id: row.id,
       title: row.title,
