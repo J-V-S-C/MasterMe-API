@@ -9,27 +9,52 @@ import { AppError, NotFoundError } from './errors'
 export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 const allowed = new Map([['application/pdf', 'PDF'], ['text/plain', 'TXT'], ['text/markdown', 'MARKDOWN'], ['text/x-markdown', 'MARKDOWN']])
 
-export type ProcessingFailure = { retryable: boolean; message: string; code: 'AI_QUOTA_EXHAUSTED' | 'EXTRACTION_FAILED' }
+export type ProcessingFailure = {
+  retryable: boolean
+  retryDelaySeconds: number
+  message: string
+  code: 'AI_QUOTA_EXHAUSTED' | 'AI_RATE_LIMITED' | 'EXTRACTION_FAILED'
+}
+
+const errorChainDetails = (error: unknown): string => {
+  const messages: string[] = []
+  let current: unknown = error
+  for (let depth = 0; current && depth < 6; depth += 1) {
+    messages.push(String(current))
+    current = current instanceof Error ? current.cause : undefined
+  }
+  return messages.join(' | ').toLowerCase()
+}
 
 export const classifyProcessingFailure = (error: unknown): ProcessingFailure => {
-  const details = String(error).toLowerCase()
-  const quotaExhausted = details.includes('quota exceeded') || details.includes('free_tier_requests')
-  if (quotaExhausted) return {
+  const details = errorChainDetails(error)
+  const dailyQuotaExhausted = details.includes('free_tier_requests') || details.includes('requests per day') || details.includes('daily quota') || details.includes(' rpd ')
+  if (dailyQuotaExhausted) return {
     retryable: false,
+    retryDelaySeconds: 0,
     message: 'O limite diário do provedor de IA foi atingido. Aguarde a renovação da cota ou revise a configuração da API.',
     code: 'AI_QUOTA_EXHAUSTED',
   }
+  const temporaryRateLimit = details.includes('429') || details.includes('resource_exhausted') || details.includes('input_token_count') || details.includes('tokens per minute')
+  if (temporaryRateLimit) return {
+    retryable: true,
+    retryDelaySeconds: 75,
+    message: 'O limite temporário de tokens do provedor de IA foi atingido. A extração será retomada após a renovação da janela.',
+    code: 'AI_RATE_LIMITED',
+  }
   if (details.includes('availability exhausted') || details.includes('503') || details.includes('expected object, received null')) return {
     retryable: true,
+    retryDelaySeconds: 75,
     message: 'Os modelos Gemini estão indisponíveis ou retornaram uma resposta inválida. Tentaremos novamente em breve.',
     code: 'EXTRACTION_FAILED',
   }
   if (details.includes('unable to connect') || details.includes('fetch failed') || details.includes('network')) return {
     retryable: true,
+    retryDelaySeconds: 45,
     message: 'A conexão com o provedor de IA foi interrompida. Tentaremos novamente em breve.',
     code: 'EXTRACTION_FAILED',
   }
-  return { retryable: false, message: 'Não foi possível extrair os conceitos deste material. Revise o erro e tente novamente manualmente.', code: 'EXTRACTION_FAILED' }
+  return { retryable: false, retryDelaySeconds: 0, message: 'Não foi possível extrair os conceitos deste material. Revise o erro e tente novamente manualmente.', code: 'EXTRACTION_FAILED' }
 }
 
 /** Temporary MVP storage. Replace this adapter with object storage before production or multi-instance deployment. */
@@ -112,11 +137,12 @@ export class ProcessingWorker {
     } catch (error) {
       if (!(await this.isActive(job.id))) return true
       const failure = classifyProcessingFailure(error)
-      const retried = await this.pool.query("UPDATE processing_jobs SET status=CASE WHEN $3::boolean OR attempts>=3 THEN 'FAILED' ELSE 'PENDING' END,run_after=now()+interval '30 seconds',last_error=$2,updated_at=now() WHERE id=$1 AND status='PROCESSING' RETURNING status", [job.id, String(error), !failure.retryable])
+      const retried = await this.pool.query("UPDATE processing_jobs SET status=CASE WHEN $3::boolean OR attempts>=3 THEN 'FAILED' ELSE 'PENDING' END,run_after=now()+($4::int * GREATEST(attempts,1) * interval '1 second'),last_error=$2,updated_at=now() WHERE id=$1 AND status='PROCESSING' RETURNING status,GREATEST(0,CEIL(EXTRACT(EPOCH FROM (run_after-now()))))::int AS \"retryAfterSeconds\"", [job.id, String(error), !failure.retryable, failure.retryDelaySeconds])
       const status = retried.rows[0]?.status === 'FAILED' ? 'FAILED' : 'PENDING'
+      const retryAfterSeconds = status === 'PENDING' ? Number(retried.rows[0]?.retryAfterSeconds ?? failure.retryDelaySeconds) : null
       await this.pool.query('UPDATE study_materials SET processing_status=$2,processing_error=$3 WHERE id=$1', [job.material_id, status, failure.message])
-      console.error(JSON.stringify({ level: 'error', operation: 'extract-material', materialId: job.material_id, jobId: job.id, code: failure.code, error: String(error) }))
-      await this.ingestion.event(status === 'FAILED' ? 'material.failed' : 'material.queued', { materialId: job.material_id, message: failure.message, code: failure.code }, job.owner_id)
+      console.error(JSON.stringify({ level: 'error', operation: 'extract-material', materialId: job.material_id, jobId: job.id, code: failure.code, retryAfterSeconds, error: String(error) }))
+      await this.ingestion.event(status === 'FAILED' ? 'material.failed' : 'material.queued', { materialId: job.material_id, message: failure.message, code: failure.code, retryAfterSeconds }, job.owner_id)
     } finally { clearInterval(heartbeat) }
     return true
   }
