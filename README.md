@@ -118,3 +118,7 @@ depois de migrations, atualização dos containers e health check bem-sucedidos.
 - Arquivos brutos ficam em volume local; produção deve usar object storage.
 
 As fontes de verdade de produto são `../scope.md` e `../prd.md`; prioridades ficam em `../backlog.md` e os guardrails de engenharia em `../agents.md`.
+
+## Como contribuir
+
+Use branches tipadas e promova mudanças por PR de `development` para `main`. O fluxo completo está em [CONTRIBUTING.md](CONTRIBUTING.md).

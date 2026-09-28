@@ -91,3 +91,7 @@ Os dados permanecem no Supabase e os uploads no volume Docker. Antes de mudança
 ## Alternativa se a OCI estiver sem capacidade
 
 Use uma VM que já exista e compartilhe-a com os demais apps por meio do proxy reverso. O Compose limita a API a 384 MiB, o worker a 256 MiB e processa uma extração por vez. Configure 1–2 GB de swap na VM para absorver picos do parser de PDF. Plataformas que suspendem o container não são adequadas para este worker, SSE e uploads locais sem antes migrar uploads para object storage.
+
+## Promoção entre ambientes
+
+O desenvolvimento segue `branch tipada → development → main → produção`. Consulte [CONTRIBUTING.md](CONTRIBUTING.md) para nomes de branches, regras de PR e checks obrigatórios. Somente merges em `main` disparam este deploy para a OCI.

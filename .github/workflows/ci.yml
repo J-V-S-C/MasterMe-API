@@ -2,8 +2,9 @@ name: CI
 
 on:
   pull_request:
+    branches: [development, main]
   push:
-    branches: [main]
+    branches: [development, main]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -13,6 +14,24 @@ permissions:
   contents: read
 
 jobs:
+  branch-policy:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate pull request flow
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          if [ "$BASE_BRANCH" = "main" ]; then
+            test "$HEAD_BRANCH" = "development" || { echo "PRs para main devem vir de development."; exit 1; }
+          elif [ "$BASE_BRANCH" = "development" ]; then
+            case "$HEAD_BRANCH" in
+              feat/*|fix/*|docs/*|chore/*|refactor/*|test/*|ci/*|perf/*|hotfix/*) ;;
+              *) echo "Use uma branch feat/*, fix/*, docs/*, chore/*, refactor/*, test/*, ci/*, perf/* ou hotfix/*."; exit 1 ;;
+            esac
+          fi
+
   validate:
     runs-on: ubuntu-latest
     steps:
