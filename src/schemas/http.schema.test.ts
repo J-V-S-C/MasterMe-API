@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { ConfidenceBodySchema, CreatePracticeProjectBodySchema } from './http.schema';
+import { MaterialSchema, MAX_MATERIAL_LENGTH } from '../domain/masterme';
+import { ConfidenceBodySchema, CreateMaterialBodySchema, CreatePracticeProjectBodySchema } from './http.schema';
 
 const id = '11111111-1111-4111-8111-111111111111';
 
@@ -9,4 +10,14 @@ describe('schemas HTTP da prática', () => {
   test('overview rejeita seleção', () => expect(CreatePracticeProjectBodySchema.safeParse({ focusMode: 'OVERVIEW', conceptIds: [id] }).success).toBeFalse());
   test('manual exige seleção', () => expect(CreatePracticeProjectBodySchema.safeParse({ focusMode: 'MANUAL' }).success).toBeFalse());
   test('rejeita IDs duplicados', () => expect(CreatePracticeProjectBodySchema.safeParse({ focusMode: 'MANUAL', conceptIds: [id, id] }).success).toBeFalse());
+});
+
+describe('limites de material', () => {
+  const longContent = 'a'.repeat(MAX_MATERIAL_LENGTH + 1);
+
+  test('rejeita texto digitado acima do limite da API', () =>
+    expect(CreateMaterialBodySchema.safeParse({ title: 'Material', content: longContent }).success).toBeFalse());
+
+  test('aceita conteúdo persistido maior quando veio de upload', () =>
+    expect(MaterialSchema.safeParse({ id, title: 'Material', content: longContent, createdAt: new Date().toISOString() }).success).toBeTrue());
 });

@@ -89,7 +89,7 @@ export const openApiDocument = {
     },
     '/api/concepts/{id}/sessions': {
       post: {
-        summary: 'Inicia sessão socrática',
+        summary: 'Inicia sessão de estudo guiado',
         parameters: [
           {
             name: 'id',

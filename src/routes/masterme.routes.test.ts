@@ -41,7 +41,7 @@ const withServer = async (run: (baseUrl: string) => Promise<void>, repository: M
   }
 }
 
-describe('rotas socráticas', () => {
+describe('rotas de estudo guiado', () => {
   test.each([{ rows: [] }, { rows: [
     { id: '11111111-1111-4111-8111-111111111111', title: 'Primeiro', content: 'Primeiro material', created_at: new Date('2026-01-01T00:00:00.000Z') },
     { id: '22222222-2222-4222-8222-222222222222', title: 'Segundo', content: 'Segundo material', created_at: new Date('2026-01-02T00:00:00.000Z') },

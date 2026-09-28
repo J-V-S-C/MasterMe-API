@@ -59,7 +59,8 @@ export class IngestionService {
     try { content = await textFromFile(file.mimetype, file.buffer) } catch { throw new AppError(400, 'INVALID_FILE', 'Não foi possível ler o arquivo. PDFs escaneados sem texto não são suportados.') }
     if (content.length < 20) throw new AppError(400, 'INVALID_FILE', 'O arquivo não possui texto legível suficiente. Envie um PDF com camada de texto.')
     const id = randomUUID(); const storageKey = await this.storage.save(id, file.originalname, file.buffer)
-    const materialTitle = title?.trim() || file.originalname.replace(/\.[^.]+$/, '') || 'Material importado'
+    const requestedTitle = title?.trim() || file.originalname.replace(/\.[^.]+$/, '').trim() || 'Material importado'
+    const materialTitle = requestedTitle.slice(0, 160)
     await this.pool.query('INSERT INTO study_materials (id,title,content,created_at,source_type,original_filename,mime_type,storage_key,processing_status,owner_id) VALUES ($1,$2,$3,now(),$4,$5,$6,$7,$8,$9)', [id, materialTitle, content, kind, file.originalname, file.mimetype, storageKey, 'PENDING', ownerId])
     await this.pool.query('INSERT INTO processing_jobs (id,material_id,type) VALUES ($1,$2,$3)', [randomUUID(), id, 'EXTRACT'])
     await this.event('material.queued', { materialId: id }, ownerId)

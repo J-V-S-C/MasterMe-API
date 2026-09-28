@@ -8,7 +8,7 @@ export type FragmentKind = z.infer<typeof FragmentKindSchema>;
 export const MaterialSchema = z.object({
   id: z.uuid(),
   title: z.string().min(1).max(160),
-  content: z.string().min(1).max(MAX_MATERIAL_LENGTH),
+  content: z.string().min(1),
   createdAt: z.string().datetime(),
 });
 export type StudyMaterial = z.infer<typeof MaterialSchema>;
