@@ -7,6 +7,7 @@ services:
     pids_limit: 256
     environment: &backend-environment
       PORT: 3333
+      NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL:?Configure a Session pooler URL do Supabase}
       SUPABASE_URL: ${SUPABASE_URL:?Configure SUPABASE_URL}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-3}
@@ -15,11 +16,19 @@ services:
       GEMINI_MODEL_FALLBACKS: ${GEMINI_MODEL_FALLBACKS:-gemini-3.5-flash}
       EXTRACTION_MAX_CONCEPTS: ${EXTRACTION_MAX_CONCEPTS:-12}
       EXTRACTION_CONCURRENCY: ${EXTRACTION_CONCURRENCY:-1}
+      AI_DAILY_REQUEST_LIMIT: ${AI_DAILY_REQUEST_LIMIT:-100}
       MATERIAL_STORAGE_PATH: /app/data/materials
     ports:
       - "127.0.0.1:3333:3333"
     volumes:
       - material_uploads:/app/data/materials
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3333/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 5s
@@ -36,6 +45,13 @@ services:
     environment: *backend-environment
     volumes:
       - material_uploads:/app/data/materials
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   material_uploads:

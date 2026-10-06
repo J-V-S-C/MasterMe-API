@@ -5,6 +5,9 @@ export type AiUsageSummary = {
   totalRequests: number;
   totalInputTokens: number;
   totalOutputTokens: number;
+  dailyLimit: number;
+  remainingRequests: number;
+  resetsAt: string;
   byModel: Array<{ model: string; requests: number; successes: number; inputTokens: number; outputTokens: number }>;
   byOperation: Array<{ operation: string; requests: number; successes: number; inputTokens: number; outputTokens: number }>;
 };
@@ -38,8 +41,9 @@ export interface MasterMeRepository {
   saveEvaluation(requestHash: string, evaluation: Evaluation): Awaitable<void>;
   findIsomorphicProblem(inputHash: string): Awaitable<IsomorphicProblem | undefined>;
   saveIsomorphicProblem(materialId: string, inputHash: string, problem: IsomorphicProblem): Awaitable<void>;
-  recordAiUsage(event: AiUsageEvent): Awaitable<void>;
-  getAiUsageToday(): Awaitable<AiUsageSummary>;
+  consumeAiRequest(ownerId: string, dailyLimit: number): Awaitable<number>;
+  recordAiUsage(event: AiUsageEvent, ownerId: string): Awaitable<void>;
+  getAiUsageToday(ownerId: string, dailyLimit: number): Awaitable<AiUsageSummary>;
 }
 
 export class InMemoryMasterMeRepository implements MasterMeRepository {
@@ -51,7 +55,8 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
   private readonly confidences = new Map<string, ConceptConfidence>();
   private readonly practiceProjects = new Map<string, PracticeProject>();
   private readonly practiceHashes = new Map<string, string>();
-  private readonly aiUsage: Array<AiUsageEvent & { createdAt: Date }> = [];
+  private readonly aiUsage: Array<AiUsageEvent & { ownerId: string; createdAt: Date }> = [];
+  private readonly dailyUsage = new Map<string, number>();
   private readonly materialOwners = new Map<string, string>();
 
   public saveMaterial(material: StudyMaterial, ownerId: string): void {
@@ -125,10 +130,19 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
   public saveEvaluation(requestHash: string, evaluation: Evaluation): void { this.evaluations.set(requestHash, evaluation) }
   public findIsomorphicProblem(inputHash: string): IsomorphicProblem | undefined { return this.isomorphicProblems.get(inputHash) }
   public saveIsomorphicProblem(_materialId: string, inputHash: string, problem: IsomorphicProblem): void { this.isomorphicProblems.set(inputHash, problem) }
-  public recordAiUsage(event: AiUsageEvent): void { this.aiUsage.push({ ...event, createdAt: new Date() }) }
-  public getAiUsageToday(): AiUsageSummary {
+  public consumeAiRequest(ownerId: string, dailyLimit: number): number {
+    const key = `${ownerId}:${new Date().toISOString().slice(0, 10)}`
+    const used = this.dailyUsage.get(key) ?? 0
+    if (used >= dailyLimit) return dailyLimit + 1
+    this.dailyUsage.set(key, used + 1)
+    return used + 1
+  }
+  public recordAiUsage(event: AiUsageEvent, ownerId: string): void { this.aiUsage.push({ ...event, ownerId, createdAt: new Date() }) }
+  public getAiUsageToday(ownerId: string, dailyLimit: number): AiUsageSummary {
     const start = new Date(); start.setHours(0, 0, 0, 0)
-    const events = this.aiUsage.filter((event) => event.createdAt >= start)
+    const events = this.aiUsage.filter((event) => event.ownerId === ownerId && event.createdAt >= start)
+    const used = this.dailyUsage.get(`${ownerId}:${new Date().toISOString().slice(0, 10)}`) ?? 0
+    const resetsAt = new Date(); resetsAt.setUTCHours(24, 0, 0, 0)
     const summarize = (selected: typeof events) => ({
       requests: selected.length,
       successes: selected.filter((event) => event.success).length,
@@ -141,6 +155,9 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
       totalRequests: events.length,
       totalInputTokens: events.reduce((total, event) => total + (event.inputTokens ?? 0), 0),
       totalOutputTokens: events.reduce((total, event) => total + (event.outputTokens ?? 0), 0),
+      dailyLimit,
+      remainingRequests: Math.max(0, dailyLimit - used),
+      resetsAt: resetsAt.toISOString(),
       byModel,
       byOperation,
     }

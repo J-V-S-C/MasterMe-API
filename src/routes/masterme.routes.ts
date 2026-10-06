@@ -15,12 +15,15 @@ import type { IngestionService } from '../services/ingestion.service';
 import type { Pool } from 'pg';
 import { authenticate } from '../middleware/authenticate';
 import { authorizeResource } from '../middleware/authorize-resource';
+import { bindAiUsageOwner } from '../middleware/ai-usage-context';
+import { userMutationRateLimit } from '../middleware/rate-limit';
 
-export const createMasterMeRouter = (service: MasterMeService, ingestion?: IngestionService, pool?: Pool): Router => {
+export const createMasterMeRouter = (service: MasterMeService, ingestion?: IngestionService, pool?: Pool, aiDailyLimit = 100): Router => {
   const router = Router();
-  const controller = new MasterMeController(service);
+  const controller = new MasterMeController(service, aiDailyLimit);
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
-  if (pool) router.use(authenticate, authorizeResource(pool));
+  if (pool) router.use(authenticate, bindAiUsageOwner, authorizeResource(pool));
+  router.use((req, res, next) => req.method === 'GET' || req.method === 'HEAD' ? next() : userMutationRateLimit(req, res, next));
   if (ingestion) {
     const files = new IngestionController(ingestion);
     router.get('/events', files.events);
@@ -39,6 +42,7 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
         'GET /docs',
         'POST /api/materials',
         'GET /api/materials',
+        'GET /api/ai-usage/today',
         'GET /api/materials/:id',
         'POST /api/materials/:id/extract',
         'GET /api/materials/:id/concepts',
@@ -68,6 +72,7 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
     controller.createMaterial,
   );
   router.get('/materials', controller.getAllMaterials);
+  router.get('/ai-usage/today', controller.getAiUsageToday);
   router.get(
     '/materials/:id',
     validateRequest({ params: IdParamsSchema }),

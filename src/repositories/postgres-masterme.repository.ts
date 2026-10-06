@@ -60,17 +60,32 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
   public async saveEvaluation(requestHash: string, evaluation: Evaluation): Promise<void> { await this.pool.query('INSERT INTO ai_evaluation_cache (request_hash,evaluation) VALUES ($1,$2) ON CONFLICT (request_hash) DO NOTHING', [requestHash, JSON.stringify(evaluation)]) }
   public async findIsomorphicProblem(inputHash: string): Promise<IsomorphicProblem | undefined> { const result = await this.pool.query("SELECT payload FROM generated_artifacts WHERE kind='ISOMORPHIC_PROBLEM' AND input_hash=$1", [inputHash]); return result.rows[0] ? IsomorphicProblemSchema.parse(result.rows[0].payload) : undefined }
   public async saveIsomorphicProblem(materialId: string, inputHash: string, problem: IsomorphicProblem): Promise<void> { await this.pool.query("INSERT INTO generated_artifacts (material_id,kind,input_hash,payload) VALUES ($1,'ISOMORPHIC_PROBLEM',$2,$3) ON CONFLICT (kind,input_hash) DO UPDATE SET payload=EXCLUDED.payload,created_at=now()", [materialId, inputHash, JSON.stringify(problem)]) }
-  public async recordAiUsage(event: AiUsageEvent): Promise<void> { await this.pool.query('INSERT INTO ai_usage_events (operation,model,success,input_tokens,output_tokens,error_code) VALUES ($1,$2,$3,$4,$5,$6)', [event.operation,event.model,event.success,event.inputTokens,event.outputTokens,event.errorCode]) }
-  public async getAiUsageToday(): Promise<AiUsageSummary> {
-    const [total, models, operations] = await Promise.all([
-      this.pool.query("SELECT count(*)::int AS requests,coalesce(sum(input_tokens),0)::int AS input_tokens,coalesce(sum(output_tokens),0)::int AS output_tokens FROM ai_usage_events WHERE created_at >= date_trunc('day',now())"),
-      this.pool.query("SELECT model,count(*)::int AS requests,count(*) FILTER (WHERE success)::int AS successes,coalesce(sum(input_tokens),0)::int AS input_tokens,coalesce(sum(output_tokens),0)::int AS output_tokens FROM ai_usage_events WHERE created_at >= date_trunc('day',now()) GROUP BY model ORDER BY model"),
-      this.pool.query("SELECT operation,count(*)::int AS requests,count(*) FILTER (WHERE success)::int AS successes,coalesce(sum(input_tokens),0)::int AS input_tokens,coalesce(sum(output_tokens),0)::int AS output_tokens FROM ai_usage_events WHERE created_at >= date_trunc('day',now()) GROUP BY operation ORDER BY operation"),
+  public async consumeAiRequest(ownerId: string, dailyLimit: number): Promise<number> {
+    const result = await this.pool.query(
+      `INSERT INTO ai_daily_quotas (owner_id,usage_date,requests) VALUES ($1,CURRENT_DATE,1)
+       ON CONFLICT (owner_id,usage_date) DO UPDATE SET requests=ai_daily_quotas.requests+1
+       WHERE ai_daily_quotas.requests < $2 RETURNING requests`,
+      [ownerId, dailyLimit],
+    )
+    if (result.rows[0]) return Number(result.rows[0].requests)
+    const current = await this.pool.query('SELECT requests FROM ai_daily_quotas WHERE owner_id=$1 AND usage_date=CURRENT_DATE', [ownerId])
+    return Math.max(dailyLimit + 1, Number(current.rows[0]?.requests ?? dailyLimit) + 1)
+  }
+  public async recordAiUsage(event: AiUsageEvent, ownerId: string): Promise<void> { await this.pool.query('INSERT INTO ai_usage_events (operation,model,success,input_tokens,output_tokens,error_code,owner_id) VALUES ($1,$2,$3,$4,$5,$6,$7)', [event.operation,event.model,event.success,event.inputTokens,event.outputTokens,event.errorCode,ownerId]) }
+  public async getAiUsageToday(ownerId: string, dailyLimit: number): Promise<AiUsageSummary> {
+    const [total, models, operations, quota] = await Promise.all([
+      this.pool.query("SELECT count(*)::int AS requests,coalesce(sum(input_tokens),0)::int AS input_tokens,coalesce(sum(output_tokens),0)::int AS output_tokens FROM ai_usage_events WHERE owner_id=$1 AND created_at >= date_trunc('day',now())", [ownerId]),
+      this.pool.query("SELECT model,count(*)::int AS requests,count(*) FILTER (WHERE success)::int AS successes,coalesce(sum(input_tokens),0)::int AS input_tokens,coalesce(sum(output_tokens),0)::int AS output_tokens FROM ai_usage_events WHERE owner_id=$1 AND created_at >= date_trunc('day',now()) GROUP BY model ORDER BY model", [ownerId]),
+      this.pool.query("SELECT operation,count(*)::int AS requests,count(*) FILTER (WHERE success)::int AS successes,coalesce(sum(input_tokens),0)::int AS input_tokens,coalesce(sum(output_tokens),0)::int AS output_tokens FROM ai_usage_events WHERE owner_id=$1 AND created_at >= date_trunc('day',now()) GROUP BY operation ORDER BY operation", [ownerId]),
+      this.pool.query("SELECT coalesce((SELECT requests FROM ai_daily_quotas WHERE owner_id=$1 AND usage_date=CURRENT_DATE),0)::int AS used,(date_trunc('day',now())+interval '1 day') AS resets_at", [ownerId]),
     ])
     return {
       totalRequests: Number(total.rows[0]?.requests ?? 0),
       totalInputTokens: Number(total.rows[0]?.input_tokens ?? 0),
       totalOutputTokens: Number(total.rows[0]?.output_tokens ?? 0),
+      dailyLimit,
+      remainingRequests: Math.max(0, dailyLimit - Number(quota.rows[0]?.used ?? 0)),
+      resetsAt: DatabaseDateSchema.parse(quota.rows[0]?.resets_at).toISOString(),
       byModel: models.rows.map((row) => ({ model: row.model, requests: row.requests, successes: row.successes, inputTokens: row.input_tokens, outputTokens: row.output_tokens })),
       byOperation: operations.rows.map((row) => ({ operation: row.operation, requests: row.requests, successes: row.successes, inputTokens: row.input_tokens, outputTokens: row.output_tokens })),
     }
