@@ -16,6 +16,22 @@ class FakeLlm implements MasterMeLlmGateway {
       { name: 'Injeção', description: 'Fornece dependências externamente.', kind: 'NODE', sourceExcerpt: 'Dependências são fornecidas externamente.', fundamentalPremises: ['O consumidor não constrói detalhes.'], edgeCases: ['Existem dependências demais.'], edgeCaseQuestion: 'Como limitar dependências excessivas?', studyQuestion: { text: 'Como o fornecimento externo reduz acoplamento?', targetPremise: 'O consumidor não constrói detalhes.', expectedReasoningSteps: ['Identificar o consumidor'] }, prerequisiteNames: ['Abstrações'] },
     ] };
   }
+  public async localizeKnowledge(concepts: Concept[]) {
+    return { fragments: concepts.map((concept) => ({
+      id: concept.id,
+      name: `${concept.name} localizado`,
+      description: 'Descrição localizada.',
+      fundamentalPremises: ['Premissa localizada.'],
+      edgeCases: ['Condição-limite localizada.'],
+      edgeCaseQuestion: 'Como a condição-limite altera o mecanismo e qual premissa deve permanecer?',
+      questionText: 'Como o mecanismo preserva a premissa quando os detalhes mudam?',
+      targetPremise: 'A premissa precisa permanecer.',
+      expectedReasoningSteps: ['Identificar a premissa.', 'Explicar o mecanismo.'],
+      learningObjective: 'Explicar o mecanismo sem depender de detalhes.',
+      requiredIdeas: ['Separação entre regra e detalhe.', 'Efeito causal da separação.'],
+      commonMisconceptions: ['Confundir abstração com camada adicional.'],
+    })) };
+  }
   public async evaluateAnswer(_concept: Concept, _question: MasterMeQuestion, _answer: string): Promise<Evaluation> { return this.initialResult; }
   public async generateEdgeCaseChallenge(_concept: Concept): Promise<EdgeCaseChallenge> { return { scenario: 'Legado', edgeCaseTested: 'Limite', question: 'O que ocorre no limite?' }; }
   public async evaluateEdgeCaseAnswer(_concept: Concept, _challenge: EdgeCaseChallenge, _answer: string): Promise<Evaluation> { return this.initialResult; }
@@ -81,5 +97,17 @@ describe('MasterMeService — jornada livre', () => {
     expect((await service.saveConfidence(concepts[0]!.id, 4)).value).toBe(4);
     await service.deleteConfidence(concepts[0]!.id);
     expect(await service.getConfidences(material.id)).toEqual([]);
+  });
+
+  test('localiza conteúdo gerado sem alterar trecho-fonte, relações ou IDs', async () => {
+    const { service, material, concepts } = await setup();
+    const localized = await service.localizeMaterial(material.id, 'en-US');
+    expect(localized[0]).toMatchObject({
+      id: concepts[0]!.id,
+      sourceExcerpt: concepts[0]!.sourceExcerpt,
+      prerequisiteIds: concepts[0]!.prerequisiteIds,
+      generatedLocale: 'en-US',
+    });
+    expect((await service.getMaterial(material.id)).locale).toBe('en-US');
   });
 });

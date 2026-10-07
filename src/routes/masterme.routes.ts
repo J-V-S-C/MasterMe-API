@@ -7,6 +7,7 @@ import {
   CreatePracticeProjectBodySchema,
   CreateMaterialBodySchema,
   IdParamsSchema,
+  LocaleBodySchema,
 } from '../schemas/http.schema';
 import type { MasterMeService } from '../services/masterme.service';
 import multer from 'multer';
@@ -45,6 +46,7 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
         'GET /api/materials/:id',
         'POST /api/materials/:id/extract',
         'GET /api/materials/:id/concepts',
+        'POST /api/materials/:id/localize',
         'GET /api/materials/:id/knowledge-map',
         'POST /api/concepts/:id/sessions',
         'GET /api/sessions/:id',
@@ -87,6 +89,12 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
     '/materials/:id/concepts',
     validateRequest({ params: IdParamsSchema }),
     controller.getConcepts,
+  );
+  router.post(
+    '/materials/:id/localize',
+    aiBurstRateLimit,
+    validateRequest({ params: IdParamsSchema, body: LocaleBodySchema }),
+    controller.localizeMaterial,
   );
   router.get(
     '/materials/:id/knowledge-map',

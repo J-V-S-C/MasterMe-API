@@ -10,6 +10,7 @@ export type AiOperation =
   | 'EDGE_CASE_GENERATION'
   | 'EDGE_CASE_EVALUATION'
   | 'PRACTICE_PROJECT'
+  | 'LOCALIZATION'
   | 'STRESS_EVALUATION'
   | 'ISOMORPHIC_PROBLEM';
 export type AiUsageEvent = {

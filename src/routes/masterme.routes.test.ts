@@ -20,6 +20,7 @@ import { MasterMeService } from '../services/masterme.service'
 
 class EmptyFakeLlm implements MasterMeLlmGateway {
   public async extractKnowledge(_material: StudyMaterial): Promise<ExtractedKnowledge> { return { fragments: [] } }
+  public async localizeKnowledge() { return { fragments: [] } }
   public async generateQuestion(_concept: Concept): Promise<MasterMeQuestion> { throw new Error('Não usado neste teste.') }
   public async evaluateAnswer(_concept: Concept, _question: MasterMeQuestion, _answer: string): Promise<Evaluation> { throw new Error('Não usado neste teste.') }
   public async generateEdgeCaseChallenge(_concept: Concept): Promise<EdgeCaseChallenge> { throw new Error('Não usado neste teste.') }
@@ -53,7 +54,7 @@ describe('rotas de estudo guiado', () => {
         const response = await fetch(`${baseUrl}/api/materials`)
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual({ data: rows.map((row) => ({
-          id: row.id, title: row.title, content: row.content, createdAt: row.created_at.toISOString(),
+          id: row.id, title: row.title, content: row.content, locale: 'pt-BR', createdAt: row.created_at.toISOString(),
         })) })
         expect(query).toHaveBeenCalledTimes(1)
       }, new PostgresMasterMeRepository(pool))

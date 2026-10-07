@@ -2,6 +2,11 @@ import { z } from 'zod';
 
 export const MAX_MATERIAL_LENGTH = 100_000;
 
+export const SupportedLocaleSchema = z.enum(['pt-BR', 'en-US']);
+export type SupportedLocale = z.infer<typeof SupportedLocaleSchema>;
+export const GeneratedLocaleSchema = z.enum(['pt-BR', 'en-US', 'und']);
+export type GeneratedLocale = z.infer<typeof GeneratedLocaleSchema>;
+
 export const FragmentKindSchema = z.enum(['AXIOM', 'NODE', 'EDGE']);
 export type FragmentKind = z.infer<typeof FragmentKindSchema>;
 
@@ -9,6 +14,7 @@ export const MaterialSchema = z.object({
   id: z.uuid(),
   title: z.string().min(1).max(160),
   content: z.string().min(1),
+  locale: SupportedLocaleSchema.default('pt-BR'),
   createdAt: z.string().datetime(),
 });
 export type StudyMaterial = z.infer<typeof MaterialSchema>;
@@ -17,6 +23,9 @@ export const QuestionSchema = z.object({
   text: z.string().min(1),
   targetPremise: z.string().min(1),
   expectedReasoningSteps: z.array(z.string().min(1)).min(1),
+  learningObjective: z.string().min(1).optional(),
+  requiredIdeas: z.array(z.string().min(1)).min(1).optional(),
+  commonMisconceptions: z.array(z.string().min(1)).optional(),
 });
 export type MasterMeQuestion = z.infer<typeof QuestionSchema>;
 
@@ -31,6 +40,7 @@ export const ConceptSchema = z.object({
   edgeCases: z.array(z.string().min(1)).min(1),
   edgeCaseQuestion: z.string().min(1).optional(),
   studyQuestion: QuestionSchema.optional(),
+  generatedLocale: GeneratedLocaleSchema.default('pt-BR'),
   prerequisiteIds: z.array(z.uuid()),
   nextIds: z.array(z.uuid()),
 });
@@ -48,6 +58,9 @@ export const EvaluationSchema = z.object({
   missingPremises: z.array(z.string()),
   logicalBreak: z.string().nullable(),
   feedback: z.string().min(1),
+  strength: z.string().min(1).optional(),
+  gap: z.string().min(1).nullable().optional(),
+  nextAction: z.string().min(1).optional(),
 });
 export type Evaluation = z.infer<typeof EvaluationSchema>;
 
@@ -116,6 +129,8 @@ export const ConceptPerformanceSchema = z.object({
   totalInitialAttempts: z.number().int().nonnegative(),
   failedInitialAttempts: z.number().int().nonnegative(),
   weakness: z.number().min(0).max(1).nullable(),
+  latestStatus: EvaluationStatusSchema.nullable().default(null),
+  performanceNeed: z.number().min(0).max(1).nullable().default(null),
 });
 export type ConceptPerformance = z.infer<typeof ConceptPerformanceSchema>;
 
@@ -131,11 +146,11 @@ export type PrioritizedConcept = z.infer<typeof PrioritizedConceptSchema>;
 
 export const PracticeProjectContentSchema = z.object({
   title: z.string().min(1).max(160),
-  context: z.string().min(1).max(4_000),
-  goal: z.string().min(1).max(2_000),
-  deliverables: z.array(z.string().min(1).max(500)).min(1).max(8),
-  constraints: z.array(z.string().min(1).max(500)).min(1).max(8),
-  firstStep: z.string().min(1).max(1_000),
+  context: z.string().min(1).max(500),
+  goal: z.string().min(1).max(300),
+  deliverables: z.array(z.string().min(1).max(240)).min(1).max(4),
+  constraints: z.array(z.string().min(1).max(240)).min(1).max(4),
+  firstStep: z.string().min(1).max(300),
 });
 export type PracticeProjectContent = z.infer<typeof PracticeProjectContentSchema>;
 

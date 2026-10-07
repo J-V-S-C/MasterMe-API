@@ -2,10 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import type { Concept, ConceptConfidence, ConceptPerformance } from '../domain/masterme';
 import { PracticeFocusService } from './practice-focus.service';
 
-const concept = (id: string, name: string): Concept => ({ id, materialId: '00000000-0000-4000-8000-000000000000', name, description: name, kind: 'NODE', sourceExcerpt: name, fundamentalPremises: ['p'], edgeCases: ['e'], studyQuestion: { text: 'q', targetPremise: 'p', expectedReasoningSteps: ['r'] }, prerequisiteIds: [], nextIds: [] });
+const concept = (id: string, name: string): Concept => ({ id, materialId: '00000000-0000-4000-8000-000000000000', name, description: name, kind: 'NODE', sourceExcerpt: name, fundamentalPremises: ['p'], edgeCases: ['e'], studyQuestion: { text: 'q', targetPremise: 'p', expectedReasoningSteps: ['r'] }, generatedLocale: 'pt-BR', prerequisiteIds: [], nextIds: [] });
 const concepts = [concept('11111111-1111-4111-8111-111111111111', 'Beta'), concept('22222222-2222-4222-8222-222222222222', 'Alfa')];
 const confidence: ConceptConfidence[] = concepts.map((item, index) => ({ conceptId: item.id, value: index ? 4 : 1, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }));
-const performance: ConceptPerformance[] = concepts.map((item, index) => ({ conceptId: item.id, passedAttempts: index, logicalBreaks: index ? 1 : 0, incompleteAttempts: 0, totalInitialAttempts: index ? 2 : 0, failedInitialAttempts: index, weakness: index ? 0.5 : null }));
+const performance: ConceptPerformance[] = concepts.map((item, index) => ({ conceptId: item.id, passedAttempts: index, logicalBreaks: index ? 1 : 0, incompleteAttempts: 0, totalInitialAttempts: index ? 2 : 0, failedInitialAttempts: index, weakness: index ? 0.5 : null, latestStatus: index ? 'PASSED' : null, performanceNeed: index ? 0 : null }));
 
 describe('PracticeFocusService', () => {
   test('ordena overview e manual por nome', () => expect(new PracticeFocusService().select('OVERVIEW', concepts, undefined, [], []).priorities.map(({ name }) => name)).toEqual(['Alfa', 'Beta']));
