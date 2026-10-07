@@ -186,8 +186,8 @@ export const openApiDocument = {
     },
     '/api/ai-usage/today': {
       get: {
-        summary: 'Uso local de IA registrado hoje, agrupado por modelo e operação',
-        responses: { '200': { description: 'Contagem local de chamadas à IA' } },
+        summary: 'Uso de IA do usuário autenticado, quota restante e renovação',
+        responses: { '200': { description: 'Contagem por operação/modelo e quota diária interna' } },
       },
     },
   },

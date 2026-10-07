@@ -2,12 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
 import type { Environment } from './environment';
 import { GeminiStructuredClient, type AiUsageEvent } from './llm';
+import { withAiUsageOwner } from '../services/ai-usage-context';
 
 const environment = {
   GEMINI_API_KEY: 'test-key',
   MODEL_NAME: 'gemini-primary',
   GEMINI_MODEL_FALLBACKS: ['gemini-backup'],
   EXTRACTION_CONCURRENCY: 1,
+  AI_DAILY_REQUEST_LIMIT: 2,
 } as Environment;
 const schema = z.object({ value: z.string().min(1) });
 
@@ -33,10 +35,10 @@ describe('GeminiStructuredClient', () => {
     );
 
     expect(
-      await client.generateStructured(schema, 'prompt', {
+      await withAiUsageOwner('11111111-1111-4111-8111-111111111111', () => client.generateStructured(schema, 'prompt', {
         operation: 'INITIAL_EVALUATION',
         maxOutputTokens: 100,
-      }),
+      })),
     ).toEqual({ value: 'ok' });
     expect(calls).toEqual([
       {
@@ -87,10 +89,10 @@ describe('GeminiStructuredClient', () => {
     );
 
     expect(
-      await client.generateStructured(schema, 'prompt', {
+      await withAiUsageOwner('11111111-1111-4111-8111-111111111111', () => client.generateStructured(schema, 'prompt', {
         operation: 'EXTRACTION',
         maxOutputTokens: 100,
-      }),
+      })),
     ).toEqual({ value: 'ok' });
     expect(calls).toEqual(['gemini-primary', 'gemini-backup']);
     expect(usage.map((event) => [event.success, event.errorCode])).toEqual([
@@ -119,10 +121,10 @@ describe('GeminiStructuredClient', () => {
     });
 
     expect(
-      await client.generateStructured(nested, 'prompt', {
+      await withAiUsageOwner('11111111-1111-4111-8111-111111111111', () => client.generateStructured(nested, 'prompt', {
         operation: 'EXTRACTION',
         maxOutputTokens: 100,
-      }),
+      })),
     ).toEqual({ fragments: [{ name: 'A' }] });
     expect(sentSchema).toEqual({
       type: 'object',
@@ -138,5 +140,19 @@ describe('GeminiStructuredClient', () => {
       },
       required: ['fragments'],
     });
+  });
+
+  test('bloqueia a chamada antes do provedor quando a quota diária acabou', async () => {
+    let providerCalls = 0;
+    const generator = {
+      generateContent: async () => { providerCalls += 1; return { text: '{"value":"ok"}' }; },
+    } as unknown as ConstructorParameters<typeof GeminiStructuredClient>[2];
+    const client = new GeminiStructuredClient(environment, undefined, generator, async () => 3);
+
+    await expect(withAiUsageOwner('11111111-1111-4111-8111-111111111111', () => client.generateStructured(schema, 'prompt', {
+      operation: 'INITIAL_EVALUATION',
+      maxOutputTokens: 100,
+    }))).rejects.toMatchObject({ statusCode: 429, code: 'AI_DAILY_LIMIT_REACHED' });
+    expect(providerCalls).toBe(0);
   });
 });

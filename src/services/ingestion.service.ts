@@ -5,6 +5,7 @@ import { PDFParse } from 'pdf-parse'
 import type { Pool } from 'pg'
 import type { MasterMeService } from './masterme.service'
 import { AppError, NotFoundError } from './errors'
+import { withAiUsageOwner } from './ai-usage-context'
 
 export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 const allowed = new Map([['application/pdf', 'PDF'], ['text/plain', 'TXT'], ['text/markdown', 'MARKDOWN'], ['text/x-markdown', 'MARKDOWN']])
@@ -100,11 +101,11 @@ export class ProcessingWorker {
     }, 60_000)
     await this.pool.query("UPDATE study_materials SET processing_status='PROCESSING' WHERE id=$1", [job.material_id]); await this.ingestion.event('material.progress', { materialId: job.material_id, stage: 'PREPARING', progressPercent: 1 }, job.owner_id)
     try {
-      await this.study.extractConcepts(job.material_id, async (progress) => {
+      await withAiUsageOwner(job.owner_id, () => this.study.extractConcepts(job.material_id, async (progress) => {
         const percent = progress.stage === 'REDUCING' ? 90 : Math.max(1, Math.round((progress.completedChunks / Math.max(progress.totalChunks, 1)) * 85))
         const updated = await this.pool.query("UPDATE processing_jobs SET stage=$2,total_chunks=$3,completed_chunks=$4,progress_percent=$5,started_at=COALESCE(started_at,now()),updated_at=now() WHERE id=$1 AND status='PROCESSING' RETURNING id", [job!.id, progress.stage, progress.totalChunks, progress.completedChunks, percent])
         if (updated.rows[0]) await this.ingestion.event('material.progress', { materialId: job!.material_id, stage: progress.stage, totalChunks: progress.totalChunks, completedChunks: progress.completedChunks, progressPercent: percent }, job!.owner_id)
-      }, async () => this.isActive(job!.id))
+      }, async () => this.isActive(job!.id)))
       const completed = await this.pool.query("UPDATE processing_jobs SET status='DONE',stage='READY',progress_percent=100,finished_at=now(),updated_at=now() WHERE id=$1 AND status='PROCESSING' RETURNING id", [job.id])
       if (!completed.rows[0]) return true
       await this.pool.query("UPDATE study_materials SET processing_status='READY',processed_at=now(),processing_error=NULL WHERE id=$1", [job.material_id])

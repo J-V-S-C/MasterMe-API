@@ -7,7 +7,6 @@ Zod e contexto explícito; não usa RAG, embeddings, LangChain ou LangGraph.
 
 ## Acesso
 
-- Swagger da API de produção: <https://masterme-api.duckdns.org/docs>
 - Health check: <https://masterme-api.duckdns.org/health>
 - Frontend Repo: <https://github.com/J-V-S-C/MasterMe-Front>
 
@@ -64,12 +63,22 @@ bun test
 | POST   | `/api/materials/:id/practice-projects` | Gera ou recupera do cache um Projeto de prática.            |
 | GET    | `/api/materials/:id/practice-projects` | Lista projetos do material.                                 |
 | GET    | `/api/practice-projects/:id`           | Recupera um projeto.                                        |
+| GET    | `/api/ai-usage/today`                  | Uso privado, tokens e quota diária restante.              |
 
 `/api/sessions/:id/stress-replies` e as rotas de `isomorphic-problem` continuam
 temporariamente disponíveis para o frontend legado. Novos consumidores devem
 usar Teste de caso-limite e Projeto de prática.
 
 Swagger UI local: `http://localhost:3333/docs`. Documento bruto: `/openapi.json`.
+Ambos ficam desativados quando `NODE_ENV=production`.
+
+## Segurança e quota de IA
+
+- `AI_DAILY_REQUEST_LIMIT` define quantas tentativas reais ao Gemini cada usuário pode fazer por dia; o padrão é 100.
+- O consumo é reservado atomicamente no PostgreSQL antes da chamada, incluindo fallbacks de modelo.
+- Cache hit não consome quota. A interface mostra o saldo interno do MasterMe, que é independente dos limites do projeto no Google AI Studio.
+- A API limita rajadas globais por IP e aplica um limite por usuário somente nas rotas capazes de consumir IA. Produção deve manter também rate limiting no Caddy/Cloudflare.
+- A chave Gemini permanece somente no backend e deve ser exclusiva, restrita e rotacionada.
 
 ## Projeto de prática
 
@@ -112,7 +121,7 @@ depois de migrations, atualização dos containers e health check bem-sucedidos.
 
 ## Limites do MVP
 
-- Sem autenticação: existe uma confiança por conceito.
+- A quota exibida é a proteção interna do produto; ela não consulta o saldo remoto do Google em tempo real.
 - PDFs sem texto selecionável são rejeitados; não há OCR.
 - O Projeto de prática não recebe, executa ou avalia uma solução.
 - Arquivos brutos ficam em volume local; produção deve usar object storage.

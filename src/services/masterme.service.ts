@@ -221,7 +221,7 @@ export class MasterMeService {
     return context.concepts.length ? (await this.repository.findIsomorphicProblem(context.inputHash)) ?? null : null;
   }
 
-  public getAiUsageToday() { return this.repository.getAiUsageToday(); }
+  public getAiUsageToday(ownerId: string, dailyLimit: number) { return this.repository.getAiUsageToday(ownerId, dailyLimit); }
 
   private questionForConcept(concept: Concept, concepts: Concept[], sessionNumber: number, persisted?: MasterMeQuestion): MasterMeQuestion { return persisted ?? concept.studyQuestion ?? this.templates.generateQuestion(concept, concepts, sessionNumber); }
   private async requireConcept(id: string): Promise<Concept> { return (await this.repository.findConcept(id)) ?? this.throwNotFound('Conceito'); }

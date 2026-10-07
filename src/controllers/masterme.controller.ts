@@ -11,7 +11,7 @@ import { getValidated } from '../middleware/validate-request';
 import type { IngestionService } from '../services/ingestion.service';
 
 export class MasterMeController {
-  public constructor(private readonly service: MasterMeService) {}
+  public constructor(private readonly service: MasterMeService, private readonly aiDailyLimit: number) {}
 
   public readonly createMaterial: RequestHandler = async (_req, res) => {
     const body = getValidated(res, 'body', CreateMaterialBodySchema);
@@ -101,7 +101,8 @@ export class MasterMeController {
   public readonly getPracticeProject: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); res.json({ data: await this.service.getPracticeProject(id) }); };
 
   public readonly getAiUsageToday: RequestHandler = async (_req, res) => {
-    res.json({ data: await this.service.getAiUsageToday() });
+    res.set('cache-control', 'no-store');
+    res.json({ data: await this.service.getAiUsageToday(res.locals.userId!, this.aiDailyLimit) });
   };
 }
 

@@ -36,6 +36,7 @@ chmod 600 /opt/masterme/.env
 ```
 
 Edite `/opt/masterme/.env` e preencha a URL do Session pooler do Supabase e a chave Gemini. Não copie a chave para o GitHub nem para o frontend.
+Defina também `AI_DAILY_REQUEST_LIMIT` com a quantidade de tentativas ao provedor permitida por usuário e por dia. O padrão do Compose é 100.
 
 Crie uma chave SSH exclusiva para o deploy. Cadastre a chave pública em `~/.ssh/authorized_keys` do usuário de deploy e dê a esse usuário acesso ao Docker. Obtenha a linha segura para `known_hosts` diretamente do console/host administrado; não aceite uma chave desconhecida automaticamente durante o workflow.
 
@@ -66,6 +67,7 @@ api.seudominio.com {
 ```
 
 O Caddy mantém streaming por padrão. Em Nginx, desative buffering no endpoint SSE (`proxy_buffering off`). Libere somente `80/tcp` e `443/tcp` publicamente; a porta 3333 fica ligada ao loopback.
+Configure também rate limiting no proxy para `/api`, especialmente em uploads e conexões SSE. Os limites em memória da aplicação protegem a instância atual, mas não substituem uma barreira distribuída caso a API seja escalada horizontalmente.
 
 ## 5. Primeiro lançamento
 
