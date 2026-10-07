@@ -77,7 +77,7 @@ Ambos ficam desativados quando `NODE_ENV=production`.
 - `AI_DAILY_REQUEST_LIMIT` define quantas tentativas reais ao Gemini cada usuário pode fazer por dia; o padrão é 100.
 - O consumo é reservado atomicamente no PostgreSQL antes da chamada, incluindo fallbacks de modelo.
 - Cache hit não consome quota. A interface mostra o saldo interno do MasterMe, que é independente dos limites do projeto no Google AI Studio.
-- A API limita rajadas por IP e mutações por usuário. Produção deve manter também rate limiting no Caddy/Cloudflare.
+- A API limita rajadas globais por IP e aplica um limite por usuário somente nas rotas capazes de consumir IA. Produção deve manter também rate limiting no Caddy/Cloudflare.
 - A chave Gemini permanece somente no backend e deve ser exclusiva, restrita e rotacionada.
 
 ## Projeto de prática

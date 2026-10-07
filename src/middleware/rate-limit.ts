@@ -45,8 +45,8 @@ export const globalRateLimit = createRateLimit({
   key: (req) => `ip:${req.ip}`,
 })
 
-export const userMutationRateLimit = createRateLimit({
+export const aiBurstRateLimit = createRateLimit({
   windowMs: 60_000,
-  max: 30,
+  max: 20,
   key: (req, res) => `user:${res.locals.userId ?? req.ip}`,
 })

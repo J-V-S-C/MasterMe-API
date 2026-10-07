@@ -16,20 +16,19 @@ import type { Pool } from 'pg';
 import { authenticate } from '../middleware/authenticate';
 import { authorizeResource } from '../middleware/authorize-resource';
 import { bindAiUsageOwner } from '../middleware/ai-usage-context';
-import { userMutationRateLimit } from '../middleware/rate-limit';
+import { aiBurstRateLimit } from '../middleware/rate-limit';
 
 export const createMasterMeRouter = (service: MasterMeService, ingestion?: IngestionService, pool?: Pool, aiDailyLimit = 100): Router => {
   const router = Router();
   const controller = new MasterMeController(service, aiDailyLimit);
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
   if (pool) router.use(authenticate, bindAiUsageOwner, authorizeResource(pool));
-  router.use((req, res, next) => req.method === 'GET' || req.method === 'HEAD' ? next() : userMutationRateLimit(req, res, next));
   if (ingestion) {
     const files = new IngestionController(ingestion);
     router.get('/events', files.events);
     router.get('/processing/overview', files.overview);
     router.post('/materials/upload', upload.single('file'), files.upload);
-    router.post('/materials/:id/extract', validateRequest({ params: IdParamsSchema }), files.extract);
+    router.post('/materials/:id/extract', aiBurstRateLimit, validateRequest({ params: IdParamsSchema }), files.extract);
     router.delete('/materials/:id/extract', validateRequest({ params: IdParamsSchema }), files.cancelExtraction);
     router.get('/materials/:id/status', validateRequest({ params: IdParamsSchema }), files.status);
   }
@@ -80,6 +79,7 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
   );
   if (!ingestion) router.post(
     '/materials/:id/extract',
+    aiBurstRateLimit,
     validateRequest({ params: IdParamsSchema }),
     controller.extractConcepts,
   );
@@ -105,16 +105,19 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
   );
   router.post(
     '/sessions/:id/answers',
+    aiBurstRateLimit,
     validateRequest({ params: IdParamsSchema, body: AnswerBodySchema }),
     controller.evaluateInitialAnswer,
   );
   router.post(
     '/sessions/:id/stress-replies',
+    aiBurstRateLimit,
     validateRequest({ params: IdParamsSchema, body: AnswerBodySchema }),
     controller.evaluateStressReply,
   );
   router.post(
     '/materials/:id/isomorphic-problem',
+    aiBurstRateLimit,
     validateRequest({ params: IdParamsSchema }),
     controller.generateIsomorphicProblem,
   );
@@ -123,13 +126,13 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
     validateRequest({ params: IdParamsSchema }),
     controller.getIsomorphicProblem,
   );
-  router.post('/sessions/:id/edge-case', validateRequest({ params: IdParamsSchema }), controller.requestEdgeCase);
-  router.post('/sessions/:id/edge-case/answers', validateRequest({ params: IdParamsSchema, body: AnswerBodySchema }), controller.evaluateEdgeCaseAnswer);
+  router.post('/sessions/:id/edge-case', aiBurstRateLimit, validateRequest({ params: IdParamsSchema }), controller.requestEdgeCase);
+  router.post('/sessions/:id/edge-case/answers', aiBurstRateLimit, validateRequest({ params: IdParamsSchema, body: AnswerBodySchema }), controller.evaluateEdgeCaseAnswer);
   router.get('/materials/:id/confidences', validateRequest({ params: IdParamsSchema }), controller.getConfidences);
   router.put('/concepts/:id/confidence', validateRequest({ params: IdParamsSchema, body: ConfidenceBodySchema }), controller.saveConfidence);
   router.delete('/concepts/:id/confidence', validateRequest({ params: IdParamsSchema }), controller.deleteConfidence);
   router.get('/materials/:id/performance', validateRequest({ params: IdParamsSchema }), controller.getPerformance);
-  router.post('/materials/:id/practice-projects', validateRequest({ params: IdParamsSchema, body: CreatePracticeProjectBodySchema }), controller.generatePracticeProject);
+  router.post('/materials/:id/practice-projects', aiBurstRateLimit, validateRequest({ params: IdParamsSchema, body: CreatePracticeProjectBodySchema }), controller.generatePracticeProject);
   router.get('/materials/:id/practice-projects', validateRequest({ params: IdParamsSchema }), controller.getPracticeProjects);
   router.get('/practice-projects/:id', validateRequest({ params: IdParamsSchema }), controller.getPracticeProject);
 
