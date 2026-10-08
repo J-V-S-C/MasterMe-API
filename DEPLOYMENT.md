@@ -71,13 +71,15 @@ Configure também rate limiting no proxy para `/api`, especialmente em uploads e
 
 ## 5. Primeiro lançamento
 
-1. Execute manualmente o workflow `Deploy backend to OCI`.
+1. Na branch `main`, execute manualmente o workflow `Deploy backend to OCI`.
 2. Confirme `https://api.seudominio.com/health` retornando `{ "status": "ok" }`.
 3. Execute `Deploy frontend to Cloudflare`.
 4. No Cloudflare, associe o domínio do frontend ao Worker `masterme-frontend`.
 5. Faça upload de um PDF pequeno, acompanhe o SSE, cancele uma extração e rode uma extração completa.
 
-Depois do primeiro lançamento, pushes em `main` com mudanças nos respectivos diretórios fazem deploy automático. Pull requests executam somente CI.
+Depois do primeiro lançamento, pushes em `main` fazem deploy automático. A
+execução manual também é recusada fora de `main`; pull requests executam somente
+CI.
 
 ## Rollback
 
