@@ -8,6 +8,7 @@ import type {
   PracticeProjectContent,
   PrioritizedConcept,
   StudyMaterial,
+  SupportedLocale,
 } from '../domain/masterme';
 import {
   EvaluationSchema,
@@ -17,13 +18,16 @@ import {
   SinglePassKnowledgeResponseSchema,
   EdgeCaseChallengeSchema,
   PracticeProjectContentSchema,
+  LocalizedKnowledgeResponseSchema,
   type ExtractedKnowledge,
+  type LocalizedKnowledgeResponse,
 } from '../schemas/llm.schema';
 import type { ExtractionProgress, MasterMeLlmGateway } from './llm.gateway';
+import { isUsefulAssessmentQuestion } from './assessment-quality';
 
 const asJson = (value: unknown): string => JSON.stringify(value);
 const EXTRACTION_CHUNK_SIZE = 12_000;
-
+const localeName = (locale: SupportedLocale): string => locale === 'pt-BR' ? 'português do Brasil' : 'English (United States)';
 export const indexMaterialParagraphs = (content: string): Array<{ id: string; text: string }> => {
   const raw = content.split(/\n\s*\n+/).map((text) => text.trim()).filter(Boolean)
   const paragraphs = raw.length ? raw : [content.trim()]
@@ -63,7 +67,7 @@ export class GeminiMasterMeGateway implements MasterMeLlmGateway {
     // A chamada ao provedor concentra quase todo o tempo da extração. Avise que
     // ela começou antes de aguardá-la; caso contrário a UI fica presa em 1%.
     await onProgress?.({ stage: 'EXTRACTING', totalChunks: 1, completedChunks: 0 });
-    const response = await this.extractMaterial(paragraphs);
+    const response = await this.extractMaterial(paragraphs, material.locale);
     await onProgress?.({ stage: 'REDUCING', totalChunks: 1, completedChunks: 1 });
 
     const paragraphById = new Map(paragraphs.map((paragraph) => [paragraph.id, paragraph.text]))
@@ -73,9 +77,12 @@ export class GeminiMasterMeGateway implements MasterMeLlmGateway {
         return sourceExcerpt ? [{ ...fragment, sourceExcerpt }] : []
       })
       .slice(0, this.maxConcepts)
-      .map(({ sourceParagraphId: _sourceParagraphId, questionText, targetPremise, expectedReasoningSteps, ...fragment }) => ({
+      .map(({ sourceParagraphId: _sourceParagraphId, questionText, targetPremise, expectedReasoningSteps, learningObjective, requiredIdeas, commonMisconceptions, ...fragment }) => ({
         ...fragment,
-        studyQuestion: { text: questionText, targetPremise, expectedReasoningSteps },
+        edgeCaseQuestion: isUsefulAssessmentQuestion(fragment.edgeCaseQuestion) ? fragment.edgeCaseQuestion : undefined,
+        studyQuestion: isUsefulAssessmentQuestion(questionText, requiredIdeas)
+          ? { text: questionText, targetPremise, expectedReasoningSteps, learningObjective, requiredIdeas, commonMisconceptions }
+          : undefined,
         prerequisiteNames: fragment.prerequisiteNames ?? [],
       }));
     const availableNames = new Set(fragments.map((fragment) => fragment.name.trim().toLocaleLowerCase()));
@@ -90,13 +97,30 @@ export class GeminiMasterMeGateway implements MasterMeLlmGateway {
     });
   }
 
-  private extractMaterial(paragraphs: Array<{ id: string; text: string }>) {
+  private extractMaterial(paragraphs: Array<{ id: string; text: string }>, locale: SupportedLocale) {
     const indexedMaterial = paragraphs.map(({ id, text }) => `[${id}]\n${text}`).join('\n\n')
     return this.client.generateStructured(
       SinglePassKnowledgeResponseSchema,
-      `Você analisa um material técnico de engenharia de software. Extraia no máximo ${this.maxConcepts} conceitos centrais que estejam EXPLICITAMENTE no material inteiro. Priorize os conceitos que desbloqueiam a compreensão dos demais e descarte detalhes repetidos. Para cada conceito, retorne nome curto e único, descrição concisa, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, uma premissa fundamental, um caso de borda, edgeCaseQuestion com uma pergunta específica que confronte esse caso de borda e prerequisiteNames contendo somente nomes de outros conceitos retornados. Também retorne questionText: uma pergunta guiada específica e natural sobre ESTE conceito, que faça sentido sem supor que pré-requisitos ou nós relacionados formam uma cadeia causal; targetPremise: a premissa que a resposta deve explicar; e expectedReasoningSteps: 2 a 4 passos de raciocínio esperados. A pergunta deve ser respondível exclusivamente pelo trecho indicado e não pode ser uma pergunta de definição direta. Não copie o parágrafo e não invente IDs, conteúdo ou relações.\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
+      `Você analisa um material técnico de engenharia de software. Produza TODOS os campos gerados em ${localeName(locale)}, mesmo quando o material estiver em outro idioma; preserve termos técnicos no idioma original entre parênteses quando isso ajudar. Extraia no máximo ${this.maxConcepts} conceitos centrais que estejam EXPLICITAMENTE no material inteiro. Priorize os conceitos que desbloqueiam a compreensão dos demais e descarte detalhes repetidos. Para cada conceito, retorne nome curto e único, descrição de no máximo duas frases, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, premissas fundamentais, casos de borda e prerequisiteNames contendo somente nomes de outros conceitos retornados. Retorne uma questionText que exija explicar mecanismo, causalidade ou aplicação; nunca pergunte apenas definição, tradução ou valor de retorno. Retorne targetPremise, expectedReasoningSteps com 2 a 4 passos, learningObjective em uma frase, requiredIdeas com 2 a 4 critérios essenciais e commonMisconceptions. edgeCaseQuestion deve exigir raciocínio sobre uma condição-limite, não mera lembrança. Tudo precisa ser respondível pelo trecho indicado. Não copie o parágrafo e não invente IDs, conteúdo ou relações.\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
       { operation: 'EXTRACTION', maxOutputTokens: 6000 },
     );
+  }
+
+  public localizeKnowledge(concepts: Concept[], locale: SupportedLocale): Promise<LocalizedKnowledgeResponse> {
+    const content = concepts.map((concept) => ({
+      id: concept.id,
+      name: concept.name,
+      description: concept.description,
+      fundamentalPremises: concept.fundamentalPremises,
+      edgeCases: concept.edgeCases,
+      edgeCaseQuestion: concept.edgeCaseQuestion ?? '',
+      studyQuestion: concept.studyQuestion ?? null,
+    }))
+    return this.client.generateStructured(
+      LocalizedKnowledgeResponseSchema,
+      `Localize os campos gerados abaixo para ${localeName(locale)}. Preserve exatamente cada id, a quantidade de itens e o significado técnico. Não traduza IDs e não acrescente fatos. Mantenha nomes técnicos conhecidos no idioma original entre parênteses quando útil. As perguntas devem exigir mecanismo ou aplicação, nunca apenas definição ou valor de retorno. Retorne todos os campos do schema.\nCONCEITOS: ${asJson(content)}`,
+      { operation: 'LOCALIZATION', maxOutputTokens: 5000 },
+    )
   }
 
   private uniqueFragments<T extends { name: string }>(fragments: T[]): T[] {
@@ -116,10 +140,10 @@ export class GeminiMasterMeGateway implements MasterMeLlmGateway {
   ): Promise<Evaluation> {
     const response = await this.client.generateStructured(
       GeminiEvaluationResponseSchema,
-      `Avalie a explicação usando somente a evidência fornecida. A rubrica para ${concept.kind} é: ${this.evaluationRubric(concept.kind)} Jargão sem mecanismo não é suficiente. Se falhar, indique o primeiro salto lógico ou premissa omitida sem entregar a resposta pronta.\nCONCEITO: ${concept.name}\nTIPO: ${concept.kind}\nPREMISSA-ALVO: ${question.targetPremise}\nPASSOS ESPERADOS: ${asJson(question.expectedReasoningSteps)}\nEVIDÊNCIA: ${concept.sourceExcerpt}\nPERGUNTA: ${question.text}\nRESPOSTA: ${answer}`,
+      `Responda em ${localeName(concept.generatedLocale === 'en-US' ? 'en-US' : 'pt-BR')}. Avalie semanticamente a explicação usando somente a evidência fornecida e aceite linguagem informal equivalente. PASSED: as ideias essenciais e o mecanismo estão presentes. INCOMPLETE: a direção está correta, mas uma ideia essencial falta ou está ambígua. LOGICAL_BREAK: há contradição explícita, causalidade invertida ou mecanismo incorreto; nunca use LOGICAL_BREAK por mera omissão. A rubrica para ${concept.kind} é: ${this.evaluationRubric(concept.kind)} Retorne feedback curto, strength com o principal acerto, gap vazio quando aprovado ou uma única lacuna, e nextAction acionável sem entregar o gabarito.\nCONCEITO: ${concept.name}\nTIPO: ${concept.kind}\nOBJETIVO: ${question.learningObjective ?? question.targetPremise}\nIDEIAS ESSENCIAIS: ${asJson(question.requiredIdeas ?? question.expectedReasoningSteps)}\nERROS COMUNS: ${asJson(question.commonMisconceptions ?? [])}\nEVIDÊNCIA: ${concept.sourceExcerpt}\nPERGUNTA: ${question.text}\nRESPOSTA: ${answer}`,
       { operation: 'INITIAL_EVALUATION', maxOutputTokens: 400 },
     );
-    return EvaluationSchema.parse({ ...response, logicalBreak: response.logicalBreak.trim() || null });
+    return EvaluationSchema.parse({ ...response, logicalBreak: response.logicalBreak.trim() || null, gap: response.gap.trim() || null });
   }
 
   public async evaluateEdgeCaseAnswer(
@@ -129,16 +153,16 @@ export class GeminiMasterMeGateway implements MasterMeLlmGateway {
   ): Promise<Evaluation> {
     const response = await this.client.generateStructured(
       GeminiEvaluationResponseSchema,
-      `Avalie se a réplica responde ao caso-limite usando somente a evidência e as premissas fornecidas. A rubrica para ${concept.kind} é: ${this.evaluationRubric(concept.kind)} A resposta só passa se preservar, restringir ou rejeitar a premissa de modo causal e coerente. Não forneça gabarito.\nCONCEITO: ${concept.name}\nTIPO: ${concept.kind}\nPREMISSAS: ${asJson(concept.fundamentalPremises)}\nEVIDÊNCIA: ${concept.sourceExcerpt}\nCASO-LIMITE: ${stressTest.scenario}\nPERGUNTA: ${stressTest.question}\nRÉPLICA: ${answer}`,
+      `Responda em ${localeName(concept.generatedLocale === 'en-US' ? 'en-US' : 'pt-BR')}. Avalie se a réplica responde ao caso-limite usando somente a evidência e as premissas. PASSED exige raciocínio causal coerente; INCOMPLETE indica direção correta com uma lacuna; LOGICAL_BREAK exige contradição ou mecanismo incorreto. Não use LOGICAL_BREAK por mera omissão. Retorne feedback curto, strength, gap e nextAction sem fornecer gabarito. A rubrica para ${concept.kind} é: ${this.evaluationRubric(concept.kind)}\nCONCEITO: ${concept.name}\nTIPO: ${concept.kind}\nPREMISSAS: ${asJson(concept.fundamentalPremises)}\nEVIDÊNCIA: ${concept.sourceExcerpt}\nCASO-LIMITE: ${stressTest.scenario}\nPERGUNTA: ${stressTest.question}\nRÉPLICA: ${answer}`,
       { operation: 'EDGE_CASE_EVALUATION', maxOutputTokens: 400 },
     );
-    return EvaluationSchema.parse({ ...response, logicalBreak: response.logicalBreak.trim() || null });
+    return EvaluationSchema.parse({ ...response, logicalBreak: response.logicalBreak.trim() || null, gap: response.gap.trim() || null });
   }
 
   public generateEdgeCaseChallenge(concept: Concept): Promise<EdgeCaseChallenge> {
     return this.client.generateStructured(
       EdgeCaseChallengeSchema,
-      'Crie um teste de caso-limite específico usando somente o conceito e sua evidência. Não use pergunta genérica.\nCONCEITO: ' + concept.name + '\nPREMISSAS: ' + asJson(concept.fundamentalPremises) + '\nCASOS DE BORDA: ' + asJson(concept.edgeCases) + '\nEVIDÊNCIA: ' + concept.sourceExcerpt,
+      `Responda em ${localeName(concept.generatedLocale === 'en-US' ? 'en-US' : 'pt-BR')}. Crie um teste de caso-limite específico usando somente o conceito e sua evidência. A pergunta deve exigir aplicação, comparação ou explicação causal; não aceite definição, tradução, resposta de uma palavra ou simples valor de retorno.\nCONCEITO: ${concept.name}\nPREMISSAS: ${asJson(concept.fundamentalPremises)}\nCASOS DE BORDA: ${asJson(concept.edgeCases)}\nEVIDÊNCIA: ${concept.sourceExcerpt}`,
       { operation: 'EDGE_CASE_GENERATION', maxOutputTokens: 350 },
     );
   }
@@ -147,8 +171,8 @@ export class GeminiMasterMeGateway implements MasterMeLlmGateway {
     const context = concepts.map((concept) => ({ name: concept.name, description: concept.description, premises: concept.fundamentalPremises, edgeCases: concept.edgeCases, sourceExcerpt: concept.sourceExcerpt, reason: priorities.find((item) => item.conceptId === concept.id)?.reason }));
     return this.client.generateStructured(
       PracticeProjectContentSchema,
-      'Gere um Projeto de prática executável e autônomo para aplicar os conceitos priorizados. Não peça ao estudante para enviar uma solução e não prometa avaliação. Use somente tecnologias sustentadas pelo material ou restrições genéricas.\nMATERIAL: ' + material.title + '\nCONCEITOS PRIORIZADOS EM ORDEM: ' + asJson(context),
-      { operation: 'PRACTICE_PROJECT', maxOutputTokens: 1000 },
+      `Responda em ${localeName(material.locale)}. Gere um Projeto de prática executável, autônomo e objetivo para aplicar os conceitos priorizados. Use contexto com no máximo duas frases, objetivo em uma frase, até quatro entregáveis, até quatro restrições e um primeiro passo concreto. Não peça envio de solução e não prometa avaliação. Use somente tecnologias sustentadas pelo material ou restrições genéricas.\nMATERIAL: ${material.title}\nCONCEITOS PRIORIZADOS EM ORDEM: ${asJson(context)}`,
+      { operation: 'PRACTICE_PROJECT', maxOutputTokens: 700 },
     );
   }
 

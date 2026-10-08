@@ -16,6 +16,9 @@ export const GeminiEvaluationResponseSchema = z.object({
   missingPremises: z.array(z.string()),
   logicalBreak: z.string(),
   feedback: z.string(),
+  strength: z.string(),
+  gap: z.string(),
+  nextAction: z.string(),
 })
 export type GeminiEvaluationResponse = z.infer<typeof GeminiEvaluationResponseSchema>
 
@@ -26,8 +29,8 @@ export const ExtractedFragmentSchema = z.object({
   sourceExcerpt: z.string().min(1),
   fundamentalPremises: z.array(z.string().min(1)).min(1),
   edgeCases: z.array(z.string().min(1)).min(1),
-  edgeCaseQuestion: z.string().min(1),
-  studyQuestion: QuestionSchema,
+  edgeCaseQuestion: z.string().min(1).optional(),
+  studyQuestion: QuestionSchema.optional(),
   prerequisiteNames: z.array(z.string().min(1)),
 })
 
@@ -49,6 +52,9 @@ export const ExtractedFragmentResponseSchema = z.object({
   questionText: z.string(),
   targetPremise: z.string(),
   expectedReasoningSteps: z.array(z.string()),
+  learningObjective: z.string(),
+  requiredIdeas: z.array(z.string()),
+  commonMisconceptions: z.array(z.string()),
 })
 export const ChunkExtractionResponseSchema = z.object({
   fragments: z.array(ExtractedFragmentResponseSchema),
@@ -61,6 +67,24 @@ export const SinglePassKnowledgeResponseSchema = z.object({
   })),
 })
 export type SinglePassKnowledgeResponse = z.infer<typeof SinglePassKnowledgeResponseSchema>
+
+export const LocalizedKnowledgeResponseSchema = z.object({
+  fragments: z.array(z.object({
+    id: z.string().uuid(),
+    name: z.string().min(1).max(160),
+    description: z.string().min(1).max(600),
+    fundamentalPremises: z.array(z.string().min(1).max(500)).min(1).max(6),
+    edgeCases: z.array(z.string().min(1).max(500)).min(1).max(6),
+    edgeCaseQuestion: z.string().min(1).max(600),
+    questionText: z.string().min(1).max(600),
+    targetPremise: z.string().min(1).max(500),
+    expectedReasoningSteps: z.array(z.string().min(1).max(500)).min(2).max(4),
+    learningObjective: z.string().min(1).max(500),
+    requiredIdeas: z.array(z.string().min(1).max(500)).min(2).max(4),
+    commonMisconceptions: z.array(z.string().min(1).max(500)).max(4),
+  })).min(1).max(30),
+})
+export type LocalizedKnowledgeResponse = z.infer<typeof LocalizedKnowledgeResponseSchema>
 
 export const ReducedKnowledgeResponseSchema = z.object({
   fragments: z.array(z.object({

@@ -6,6 +6,8 @@ import {
   CreatePracticeProjectBodySchema,
   CreateMaterialBodySchema,
   IdParamsSchema,
+  LocaleBodySchema,
+  UploadMaterialBodySchema,
 } from '../schemas/http.schema';
 import { getValidated } from '../middleware/validate-request';
 import type { IngestionService } from '../services/ingestion.service';
@@ -37,6 +39,12 @@ export class MasterMeController {
   public readonly getConcepts: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
     res.json({ data: await this.service.getConcepts(id) });
+  };
+
+  public readonly localizeMaterial: RequestHandler = async (_req, res) => {
+    const { id } = getValidated(res, 'params', IdParamsSchema)
+    const { locale } = getValidated(res, 'body', LocaleBodySchema)
+    res.json({ data: await this.service.localizeMaterial(id, locale) })
   };
 
   public readonly getKnowledgeMap: RequestHandler = async (_req, res) => {
@@ -110,10 +118,12 @@ export class IngestionController {
   public constructor(private readonly ingestion: IngestionService) {}
   public readonly upload: RequestHandler = async (req, res) => {
     if (!req.file) throw new Error('Arquivo ausente.');
+    const body = getValidated(res, 'body', UploadMaterialBodySchema)
     res.status(202).json({
       data: await this.ingestion.upload(
         req.file,
-        typeof req.body.title === 'string' ? req.body.title : undefined,
+        body.title,
+        body.locale,
         res.locals.userId!,
       ),
     });

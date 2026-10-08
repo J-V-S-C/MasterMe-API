@@ -6,6 +6,7 @@ import type { Pool } from 'pg'
 import type { MasterMeService } from './masterme.service'
 import { AppError, NotFoundError } from './errors'
 import { withAiUsageOwner } from './ai-usage-context'
+import type { SupportedLocale } from '../domain/masterme'
 
 export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 const allowed = new Map([['application/pdf', 'PDF'], ['text/plain', 'TXT'], ['text/markdown', 'MARKDOWN'], ['text/x-markdown', 'MARKDOWN']])
@@ -53,7 +54,7 @@ const textFromFile = async (mime: string, data: Buffer): Promise<string> => {
 
 export class IngestionService {
   public constructor(private readonly pool: Pool, private readonly storage: LocalMaterialStorage) {}
-  public async upload(file: Express.Multer.File, title: string | undefined, ownerId: string): Promise<{ id: string; title: string; status: string }> {
+  public async upload(file: Express.Multer.File, title: string | undefined, locale: SupportedLocale, ownerId: string): Promise<{ id: string; title: string; status: string }> {
     const kind = allowed.get(file.mimetype)
     if (!kind || file.size > MAX_UPLOAD_BYTES) throw new AppError(400, 'INVALID_FILE', 'Envie um PDF, Markdown ou TXT de até 15 MiB.')
     let content: string
@@ -62,7 +63,7 @@ export class IngestionService {
     const id = randomUUID(); const storageKey = await this.storage.save(id, file.originalname, file.buffer)
     const requestedTitle = title?.trim() || file.originalname.replace(/\.[^.]+$/, '').trim() || 'Material importado'
     const materialTitle = requestedTitle.slice(0, 160)
-    await this.pool.query('INSERT INTO study_materials (id,title,content,created_at,source_type,original_filename,mime_type,storage_key,processing_status,owner_id) VALUES ($1,$2,$3,now(),$4,$5,$6,$7,$8,$9)', [id, materialTitle, content, kind, file.originalname, file.mimetype, storageKey, 'PENDING', ownerId])
+    await this.pool.query('INSERT INTO study_materials (id,title,content,locale,created_at,source_type,original_filename,mime_type,storage_key,processing_status,owner_id) VALUES ($1,$2,$3,$4,now(),$5,$6,$7,$8,$9,$10)', [id, materialTitle, content, locale, kind, file.originalname, file.mimetype, storageKey, 'PENDING', ownerId])
     await this.pool.query('INSERT INTO processing_jobs (id,material_id,type) VALUES ($1,$2,$3)', [randomUUID(), id, 'EXTRACT'])
     await this.event('material.queued', { materialId: id }, ownerId)
     return { id, title: materialTitle, status: 'PENDING' }

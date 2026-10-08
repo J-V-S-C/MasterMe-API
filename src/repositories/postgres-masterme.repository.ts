@@ -1,6 +1,6 @@
 import { Pool } from 'pg'
 import { z } from 'zod'
-import { ConceptConfidenceSchema, ConceptSchema, EvaluationSchema, IsomorphicProblemSchema, MaterialSchema, PracticeProjectSchema, StudySessionSchema, type Concept, type ConceptConfidence, type Evaluation, type IsomorphicProblem, type PracticeProject, type StudyMaterial, type StudySession } from '../domain/masterme'
+import { ConceptConfidenceSchema, ConceptSchema, EvaluationSchema, IsomorphicProblemSchema, MaterialSchema, PracticeProjectSchema, StudySessionSchema, type Concept, type ConceptConfidence, type Evaluation, type IsomorphicProblem, type PracticeProject, type StudyMaterial, type StudySession, type SupportedLocale } from '../domain/masterme'
 import type { AiUsageEvent } from '../config/llm'
 import type { AiUsageSummary, MasterMeRepository } from './masterme.repository'
 
@@ -10,22 +10,23 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
   public constructor(private readonly pool: Pool) {}
 
   public async saveMaterial(material: StudyMaterial, ownerId: string): Promise<void> {
-    await this.pool.query('INSERT INTO study_materials (id, title, content, created_at, owner_id) VALUES ($1, $2, $3, $4, $5)', [material.id, material.title, material.content, material.createdAt, ownerId])
+    await this.pool.query('INSERT INTO study_materials (id, title, content, locale, created_at, owner_id) VALUES ($1, $2, $3, $4, $5, $6)', [material.id, material.title, material.content, material.locale, material.createdAt, ownerId])
   }
 
   public async findMaterial(id: string): Promise<StudyMaterial | undefined> {
-    const result = await this.pool.query('SELECT id, title, content, created_at FROM study_materials WHERE id = $1', [id])
+    const result = await this.pool.query('SELECT id, title, content, locale, created_at FROM study_materials WHERE id = $1', [id])
     const row = result.rows[0]
     if (!row) return undefined
-    return MaterialSchema.parse({ id: row.id, title: row.title, content: row.content, createdAt: DatabaseDateSchema.parse(row.created_at).toISOString() })
+    return MaterialSchema.parse({ id: row.id, title: row.title, content: row.content, locale: row.locale, createdAt: DatabaseDateSchema.parse(row.created_at).toISOString() })
   }
 
   public async findAllMaterials(ownerId: string): Promise<StudyMaterial[]> {
-    const result = await this.pool.query('SELECT id, title, content, created_at FROM study_materials WHERE owner_id=$1 ORDER BY created_at ASC, id ASC', [ownerId])
+    const result = await this.pool.query('SELECT id, title, content, locale, created_at FROM study_materials WHERE owner_id=$1 ORDER BY created_at ASC, id ASC', [ownerId])
     return result.rows.map((row) => MaterialSchema.parse({
       id: row.id,
       title: row.title,
       content: row.content,
+      locale: row.locale,
       createdAt: DatabaseDateSchema.parse(row.created_at).toISOString(),
     }))
   }
@@ -35,10 +36,30 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
     try {
       await client.query('BEGIN')
       for (const concept of concepts) {
-        await client.query('INSERT INTO concepts (id, material_id, name, description, kind, source_excerpt, fundamental_premises, edge_cases, study_question, edge_case_question, prerequisite_ids, next_ids) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)', [concept.id, concept.materialId, concept.name, concept.description, concept.kind, concept.sourceExcerpt, JSON.stringify(concept.fundamentalPremises), JSON.stringify(concept.edgeCases), JSON.stringify(concept.studyQuestion ?? null), concept.edgeCaseQuestion ?? null, JSON.stringify(concept.prerequisiteIds), JSON.stringify(concept.nextIds)])
+        await client.query('INSERT INTO concepts (id, material_id, name, description, kind, source_excerpt, fundamental_premises, edge_cases, study_question, edge_case_question, generated_locale, prerequisite_ids, next_ids) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)', [concept.id, concept.materialId, concept.name, concept.description, concept.kind, concept.sourceExcerpt, JSON.stringify(concept.fundamentalPremises), JSON.stringify(concept.edgeCases), JSON.stringify(concept.studyQuestion ?? null), concept.edgeCaseQuestion ?? null, concept.generatedLocale, JSON.stringify(concept.prerequisiteIds), JSON.stringify(concept.nextIds)])
       }
       await client.query('COMMIT')
     } catch (error: unknown) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+  }
+
+  public async saveConceptLocalizations(materialId: string, locale: SupportedLocale, concepts: Concept[]): Promise<void> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+      for (const concept of concepts) {
+        await client.query(
+          'UPDATE concepts SET name=$1,description=$2,fundamental_premises=$3,edge_cases=$4,study_question=$5,edge_case_question=$6,generated_locale=$7 WHERE id=$8 AND material_id=$9',
+          [concept.name, concept.description, JSON.stringify(concept.fundamentalPremises), JSON.stringify(concept.edgeCases), JSON.stringify(concept.studyQuestion ?? null), concept.edgeCaseQuestion ?? null, locale, concept.id, materialId],
+        )
+      }
+      await client.query('UPDATE study_materials SET locale=$1 WHERE id=$2', [locale, materialId])
+      await client.query('COMMIT')
+    } catch (error: unknown) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
   }
 
   public async findConcept(id: string): Promise<Concept | undefined> { const result = await this.pool.query('SELECT * FROM concepts WHERE id=$1', [id]); return this.toConcept(result.rows[0]) }
@@ -91,6 +112,6 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
     }
   }
 
-  private toConcept(row: unknown): Concept | undefined { if (!row) return undefined; const value = z.object({ id:z.string(), material_id:z.string(), name:z.string(), description:z.string(), kind:z.string(), source_excerpt:z.string(), fundamental_premises:z.unknown(), edge_cases:z.unknown(), study_question:z.unknown().nullable().optional(), edge_case_question:z.string().nullable().optional(), prerequisite_ids:z.unknown(), next_ids:z.unknown() }).parse(row); return ConceptSchema.parse({ id:value.id, materialId:value.material_id, name:value.name, description:value.description, kind:value.kind, sourceExcerpt:value.source_excerpt, fundamentalPremises:value.fundamental_premises, edgeCases:value.edge_cases, studyQuestion:value.study_question ?? undefined, edgeCaseQuestion:value.edge_case_question ?? undefined, prerequisiteIds:value.prerequisite_ids, nextIds:value.next_ids }) }
+  private toConcept(row: unknown): Concept | undefined { if (!row) return undefined; const value = z.object({ id:z.string(), material_id:z.string(), name:z.string(), description:z.string(), kind:z.string(), source_excerpt:z.string(), fundamental_premises:z.unknown(), edge_cases:z.unknown(), study_question:z.unknown().nullable().optional(), edge_case_question:z.string().nullable().optional(), generated_locale:z.string().optional(), prerequisite_ids:z.unknown(), next_ids:z.unknown() }).parse(row); return ConceptSchema.parse({ id:value.id, materialId:value.material_id, name:value.name, description:value.description, kind:value.kind, sourceExcerpt:value.source_excerpt, fundamentalPremises:value.fundamental_premises, edgeCases:value.edge_cases, studyQuestion:value.study_question ?? undefined, edgeCaseQuestion:value.edge_case_question ?? undefined, generatedLocale:value.generated_locale ?? 'und', prerequisiteIds:value.prerequisite_ids, nextIds:value.next_ids }) }
   private toSession(row: unknown): StudySession | undefined { if (!row) return undefined; const value = z.object({ id:z.string(), concept_id:z.string(), state:z.string(), question:z.unknown(), stress_test:z.unknown().nullable(), edge_case_status:z.string(), edge_case_challenge:z.unknown().nullable(), attempts:z.unknown(), created_at:z.unknown(), updated_at:z.unknown() }).parse(row); return StudySessionSchema.parse({ id:value.id, conceptId:value.concept_id, state:value.state, question:value.question, edgeCaseStatus:value.edge_case_status, edgeCaseChallenge:value.edge_case_challenge, attempts:value.attempts, createdAt:DatabaseDateSchema.parse(value.created_at).toISOString(), updatedAt:DatabaseDateSchema.parse(value.updated_at).toISOString() }) }
 }

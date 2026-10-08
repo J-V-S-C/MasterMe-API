@@ -52,6 +52,7 @@ bun test
 | GET    | `/api/materials/:id/status`            | Consulta processamento assíncrono.                          |
 | GET    | `/api/events`                          | Acompanha eventos via SSE.                                  |
 | GET    | `/api/materials/:id/knowledge-map`     | Retorna mapa, status da explicação e do caso-limite.        |
+| POST   | `/api/materials/:id/localize`          | Localiza conteúdo gerado sem alterar evidências.            |
 | POST   | `/api/concepts/:id/sessions`           | Inicia explicação de qualquer conceito.                     |
 | POST   | `/api/sessions/:id/answers`            | Avalia resposta inicial; `PASSED` conclui a explicação.     |
 | POST   | `/api/sessions/:id/edge-case`          | Cria ou recupera caso-limite opt-in.                        |
@@ -87,6 +88,14 @@ O frontend expõe apenas foco automático e seleção manual. Como contrato inte
 permitir. Ranking e razões são calculados antes do Gemini. Modos sem dados
 retornam `422`, sem fallback oculto. Entradas semanticamente idênticas usam
 cache em `practice_projects`.
+
+## Idioma e avaliação pedagógica
+
+- Materiais novos usam `pt-BR` por padrão e aceitam `pt-BR` ou `en-US`.
+- Conceitos, perguntas, diagnósticos e projetos são gerados no idioma do material; o trecho-fonte permanece literal.
+- Conteúdo antigo pode ser localizado por `POST /api/materials/:id/localize`. A operação consome quota de IA, é idempotente quando o idioma já coincide e não altera IDs, relações, evidências ou sessões existentes.
+- `INCOMPLETE` representa uma resposta semanticamente correta, mas ambígua ou incompleta. `LOGICAL_BREAK` fica reservado a contradição, causalidade invertida ou mecanismo incorreto.
+- Perguntas de definição ou simples valor de retorno são descartadas e substituídas por desafios causais.
 
 ## Docker
 

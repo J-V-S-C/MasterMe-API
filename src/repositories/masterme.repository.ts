@@ -1,4 +1,4 @@
-import type { Concept, ConceptConfidence, Evaluation, IsomorphicProblem, PracticeProject, StudyMaterial, StudySession } from '../domain/masterme';
+import type { Concept, ConceptConfidence, Evaluation, IsomorphicProblem, PracticeProject, StudyMaterial, StudySession, SupportedLocale } from '../domain/masterme';
 import type { AiUsageEvent } from '../config/llm';
 
 export type AiUsageSummary = {
@@ -19,6 +19,7 @@ export interface MasterMeRepository {
   findMaterial(id: string): Awaitable<StudyMaterial | undefined>;
   findAllMaterials(ownerId: string): Promise<StudyMaterial[]>;
   saveConcepts(concepts: Concept[]): Awaitable<void>;
+  saveConceptLocalizations(materialId: string, locale: SupportedLocale, concepts: Concept[]): Awaitable<void>;
   findConcept(id: string): Awaitable<Concept | undefined>;
   findConceptsByMaterial(materialId: string): Awaitable<Concept[]>;
   saveSession(session: StudySession): Awaitable<void>;
@@ -76,6 +77,12 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
 
   public saveConcepts(concepts: Concept[]): void {
     for (const concept of concepts) this.concepts.set(concept.id, concept);
+  }
+
+  public saveConceptLocalizations(materialId: string, locale: SupportedLocale, concepts: Concept[]): void {
+    const material = this.materials.get(materialId)
+    if (material) this.materials.set(materialId, { ...material, locale })
+    for (const concept of concepts) this.concepts.set(concept.id, concept)
   }
 
   public findConcept(id: string): Concept | undefined {

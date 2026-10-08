@@ -1,11 +1,18 @@
 import { z } from 'zod'
-import { ConfidenceValueSchema, MAX_MATERIAL_LENGTH, PracticeFocusModeSchema } from '../domain/masterme'
+import { ConfidenceValueSchema, MAX_MATERIAL_LENGTH, PracticeFocusModeSchema, SupportedLocaleSchema } from '../domain/masterme'
 
 export const CreateMaterialBodySchema = z.object({
   title: z.string().trim().min(1).max(160),
   content: z.string().trim().min(1).max(MAX_MATERIAL_LENGTH),
+  locale: SupportedLocaleSchema.optional(),
 })
 export type CreateMaterialBody = z.infer<typeof CreateMaterialBodySchema>
+
+export const UploadMaterialBodySchema = z.object({
+  title: z.string().trim().min(1).max(160).optional(),
+  locale: SupportedLocaleSchema.default('pt-BR'),
+})
+export type UploadMaterialBody = z.infer<typeof UploadMaterialBodySchema>
 
 export const IdParamsSchema = z.object({ id: z.string().uuid() })
 export type IdParams = z.infer<typeof IdParamsSchema>
@@ -17,6 +24,9 @@ export type AnswerBody = z.infer<typeof AnswerBodySchema>
 
 export const ConfidenceBodySchema = z.object({ value: ConfidenceValueSchema })
 export type ConfidenceBody = z.infer<typeof ConfidenceBodySchema>
+
+export const LocaleBodySchema = z.object({ locale: SupportedLocaleSchema })
+export type LocaleBody = z.infer<typeof LocaleBodySchema>
 
 export const CreatePracticeProjectBodySchema = z.object({
   focusMode: PracticeFocusModeSchema,
