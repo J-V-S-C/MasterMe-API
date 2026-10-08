@@ -18,6 +18,8 @@ export const MaterialSchema = z.object({
   createdAt: z.string().datetime(),
 });
 export type StudyMaterial = z.infer<typeof MaterialSchema>;
+export const MaterialSummarySchema = MaterialSchema.omit({ content: true });
+export type MaterialSummary = z.infer<typeof MaterialSummarySchema>;
 
 export const QuestionSchema = z.object({
   text: z.string().min(1),

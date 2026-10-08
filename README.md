@@ -40,12 +40,16 @@ bun test
 - `GeminiMasterMeGateway` extrai conceitos, avalia respostas e gera somente os
   campos textuais do Projeto de prática.
 - Upload e extração usam fila PostgreSQL, worker separado e progresso por SSE.
+- O SSE usa `LISTEN/NOTIFY` para acordar conexões e a tabela de eventos para
+  replay após reconexão; não há consulta ao banco a cada segundo por cliente.
 
 ## Rotas principais
 
 | Método | Rota                                   | Finalidade                                                  |
 | ------ | -------------------------------------- | ----------------------------------------------------------- |
 | POST   | `/api/materials`                       | Cria material textual.                                      |
+| GET    | `/api/materials`                       | Lista metadados sem enviar o conteúdo completo.             |
+| GET    | `/api/materials/:id`                   | Recupera o conteúdo de um material sob demanda.             |
 | POST   | `/api/materials/upload`                | Envia PDF, Markdown ou TXT.                                 |
 | POST   | `/api/materials/:id/extract`           | Enfileira uma extração.                                     |
 | DELETE | `/api/materials/:id/extract`           | Cancela uma extração ativa e descarta seu resultado tardio. |
@@ -61,6 +65,7 @@ bun test
 | PUT    | `/api/concepts/:id/confidence`         | Cria ou atualiza confiança de 1 a 5.                        |
 | DELETE | `/api/concepts/:id/confidence`         | Remove confiança.                                           |
 | GET    | `/api/materials/:id/performance`       | Expõe desempenho determinístico por conceito.               |
+| GET    | `/api/materials/:id/practice-context`  | Agrega mapa, confiança, desempenho e projetos.              |
 | POST   | `/api/materials/:id/practice-focus`    | Pré-visualiza o foco sem consumir IA.                        |
 | POST   | `/api/materials/:id/practice-projects` | Gera ou recupera do cache um Projeto de prática.            |
 | GET    | `/api/materials/:id/practice-projects` | Lista projetos do material.                                 |
@@ -89,6 +94,16 @@ O frontend expõe apenas foco automático e seleção manual. Como contrato inte
 permitir. Ranking e razões são calculados antes do Gemini. Modos sem dados
 retornam `422`, sem fallback oculto. Entradas semanticamente idênticas usam
 cache em `practice_projects`.
+
+## Cache e atualização em tempo real
+
+- Leituras privadas estáveis retornam `ETag` e `Cache-Control: private,
+  max-age=0, must-revalidate`; dados voláteis, mutações, quota e SSE usam
+  `no-store`.
+- Eventos são filtrados por `owner_id`, persistidos antes da notificação e
+  aceitam `Last-Event-ID` para replay seguro.
+- A listagem de materiais nunca inclui o texto integral. Consumidores devem
+  buscar `/api/materials/:id` apenas para o material ativo.
 
 ## Idioma e avaliação pedagógica
 

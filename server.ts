@@ -19,6 +19,7 @@ dotenv.config()
 export const createApp = (service: MasterMeService, ingestion?: IngestionService, pool?: Pool, aiDailyLimit = 100): Express => {
   const app = express()
   app.disable('x-powered-by')
+  app.set('etag', 'strong')
   if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1)
   app.use((_req, res, next) => {
     res.set({
@@ -39,7 +40,14 @@ export const createApp = (service: MasterMeService, ingestion?: IngestionService
     app.get('/openapi.json', (_req, res) => res.json(openApiDocument))
     app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument))
   }
-  app.use('/api', (_req, res, next) => { res.set('cache-control', 'no-store'); next() })
+  app.use('/api', (req, res, next) => {
+    const volatile = req.path === '/events' || req.path === '/ai-usage/today' || req.path === '/processing/overview' || req.path.endsWith('/status')
+    if ((req.method === 'GET' || req.method === 'HEAD') && !volatile) {
+      res.set('cache-control', 'private, max-age=0, must-revalidate')
+      res.vary('authorization')
+    } else res.set('cache-control', 'no-store')
+    next()
+  })
   app.use('/api', createMasterMeRouter(service, ingestion, pool, aiDailyLimit))
   app.use(errorHandler)
   return app

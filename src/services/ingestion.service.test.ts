@@ -1,5 +1,6 @@
-import { describe, expect, test } from 'bun:test'
-import { classifyProcessingFailure } from './ingestion.service'
+import { describe, expect, spyOn, test } from 'bun:test'
+import { Pool } from 'pg'
+import { classifyProcessingFailure, IngestionService, LocalMaterialStorage } from './ingestion.service'
 
 describe('classifyProcessingFailure', () => {
   test('interrompe retentativas quando a cota diária do provedor acabou', () => {
@@ -33,5 +34,18 @@ describe('classifyProcessingFailure', () => {
       message: 'A conexão com o provedor de IA foi interrompida. Tentaremos novamente em breve.',
       code: 'EXTRACTION_FAILED',
     })
+  })
+})
+
+describe('eventos de atividade', () => {
+  test('persiste e notifica o usuário na mesma instrução PostgreSQL', async () => {
+    const pool = new Pool()
+    const query = spyOn(pool, 'query').mockImplementation(async () => ({ rows: [{ id: 1 }], rowCount: 1, command: 'SELECT', oid: 0, fields: [] }))
+    try {
+      await new IngestionService(pool, new LocalMaterialStorage('/tmp/masterme-ingestion-test')).event('session.updated', { sessionId: 'session-a' }, '00000000-0000-4000-8000-000000000001')
+      const call = query.mock.calls[0] as unknown as [unknown, unknown[]]
+      expect(String(call[0])).toContain("pg_notify('masterme_activity'")
+      expect(call[1]).toEqual(['session.updated', JSON.stringify({ sessionId: 'session-a' }), '00000000-0000-4000-8000-000000000001'])
+    } finally { query.mockRestore(); await pool.end() }
   })
 })

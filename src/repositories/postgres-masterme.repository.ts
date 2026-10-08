@@ -1,6 +1,6 @@
 import { Pool } from 'pg'
 import { z } from 'zod'
-import { ConceptConfidenceSchema, ConceptSchema, EvaluationSchema, IsomorphicProblemSchema, MaterialSchema, PracticeProjectSchema, StudySessionSchema, type Concept, type ConceptConfidence, type Evaluation, type IsomorphicProblem, type PracticeProject, type StudyMaterial, type StudySession, type SupportedLocale } from '../domain/masterme'
+import { ConceptConfidenceSchema, ConceptSchema, EvaluationSchema, IsomorphicProblemSchema, MaterialSchema, MaterialSummarySchema, PracticeProjectSchema, StudySessionSchema, type Concept, type ConceptConfidence, type Evaluation, type IsomorphicProblem, type MaterialSummary, type PracticeProject, type StudyMaterial, type StudySession, type SupportedLocale } from '../domain/masterme'
 import type { AiUsageEvent } from '../config/llm'
 import type { AiUsageSummary, MasterMeRepository } from './masterme.repository'
 
@@ -20,12 +20,11 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
     return MaterialSchema.parse({ id: row.id, title: row.title, content: row.content, locale: row.locale, createdAt: DatabaseDateSchema.parse(row.created_at).toISOString() })
   }
 
-  public async findAllMaterials(ownerId: string): Promise<StudyMaterial[]> {
-    const result = await this.pool.query('SELECT id, title, content, locale, created_at FROM study_materials WHERE owner_id=$1 ORDER BY created_at ASC, id ASC', [ownerId])
-    return result.rows.map((row) => MaterialSchema.parse({
+  public async findAllMaterials(ownerId: string): Promise<MaterialSummary[]> {
+    const result = await this.pool.query('SELECT id, title, locale, created_at FROM study_materials WHERE owner_id=$1 ORDER BY created_at ASC, id ASC', [ownerId])
+    return result.rows.map((row) => MaterialSummarySchema.parse({
       id: row.id,
       title: row.title,
-      content: row.content,
       locale: row.locale,
       createdAt: DatabaseDateSchema.parse(row.created_at).toISOString(),
     }))

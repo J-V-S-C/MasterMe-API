@@ -1,4 +1,4 @@
-import type { Concept, ConceptConfidence, Evaluation, IsomorphicProblem, PracticeProject, StudyMaterial, StudySession, SupportedLocale } from '../domain/masterme';
+import type { Concept, ConceptConfidence, Evaluation, IsomorphicProblem, MaterialSummary, PracticeProject, StudyMaterial, StudySession, SupportedLocale } from '../domain/masterme';
 import type { AiUsageEvent } from '../config/llm';
 
 export type AiUsageSummary = {
@@ -17,7 +17,7 @@ type Awaitable<T> = T | Promise<T>;
 export interface MasterMeRepository {
   saveMaterial(material: StudyMaterial, ownerId: string): Awaitable<void>;
   findMaterial(id: string): Awaitable<StudyMaterial | undefined>;
-  findAllMaterials(ownerId: string): Promise<StudyMaterial[]>;
+  findAllMaterials(ownerId: string): Promise<MaterialSummary[]>;
   saveConcepts(concepts: Concept[]): Awaitable<void>;
   saveConceptLocalizations(materialId: string, locale: SupportedLocale, concepts: Concept[]): Awaitable<void>;
   findConcept(id: string): Awaitable<Concept | undefined>;
@@ -69,10 +69,10 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
     return this.materials.get(id);
   }
 
-  public async findAllMaterials(ownerId: string): Promise<StudyMaterial[]> {
+  public async findAllMaterials(ownerId: string): Promise<MaterialSummary[]> {
     return Array.from(this.materials.values()).filter(
       (material) => this.materialOwners.get(material.id) === ownerId,
-    );
+    ).map(({ content: _content, ...summary }) => summary);
   }
 
   public saveConcepts(concepts: Concept[]): void {

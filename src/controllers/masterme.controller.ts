@@ -13,11 +13,18 @@ import { getValidated } from '../middleware/validate-request';
 import type { IngestionService } from '../services/ingestion.service';
 
 export class MasterMeController {
-  public constructor(private readonly service: MasterMeService, private readonly aiDailyLimit: number) {}
+  public constructor(private readonly service: MasterMeService, private readonly aiDailyLimit: number, private readonly activity?: IngestionService) {}
+
+  private async publish(type: string, payload: object, ownerId: string): Promise<void> {
+    if (!this.activity) return
+    try { await this.activity.event(type, payload, ownerId) }
+    catch (error) { console.error(JSON.stringify({ level: 'error', operation: 'publish-activity', type, error: String(error) })) }
+  }
 
   public readonly createMaterial: RequestHandler = async (_req, res) => {
     const body = getValidated(res, 'body', CreateMaterialBodySchema);
     const material = await this.service.createMaterial(body, res.locals.userId!);
+    await this.publish('material.created', { materialId: material.id }, res.locals.userId!);
     res.status(201).json({ data: material });
   };
 
@@ -44,7 +51,9 @@ export class MasterMeController {
   public readonly localizeMaterial: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema)
     const { locale } = getValidated(res, 'body', LocaleBodySchema)
-    res.json({ data: await this.service.localizeMaterial(id, locale) })
+    const concepts = await this.service.localizeMaterial(id, locale)
+    await this.publish('material.localized', { materialId: id, locale }, res.locals.userId!)
+    res.json({ data: concepts })
   };
 
   public readonly getKnowledgeMap: RequestHandler = async (_req, res) => {
@@ -55,6 +64,7 @@ export class MasterMeController {
   public readonly startSession: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
     const session = await this.service.startSession(id);
+    await this.publish('session.created', { sessionId: session.id, conceptId: id }, res.locals.userId!);
     res.status(201).json({ data: session });
   };
 
@@ -66,13 +76,17 @@ export class MasterMeController {
   public readonly evaluateInitialAnswer: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
     const { answer } = getValidated(res, 'body', AnswerBodySchema);
-    res.json({ data: await this.service.evaluateInitialAnswer(id, answer) });
+    const session = await this.service.evaluateInitialAnswer(id, answer)
+    await this.publish('session.updated', { sessionId: id, conceptId: session.conceptId }, res.locals.userId!)
+    res.json({ data: session });
   };
 
   public readonly evaluateStressReply: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
     const { answer } = getValidated(res, 'body', AnswerBodySchema);
-    res.json({ data: await this.service.evaluateStressReply(id, answer) });
+    const session = await this.service.evaluateStressReply(id, answer)
+    await this.publish('session.updated', { sessionId: id, conceptId: session.conceptId }, res.locals.userId!)
+    res.json({ data: session });
   };
 
   public readonly generateIsomorphicProblem: RequestHandler = async (
@@ -90,21 +104,23 @@ export class MasterMeController {
     res.json({ data: await this.service.getIsomorphicProblem(id) });
   };
 
-  public readonly requestEdgeCase: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); res.json({ data: await this.service.requestEdgeCase(id) }); };
+  public readonly requestEdgeCase: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); const session = await this.service.requestEdgeCase(id); await this.publish('session.updated', { sessionId: id, conceptId: session.conceptId }, res.locals.userId!); res.json({ data: session }); };
 
-  public readonly evaluateEdgeCaseAnswer: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); const { answer } = getValidated(res, 'body', AnswerBodySchema); res.json({ data: await this.service.evaluateEdgeCaseAnswer(id, answer) }); };
+  public readonly evaluateEdgeCaseAnswer: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); const { answer } = getValidated(res, 'body', AnswerBodySchema); const session = await this.service.evaluateEdgeCaseAnswer(id, answer); await this.publish('session.updated', { sessionId: id, conceptId: session.conceptId }, res.locals.userId!); res.json({ data: session }); };
 
   public readonly getConfidences: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); res.json({ data: await this.service.getConfidences(id) }); };
 
-  public readonly saveConfidence: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); const { value } = getValidated(res, 'body', ConfidenceBodySchema); res.json({ data: await this.service.saveConfidence(id, value) }); };
+  public readonly saveConfidence: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); const { value } = getValidated(res, 'body', ConfidenceBodySchema); const confidence = await this.service.saveConfidence(id, value); await this.publish('confidence.updated', { conceptId: id }, res.locals.userId!); res.json({ data: confidence }); };
 
-  public readonly deleteConfidence: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); await this.service.deleteConfidence(id); res.status(204).end(); };
+  public readonly deleteConfidence: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); await this.service.deleteConfidence(id); await this.publish('confidence.deleted', { conceptId: id }, res.locals.userId!); res.status(204).end(); };
 
   public readonly getPerformance: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); res.json({ data: await this.service.getPerformance(id) }); };
 
+  public readonly getPracticeContext: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); res.json({ data: await this.service.getPracticeContext(id) }); };
+
   public readonly getPracticeFocus: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); const body = getValidated(res, 'body', CreatePracticeProjectBodySchema); const focus = await this.service.getPracticeFocus(id, body); res.json({ data: { focusMode: body.focusMode, priorities: focus.priorities } }); };
 
-  public readonly generatePracticeProject: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); const body = getValidated(res, 'body', CreatePracticeProjectBodySchema); res.status(201).json({ data: await this.service.generatePracticeProject(id, body) }); };
+  public readonly generatePracticeProject: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); const body = getValidated(res, 'body', CreatePracticeProjectBodySchema); const project = await this.service.generatePracticeProject(id, body); await this.publish('practice.created', { materialId: id, projectId: project.id }, res.locals.userId!); res.status(201).json({ data: project }); };
 
   public readonly getPracticeProjects: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); res.json({ data: await this.service.getPracticeProjects(id) }); };
 
@@ -141,6 +157,21 @@ export class IngestionController {
       cursor === undefined
         ? await this.ingestion.latestEventId(res.locals.userId!)
         : Number(cursor);
+    let closed = false
+    let unsubscribe = () => {}
+    let flush = Promise.resolve()
+    const send = () => {
+      flush = flush.then(async () => {
+        if (closed) return
+        for (const event of await this.ingestion.events(Number.isSafeInteger(after) ? after : 0, res.locals.userId!)) {
+          after = Number(event.id)
+          res.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.payload)}\n\n`)
+        }
+      }).catch((error) => {
+        console.error(JSON.stringify({ level: 'error', operation: 'sse-flush', error: String(error) }))
+      })
+    }
+    unsubscribe = await this.ingestion.subscribe(res.locals.userId!, send)
     res
       .status(200)
       .set({
@@ -151,24 +182,11 @@ export class IngestionController {
       })
       .flushHeaders();
     res.write('retry: 2000\n: connected\n\n');
-    const send = async () => {
-      for (const event of await this.ingestion.events(
-        Number.isSafeInteger(after) ? after : 0,
-        res.locals.userId!,
-      )) {
-        after = Number(event.id);
-        res.write(
-          `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.payload)}\n\n`,
-        );
-      }
-    };
-    await send();
-    const poll = setInterval(() => {
-      void send();
-    }, 1_000);
+    send()
     const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15_000);
     req.on('close', () => {
-      clearInterval(poll);
+      closed = true
+      unsubscribe()
       clearInterval(heartbeat);
     });
   };
