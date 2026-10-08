@@ -8,6 +8,12 @@ export const CreateMaterialBodySchema = z.object({
 })
 export type CreateMaterialBody = z.infer<typeof CreateMaterialBodySchema>
 
+export const UploadMaterialBodySchema = z.object({
+  title: z.string().trim().min(1).max(160).optional(),
+  locale: SupportedLocaleSchema.default('pt-BR'),
+})
+export type UploadMaterialBody = z.infer<typeof UploadMaterialBodySchema>
+
 export const IdParamsSchema = z.object({ id: z.string().uuid() })
 export type IdParams = z.infer<typeof IdParamsSchema>
 

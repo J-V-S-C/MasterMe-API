@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { MaterialSchema, MAX_MATERIAL_LENGTH } from '../domain/masterme';
-import { ConfidenceBodySchema, CreateMaterialBodySchema, CreatePracticeProjectBodySchema } from './http.schema';
+import { ConfidenceBodySchema, CreateMaterialBodySchema, CreatePracticeProjectBodySchema, UploadMaterialBodySchema } from './http.schema';
 
 const id = '11111111-1111-4111-8111-111111111111';
 
@@ -20,4 +20,11 @@ describe('limites de material', () => {
 
   test('aceita conteúdo persistido maior quando veio de upload', () =>
     expect(MaterialSchema.safeParse({ id, title: 'Material', content: longContent, createdAt: new Date().toISOString() }).success).toBeTrue());
+});
+
+describe('idioma de upload', () => {
+  test('usa pt-BR por padrão e aceita en-US explicitamente', () => {
+    expect(UploadMaterialBodySchema.parse({}).locale).toBe('pt-BR');
+    expect(UploadMaterialBodySchema.parse({ locale: 'en-US' }).locale).toBe('en-US');
+  });
 });

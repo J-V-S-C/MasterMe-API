@@ -8,6 +8,7 @@ import {
   CreateMaterialBodySchema,
   IdParamsSchema,
   LocaleBodySchema,
+  UploadMaterialBodySchema,
 } from '../schemas/http.schema';
 import type { MasterMeService } from '../services/masterme.service';
 import multer from 'multer';
@@ -28,7 +29,7 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
     const files = new IngestionController(ingestion);
     router.get('/events', files.events);
     router.get('/processing/overview', files.overview);
-    router.post('/materials/upload', upload.single('file'), files.upload);
+    router.post('/materials/upload', upload.single('file'), validateRequest({ body: UploadMaterialBodySchema }), files.upload);
     router.post('/materials/:id/extract', aiBurstRateLimit, validateRequest({ params: IdParamsSchema }), files.extract);
     router.delete('/materials/:id/extract', validateRequest({ params: IdParamsSchema }), files.cancelExtraction);
     router.get('/materials/:id/status', validateRequest({ params: IdParamsSchema }), files.status);
