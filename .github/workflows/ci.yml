@@ -21,7 +21,7 @@ jobs:
         env:
           POSTGRES_DB: masterme_test
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
@@ -30,7 +30,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      MIGRATION_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/masterme_test
+      MIGRATION_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/masterme_test
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
