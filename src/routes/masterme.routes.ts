@@ -22,7 +22,7 @@ import { aiBurstRateLimit } from '../middleware/rate-limit';
 
 export const createMasterMeRouter = (service: MasterMeService, ingestion?: IngestionService, pool?: Pool, aiDailyLimit = 100): Router => {
   const router = Router();
-  const controller = new MasterMeController(service, aiDailyLimit);
+  const controller = new MasterMeController(service, aiDailyLimit, ingestion);
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
   if (pool) router.use(authenticate, bindAiUsageOwner, authorizeResource(pool));
   if (ingestion) {
@@ -58,6 +58,7 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
         'PUT /api/concepts/:id/confidence',
         'DELETE /api/concepts/:id/confidence',
         'GET /api/materials/:id/performance',
+        'GET /api/materials/:id/practice-context',
         'POST /api/materials/:id/practice-focus',
         'POST /api/materials/:id/practice-projects',
         'GET /api/materials/:id/practice-projects',
@@ -142,6 +143,7 @@ export const createMasterMeRouter = (service: MasterMeService, ingestion?: Inges
   router.put('/concepts/:id/confidence', validateRequest({ params: IdParamsSchema, body: ConfidenceBodySchema }), controller.saveConfidence);
   router.delete('/concepts/:id/confidence', validateRequest({ params: IdParamsSchema }), controller.deleteConfidence);
   router.get('/materials/:id/performance', validateRequest({ params: IdParamsSchema }), controller.getPerformance);
+  router.get('/materials/:id/practice-context', validateRequest({ params: IdParamsSchema }), controller.getPracticeContext);
   router.post('/materials/:id/practice-focus', validateRequest({ params: IdParamsSchema, body: CreatePracticeProjectBodySchema }), controller.getPracticeFocus);
   router.post('/materials/:id/practice-projects', aiBurstRateLimit, validateRequest({ params: IdParamsSchema, body: CreatePracticeProjectBodySchema }), controller.generatePracticeProject);
   router.get('/materials/:id/practice-projects', validateRequest({ params: IdParamsSchema }), controller.getPracticeProjects);

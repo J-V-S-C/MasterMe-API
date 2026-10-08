@@ -88,6 +88,11 @@ describe('MasterMeService — jornada livre', () => {
     expect(second).toEqual(first);
     expect(first.prioritizedConcepts).toHaveLength(2);
     expect(llm.projects).toBe(1);
+    const context = await service.getPracticeContext(material.id);
+    expect(context.knowledgeMap).toHaveLength(2);
+    expect(context.confidences).toEqual([]);
+    expect(context.performance).toHaveLength(2);
+    expect(context.projects[0]?.id).toBe(first.id);
   });
 
   test('confiança pode ser criada, atualizada e removida', async () => {

@@ -7,6 +7,7 @@ import type { MasterMeService } from './masterme.service'
 import { AppError, NotFoundError } from './errors'
 import { withAiUsageOwner } from './ai-usage-context'
 import type { SupportedLocale } from '../domain/masterme'
+import { ActivityEventHub } from './activity-event-hub'
 
 export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 const allowed = new Map([['application/pdf', 'PDF'], ['text/plain', 'TXT'], ['text/markdown', 'MARKDOWN'], ['text/x-markdown', 'MARKDOWN']])
@@ -53,7 +54,7 @@ const textFromFile = async (mime: string, data: Buffer): Promise<string> => {
 }
 
 export class IngestionService {
-  public constructor(private readonly pool: Pool, private readonly storage: LocalMaterialStorage) {}
+  public constructor(private readonly pool: Pool, private readonly storage: LocalMaterialStorage, private readonly eventHub = new ActivityEventHub(pool)) {}
   public async upload(file: Express.Multer.File, title: string | undefined, locale: SupportedLocale, ownerId: string): Promise<{ id: string; title: string; status: string }> {
     const kind = allowed.get(file.mimetype)
     if (!kind || file.size > MAX_UPLOAD_BYTES) throw new AppError(400, 'INVALID_FILE', 'Envie um PDF, Markdown ou TXT de até 15 MiB.')
@@ -83,7 +84,10 @@ export class IngestionService {
     return { id: result.rows[0].id, status: 'CANCELLED' }
   }
   public async status(id: string): Promise<object> { const result = await this.pool.query("SELECT m.id,m.processing_status AS status,m.processing_error AS error,m.processed_at AS \"processedAt\",j.id AS \"jobId\",j.stage,j.total_chunks AS \"totalChunks\",j.completed_chunks AS \"completedChunks\",j.progress_percent AS \"progressPercent\",j.attempts,j.started_at AS \"startedAt\",j.finished_at AS \"finishedAt\" FROM study_materials m LEFT JOIN LATERAL (SELECT * FROM processing_jobs WHERE material_id=m.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE m.id=$1", [id]); if (!result.rows[0]) throw new NotFoundError('Material'); return result.rows[0] as object }
-  public async event(type: string, payload: object, ownerId: string): Promise<void> { await this.pool.query('INSERT INTO activity_events (type,payload,owner_id) VALUES ($1,$2,$3)', [type, JSON.stringify(payload), ownerId]) }
+  public async event(type: string, payload: object, ownerId: string): Promise<void> {
+    await this.pool.query("WITH inserted AS (INSERT INTO activity_events (type,payload,owner_id) VALUES ($1,$2,$3) RETURNING id) SELECT id,pg_notify('masterme_activity',$3::text) FROM inserted", [type, JSON.stringify(payload), ownerId])
+  }
+  public subscribe(ownerId: string, listener: () => void): Promise<() => void> { return this.eventHub.subscribe(ownerId, listener) }
   public async events(after: number, ownerId: string): Promise<Array<{ id: string; type: string; payload: object }>> { const result = await this.pool.query('SELECT id,type,payload FROM activity_events WHERE id > $1 AND owner_id=$2 ORDER BY id ASC LIMIT 100', [after, ownerId]); return result.rows as Array<{ id: string; type: string; payload: object }> }
   public async latestEventId(ownerId: string): Promise<number> { const result = await this.pool.query('SELECT COALESCE(MAX(id), 0)::int AS id FROM activity_events WHERE owner_id=$1', [ownerId]); return Number(result.rows[0]?.id ?? 0) }
   public async overview(ownerId: string): Promise<object> { const result = await this.pool.query("SELECT j.status,count(*)::int AS count FROM processing_jobs j JOIN study_materials m ON m.id=j.material_id WHERE m.owner_id=$1 GROUP BY j.status", [ownerId]); const oldest = await this.pool.query("SELECT j.material_id,j.created_at FROM processing_jobs j JOIN study_materials m ON m.id=j.material_id WHERE j.status='PROCESSING' AND m.owner_id=$1 ORDER BY j.created_at LIMIT 1", [ownerId]); return { jobs: result.rows, oldestProcessing: oldest.rows[0] ?? null } }

@@ -6,6 +6,7 @@ import type {
   EdgeCaseChallenge,
   IsomorphicProblem,
   MasterMeQuestion,
+  MaterialSummary,
   PracticeProject,
   StudyMaterial,
   StudySession,
@@ -32,6 +33,13 @@ export interface KnowledgeMapConcept {
   question: MasterMeQuestion;
 }
 
+export interface PracticeContext {
+  knowledgeMap: KnowledgeMapConcept[];
+  confidences: ConceptConfidence[];
+  performance: ConceptPerformance[];
+  projects: PracticeProject[];
+}
+
 export class MasterMeService {
   public constructor(
     private readonly repository: MasterMeRepository,
@@ -50,7 +58,7 @@ export class MasterMeService {
     return (await this.repository.findMaterial(id)) ?? this.throwNotFound('Material');
   }
 
-  public getAllMaterials(ownerId: string): Promise<StudyMaterial[]> { return this.repository.findAllMaterials(ownerId); }
+  public getAllMaterials(ownerId: string): Promise<MaterialSummary[]> { return this.repository.findAllMaterials(ownerId); }
 
   public async extractConcepts(
     materialId: string,
@@ -132,6 +140,10 @@ export class MasterMeService {
   public async getKnowledgeMap(materialId: string): Promise<KnowledgeMapConcept[]> {
     const concepts = await this.getConcepts(materialId);
     const sessions = await this.repository.findSessionsByConceptIds(concepts.map(({ id }) => id));
+    return this.buildKnowledgeMap(concepts, sessions);
+  }
+
+  private buildKnowledgeMap(concepts: Concept[], sessions: StudySession[]): KnowledgeMapConcept[] {
     const latest = new Map<string, StudySession>();
     for (const session of sessions) if (!latest.get(session.conceptId) || latest.get(session.conceptId)!.updatedAt < session.updatedAt) latest.set(session.conceptId, session);
     return concepts.map((concept) => {
@@ -221,6 +233,10 @@ export class MasterMeService {
   public async getPerformance(materialId: string): Promise<ConceptPerformance[]> {
     const concepts = await this.getConcepts(materialId);
     const sessions = await this.repository.findSessionsByConceptIds(concepts.map(({ id }) => id));
+    return this.buildPerformance(concepts, sessions);
+  }
+
+  private buildPerformance(concepts: Concept[], sessions: StudySession[]): ConceptPerformance[] {
     return concepts.map((concept) => {
       const attempts = sessions
         .filter(({ conceptId }) => conceptId === concept.id)
@@ -236,6 +252,22 @@ export class MasterMeService {
       const performanceNeed = latestStatus === 'LOGICAL_BREAK' ? 1 : latestStatus === 'INCOMPLETE' ? 0.6 : latestStatus === 'PASSED' ? 0 : null
       return { conceptId: concept.id, passedAttempts, logicalBreaks, incompleteAttempts, totalInitialAttempts, failedInitialAttempts, weakness: totalInitialAttempts ? (2 * logicalBreaks + incompleteAttempts) / (2 * totalInitialAttempts) : null, latestStatus, performanceNeed };
     });
+  }
+
+  public async getPracticeContext(materialId: string): Promise<PracticeContext> {
+    const concepts = await this.getConcepts(materialId);
+    const ids = concepts.map(({ id }) => id);
+    const [sessions, confidences, projects] = await Promise.all([
+      this.repository.findSessionsByConceptIds(ids),
+      this.repository.findConfidencesByConceptIds(ids),
+      this.repository.findPracticeProjectsByMaterial(materialId),
+    ]);
+    return {
+      knowledgeMap: this.buildKnowledgeMap(concepts, sessions),
+      confidences,
+      performance: this.buildPerformance(concepts, sessions),
+      projects,
+    };
   }
 
   public async generatePracticeProject(materialId: string, input: CreatePracticeProjectBody): Promise<PracticeProject> {

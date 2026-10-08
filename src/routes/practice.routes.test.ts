@@ -48,6 +48,8 @@ describe('rotas da nova jornada', () => {
     const payload = await created.json() as { data: { id: string } };
     expect((await fetch(`${baseUrl}/api/materials/${material.id}/practice-projects`)).status).toBe(200);
     expect((await fetch(`${baseUrl}/api/practice-projects/${payload.data.id}`)).status).toBe(200);
+    const context = await fetch(`${baseUrl}/api/materials/${material.id}/practice-context`);
+    expect(await context.json()).toMatchObject({ data: { knowledgeMap: [{ concept: { id: '11111111-1111-4111-8111-111111111111' } }], confidences: [], performance: [{ performanceNeed: null }], projects: [{ id: payload.data.id }] } });
   }));
 
   test('explicação aprovada permite solicitar e responder caso-limite', async () => setup(async (baseUrl, _material, concept) => {
