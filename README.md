@@ -152,3 +152,7 @@ depois de migrations, atualização dos containers e health check bem-sucedidos.
 - Arquivos brutos ficam em volume local; produção deve usar object storage.
 
 As fontes de verdade de produto são `../scope.md` e `../prd.md`; prioridades ficam em `../backlog.md` e os guardrails de engenharia em `../agents.md`.
+
+Mudanças de código seguem obrigatoriamente o fluxo de PRD temporário e revisão
+por agente independente descrito em [AGENTS.md](./AGENTS.md) e
+[docs/ENGINEERING_WORKFLOW.md](./docs/ENGINEERING_WORKFLOW.md).
