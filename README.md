@@ -151,7 +151,10 @@ depois de migrations, atualização dos containers e health check bem-sucedidos.
 - O Projeto de prática não recebe, executa ou avalia uma solução.
 - Arquivos brutos ficam em volume local; produção deve usar object storage.
 
-As fontes de verdade de produto são `../scope.md` e `../prd.md`; prioridades ficam em `../backlog.md` e os guardrails de engenharia em `../agents.md`.
+Em um clone independente, este README e os contratos versionados em `docs/`,
+`API.md` quando existir, e `DEPLOYMENT.md` são as fontes operacionais. Contexto
+de produto mantido em um workspace pai pode complementar uma tarefa, mas não é
+pré-requisito oculto nem substitui decisões registradas no PR.
 
 Mudanças de código seguem obrigatoriamente o fluxo de PRD temporário e revisão
 por agente independente descrito em [AGENTS.md](./AGENTS.md) e
