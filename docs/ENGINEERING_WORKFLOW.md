@@ -2,8 +2,8 @@
 
 ## PRD temporário
 
-Antes de alterar código, crie `../.task-prds/YYYY-MM-DD-slug.md` no workspace
-compartilhado. O arquivo deve conter:
+Antes de alterar código, crie `.task-prds/YYYY-MM-DD-slug.md` na raiz deste
+repositório. O arquivo deve conter:
 
 - problema, objetivo e não objetivos;
 - contratos e dados afetados;
@@ -29,7 +29,14 @@ o código que revisa. Ele classifica achados por severidade e verifica:
 - compatibilidade de API, OpenAPI e documentação.
 
 O PR registra quem revisou, os achados e como foram resolvidos. Se houver mudança
-material após a revisão, solicite uma segunda passada.
+material após a revisão, solicite uma segunda passada. Achados `CRITICAL` e
+`HIGH` impedem merge/conclusão até correção e novo veredito explícito. Achados
+menores precisam de resolução ou aceite de risco documentado.
+
+O registro no corpo do PR inclui o caminho/ID do PRD, autor, revisor, SHA exato
+revisado, achados com severidade, resoluções, veredito e confirmação de nova
+passada quando o SHA mudar materialmente. O PRD permanece ignorado e é removido
+localmente ao final; o corpo do PR preserva a evidência auditável.
 
 ## Validação
 

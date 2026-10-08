@@ -6,6 +6,7 @@
     "start": "bun server.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "validate": "bun run typecheck && bun test",
     "migrate": "bun migrate.ts"
   },
   "dependencies": {
