@@ -25,3 +25,9 @@ export class ConflictError extends AppError {
     super(409, 'INVALID_STATE', message)
   }
 }
+
+export class SessionConflictError extends AppError {
+  public constructor() {
+    super(409, 'SESSION_CONFLICT', 'A sessão foi atualizada por outra solicitação. Recarregue e tente novamente.')
+  }
+}

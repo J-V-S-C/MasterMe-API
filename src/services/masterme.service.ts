@@ -14,7 +14,7 @@ import type {
 } from '../domain/masterme';
 import type { MasterMeRepository } from '../repositories/masterme.repository';
 import type { CreateMaterialBody, CreatePracticeProjectBody } from '../schemas/http.schema';
-import { ConflictError, NotFoundError } from './errors';
+import { ConflictError, NotFoundError, SessionConflictError } from './errors';
 import type { ExtractionProgress, MasterMeLlmGateway } from './llm.gateway';
 import { MasterMeTemplateService } from './masterme-template.service';
 import { PracticeFocusService } from './practice-focus.service';
@@ -160,7 +160,7 @@ export class MasterMeService {
     const concepts = await this.repository.findConceptsByMaterial(concept.materialId);
     const previous = await this.repository.findSessionsByConceptIds([conceptId]);
     const timestamp = now();
-    const session: StudySession = { id: randomUUID(), conceptId, state: 'QUESTION_READY', question: this.questionForConcept(concept, concepts, previous.length), edgeCaseStatus: 'NOT_REQUESTED', edgeCaseChallenge: null, attempts: [], createdAt: timestamp, updatedAt: timestamp };
+    const session: StudySession = { id: randomUUID(), conceptId, version: 1, state: 'QUESTION_READY', question: this.questionForConcept(concept, concepts, previous.length), edgeCaseStatus: 'NOT_REQUESTED', edgeCaseChallenge: null, attempts: [], createdAt: timestamp, updatedAt: timestamp };
     await this.repository.saveSession(session);
     return session;
   }
@@ -175,11 +175,11 @@ export class MasterMeService {
     if (session.state !== 'QUESTION_READY' && session.state !== 'RETRY_INITIAL') throw new ConflictError('A sessão não aceita uma resposta inicial neste momento.');
     const concept = (await this.repository.findConcept(session.conceptId)) ?? this.throwNotFound('Conceito');
     const requestHash = this.hash({ version: EVALUATION_PROMPT_VERSION, stage: 'INITIAL', concept, question: session.question, answer });
-    const evaluation = (await this.repository.findEvaluation(requestHash)) ?? (await this.llm.evaluateAnswer(concept, session.question, answer));
-    await this.repository.saveEvaluation(requestHash, evaluation);
-    const updated: StudySession = { ...session, state: evaluation.status === 'PASSED' ? 'EXPLANATION_PASSED' : 'RETRY_INITIAL', attempts: [...session.attempts, { stage: 'INITIAL', answer, evaluation, createdAt: now() }], updatedAt: now() };
-    await this.replaceSession(updated, session.state);
-    return updated;
+    return this.mutateSession(session, requestHash, async (claimed) => {
+      const evaluation = (await this.repository.findEvaluation(requestHash)) ?? (await this.llm.evaluateAnswer(concept, claimed.question, answer));
+      await this.repository.saveEvaluation(requestHash, evaluation);
+      return { ...claimed, state: evaluation.status === 'PASSED' ? 'EXPLANATION_PASSED' : 'RETRY_INITIAL', attempts: [...claimed.attempts, { stage: 'INITIAL', answer, evaluation, createdAt: now() }], updatedAt: now() };
+    });
   }
 
   public async requestEdgeCase(sessionId: string): Promise<StudySession> {
@@ -187,16 +187,15 @@ export class MasterMeService {
     if (session.state !== 'EXPLANATION_PASSED') throw new ConflictError('O caso-limite só pode ser solicitado após uma explicação aprovada.');
     if (session.edgeCaseChallenge) return session;
     const concept = (await this.repository.findConcept(session.conceptId)) ?? this.throwNotFound('Conceito');
-    const challenge: EdgeCaseChallenge = concept.edgeCaseQuestion && isUsefulAssessmentQuestion(concept.edgeCaseQuestion)
-      ? { scenario: concept.edgeCases[0] ?? concept.sourceExcerpt, edgeCaseTested: concept.edgeCases[0] ?? concept.fundamentalPremises[0] ?? concept.name, question: concept.edgeCaseQuestion }
-      : await this.llm.generateEdgeCaseChallenge(concept);
-    const usefulChallenge = isUsefulAssessmentQuestion(challenge.question)
-      ? challenge
-      : this.edgeCaseFallback(concept)
-    if (concept.edgeCaseQuestion !== usefulChallenge.question) await this.repository.updateConceptEdgeCaseQuestion(concept.id, usefulChallenge.question);
-    const updated: StudySession = { ...session, edgeCaseStatus: 'READY', edgeCaseChallenge: usefulChallenge, updatedAt: now() };
-    await this.replaceSession(updated, session.state);
-    return updated;
+    const operationHash = this.hash({ version: 'session-operation-v1', type: 'EDGE_CASE_GENERATION', sessionId, sessionVersion: session.version });
+    return this.mutateSession(session, operationHash, async (claimed) => {
+      const challenge: EdgeCaseChallenge = concept.edgeCaseQuestion && isUsefulAssessmentQuestion(concept.edgeCaseQuestion)
+        ? { scenario: concept.edgeCases[0] ?? concept.sourceExcerpt, edgeCaseTested: concept.edgeCases[0] ?? concept.fundamentalPremises[0] ?? concept.name, question: concept.edgeCaseQuestion }
+        : await this.llm.generateEdgeCaseChallenge(concept);
+      const usefulChallenge = isUsefulAssessmentQuestion(challenge.question) ? challenge : this.edgeCaseFallback(concept)
+      if (concept.edgeCaseQuestion !== usefulChallenge.question) await this.repository.updateConceptEdgeCaseQuestion(concept.id, usefulChallenge.question);
+      return { ...claimed, edgeCaseStatus: 'READY', edgeCaseChallenge: usefulChallenge, updatedAt: now() };
+    });
   }
 
   public async evaluateEdgeCaseAnswer(sessionId: string, answer: string): Promise<StudySession> {
@@ -205,11 +204,13 @@ export class MasterMeService {
     if (session.state !== 'EXPLANATION_PASSED' || !session.edgeCaseChallenge || (session.edgeCaseStatus !== 'READY' && session.edgeCaseStatus !== 'REVIEW')) throw new ConflictError('A sessão não aceita uma resposta de caso-limite neste momento.');
     const concept = (await this.repository.findConcept(session.conceptId)) ?? this.throwNotFound('Conceito');
     const requestHash = this.hash({ version: EVALUATION_PROMPT_VERSION, stage: 'EDGE_CASE_REPLY', concept, challenge: session.edgeCaseChallenge, answer });
-    const evaluation = (await this.repository.findEvaluation(requestHash)) ?? (await this.llm.evaluateEdgeCaseAnswer(concept, session.edgeCaseChallenge, answer));
-    await this.repository.saveEvaluation(requestHash, evaluation);
-    const updated: StudySession = { ...session, edgeCaseStatus: evaluation.status === 'PASSED' ? 'PASSED' : 'REVIEW', attempts: [...session.attempts, { stage: 'EDGE_CASE_REPLY', answer, evaluation, createdAt: now() }], updatedAt: now() };
-    await this.replaceSession(updated, session.state);
-    return updated;
+    return this.mutateSession(session, requestHash, async (claimed) => {
+      const challenge = claimed.edgeCaseChallenge
+      if (!challenge) throw new ConflictError('O caso-limite não está disponível.')
+      const evaluation = (await this.repository.findEvaluation(requestHash)) ?? (await this.llm.evaluateEdgeCaseAnswer(concept, challenge, answer));
+      await this.repository.saveEvaluation(requestHash, evaluation);
+      return { ...claimed, edgeCaseStatus: evaluation.status === 'PASSED' ? 'PASSED' : 'REVIEW', attempts: [...claimed.attempts, { stage: 'EDGE_CASE_REPLY', answer, evaluation, createdAt: now() }], updatedAt: now() };
+    });
   }
 
   public evaluateStressReply(sessionId: string, answer: string): Promise<StudySession> { return this.evaluateEdgeCaseAnswer(sessionId, answer); }
@@ -312,7 +313,32 @@ export class MasterMeService {
 
   private questionForConcept(concept: Concept, concepts: Concept[], sessionNumber: number, persisted?: MasterMeQuestion): MasterMeQuestion { return persisted ?? concept.studyQuestion ?? this.templates.generateQuestion(concept, concepts, sessionNumber); }
   private async requireConcept(id: string): Promise<Concept> { return (await this.repository.findConcept(id)) ?? this.throwNotFound('Conceito'); }
-  private async replaceSession(session: StudySession, expectedState: StudySession['state']): Promise<void> { if (!(await this.repository.replaceSession(session, expectedState))) throw new ConflictError('A sessão foi atualizada por outra solicitação. Tente novamente.'); }
+  private async mutateSession(session: StudySession, operationHash: string, mutation: (claimed: StudySession) => Promise<StudySession>): Promise<StudySession> {
+    const leaseToken = randomUUID()
+    const claimedVersion = await this.repository.claimSessionOperation(session.id, session.version, operationHash, leaseToken)
+    if (claimedVersion === undefined) throw new SessionConflictError()
+    let leaseIsCurrent = true
+    const heartbeat = setInterval(() => {
+      void Promise.resolve(this.repository.renewSessionOperation(session.id, claimedVersion, leaseToken))
+        .then((renewed) => { leaseIsCurrent = leaseIsCurrent && renewed })
+        .catch(() => { leaseIsCurrent = false })
+    }, 60_000)
+    heartbeat.unref()
+    try {
+      const changed = await mutation({ ...session, version: claimedVersion })
+      const completed = { ...changed, version: claimedVersion + 1 }
+      leaseIsCurrent = leaseIsCurrent && await this.repository.renewSessionOperation(session.id, claimedVersion, leaseToken)
+      if (!leaseIsCurrent) throw new SessionConflictError()
+      if (!(await this.repository.completeSessionOperation(completed, claimedVersion, leaseToken))) throw new SessionConflictError()
+      return completed
+    } catch (error: unknown) {
+      try { await this.repository.releaseSessionOperation(session.id, claimedVersion, leaseToken) }
+      catch { /* A falha de cleanup não pode ocultar o erro original. O lease expira de forma segura. */ }
+      throw error
+    } finally {
+      clearInterval(heartbeat)
+    }
+  }
   private hash(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
   private throwNotFound(resource: string): never { throw new NotFoundError(resource); }
   private edgeCaseFallback(concept: Concept): EdgeCaseChallenge {

@@ -2,6 +2,7 @@ import { afterAll, expect, test } from 'bun:test'
 import { readFile, readdir } from 'node:fs/promises'
 import { Pool, type PoolClient } from 'pg'
 import { checksumMigration, runMigrations, type Migration } from './migration-runner'
+import { PostgresMasterMeRepository } from '../repositories/postgres-masterme.repository'
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL
 const integrationTest = databaseUrl ? test : test.skip
@@ -39,9 +40,45 @@ integrationTest('PostgreSQL real preserva dados legados, rollback e serializaç�
     await client.query("INSERT INTO auth.users (id) VALUES ('11111111-1111-4111-8111-111111111111')")
     await client.query(`INSERT INTO public.study_materials (id, title, content, created_at, owner_id)
       VALUES ('22222222-2222-4222-8222-222222222222', 'sentinela', 'não apagar', now(), '11111111-1111-4111-8111-111111111111')`)
+    await client.query(`INSERT INTO public.concepts
+      (id,material_id,name,description,kind,source_excerpt,fundamental_premises,edge_cases,prerequisite_ids,next_ids)
+      VALUES ('44444444-4444-4444-8444-444444444444','22222222-2222-4222-8222-222222222222','Concorrência','Teste','NODE','não apagar','["premissa"]','["limite"]','[]','[]')`)
+    await client.query(`INSERT INTO public.study_sessions
+      (id,concept_id,state,question,attempts,created_at,updated_at)
+      VALUES ('55555555-5555-4555-8555-555555555555','44444444-4444-4444-8444-444444444444','QUESTION_READY',
+      '{"text":"Como funciona?","targetPremise":"premissa","expectedReasoningSteps":["explicar"]}','[]',now(),now())`)
+
+    const firstRepository = new PostgresMasterMeRepository(pool)
+    const secondRepository = new PostgresMasterMeRepository(pool)
+    const tokenA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const tokenB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const claims = await Promise.all([
+      firstRepository.claimSessionOperation('55555555-5555-4555-8555-555555555555', 1, 'same-operation', tokenA),
+      secondRepository.claimSessionOperation('55555555-5555-4555-8555-555555555555', 1, 'same-operation', tokenB),
+    ])
+    expect(claims.filter((version) => version !== undefined)).toEqual([1])
+    const winningIndex = claims.findIndex((version) => version === 1)
+    await (winningIndex === 0 ? firstRepository : secondRepository).releaseSessionOperation(
+      '55555555-5555-4555-8555-555555555555', 1, winningIndex === 0 ? tokenA : tokenB,
+    )
+
+    expect(await firstRepository.claimSessionOperation('55555555-5555-4555-8555-555555555555', 1, 'same-operation', tokenA)).toBe(1)
+    await client.query("UPDATE study_sessions SET pending_operation_started_at=now()-interval '11 minutes' WHERE id='55555555-5555-4555-8555-555555555555'")
+    expect(await firstRepository.renewSessionOperation('55555555-5555-4555-8555-555555555555', 1, tokenA)).toBe(true)
+    expect(await secondRepository.claimSessionOperation('55555555-5555-4555-8555-555555555555', 1, 'same-operation', tokenB)).toBeUndefined()
+    await client.query("UPDATE study_sessions SET pending_operation_started_at=now()-interval '11 minutes' WHERE id='55555555-5555-4555-8555-555555555555'")
+    expect(await secondRepository.claimSessionOperation('55555555-5555-4555-8555-555555555555', 1, 'same-operation', tokenB)).toBe(1)
+    expect(await firstRepository.renewSessionOperation('55555555-5555-4555-8555-555555555555', 1, tokenA)).toBe(false)
+    const staleSession = await firstRepository.findSession('55555555-5555-4555-8555-555555555555')
+    if (!staleSession) throw new Error('Sessão de integração ausente')
+    expect(await firstRepository.completeSessionOperation({ ...staleSession, version: 2 }, 1, tokenA)).toBe(false)
+    expect(await secondRepository.completeSessionOperation({ ...staleSession, version: 2 }, 1, tokenB)).toBe(true)
 
     await client.query('DROP TABLE public.schema_migrations')
-    expect(await runMigrations(client, migrations)).toEqual({ baselined: migrations.length, applied: [] })
+    expect(await runMigrations(client, migrations)).toEqual({
+      baselined: 12,
+      applied: migrations.slice(12).map(({ name }) => name),
+    })
     expect(await runMigrations(client, migrations)).toEqual({ baselined: 0, applied: [] })
     const sentinel = await client.query("SELECT content FROM public.study_materials WHERE title = 'sentinela'")
     expect(sentinel.rows).toEqual([{ content: 'não apagar' }])

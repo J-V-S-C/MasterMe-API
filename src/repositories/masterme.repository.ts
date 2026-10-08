@@ -25,10 +25,10 @@ export interface MasterMeRepository {
   saveSession(session: StudySession): Awaitable<void>;
   findSession(id: string): Awaitable<StudySession | undefined>;
   findSessionsByConceptIds(conceptIds: string[]): Awaitable<StudySession[]>;
-  replaceSession(
-    session: StudySession,
-    expectedState: StudySession['state'],
-  ): Awaitable<boolean>;
+  claimSessionOperation(id: string, expectedVersion: number, operationHash: string, leaseToken: string): Awaitable<number | undefined>;
+  renewSessionOperation(id: string, claimedVersion: number, leaseToken: string): Awaitable<boolean>;
+  completeSessionOperation(session: StudySession, claimedVersion: number, leaseToken: string): Awaitable<boolean>;
+  releaseSessionOperation(id: string, claimedVersion: number, leaseToken: string): Awaitable<void>;
   findValidatedConceptIds(): Awaitable<Set<string>>;
   saveConfidence(confidence: ConceptConfidence): Awaitable<void>;
   deleteConfidence(conceptId: string): Awaitable<void>;
@@ -59,6 +59,7 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
   private readonly aiUsage: Array<AiUsageEvent & { ownerId: string; createdAt: Date }> = [];
   private readonly dailyUsage = new Map<string, number>();
   private readonly materialOwners = new Map<string, string>();
+  private readonly pendingSessionOperations = new Map<string, { operationHash: string; leaseToken: string }>();
 
   public saveMaterial(material: StudyMaterial, ownerId: string): void {
     this.materials.set(material.id, material);
@@ -110,14 +111,31 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
     );
   }
 
-  public replaceSession(
-    session: StudySession,
-    expectedState: StudySession['state'],
-  ): boolean {
+  public claimSessionOperation(id: string, expectedVersion: number, operationHash: string, leaseToken: string): number | undefined {
+    const current = this.sessions.get(id)
+    if (!current || current.version !== expectedVersion || this.pendingSessionOperations.has(id)) return undefined
+    this.pendingSessionOperations.set(id, { operationHash, leaseToken })
+    return current.version
+  }
+
+  public renewSessionOperation(id: string, claimedVersion: number, leaseToken: string): boolean {
+    const current = this.sessions.get(id)
+    return current?.version === claimedVersion && this.pendingSessionOperations.get(id)?.leaseToken === leaseToken
+  }
+
+  public completeSessionOperation(session: StudySession, claimedVersion: number, leaseToken: string): boolean {
     const current = this.sessions.get(session.id);
-    if (!current || current.state !== expectedState) return false;
+    if (!current || current.version !== claimedVersion || this.pendingSessionOperations.get(session.id)?.leaseToken !== leaseToken) return false;
     this.sessions.set(session.id, session);
+    this.pendingSessionOperations.delete(session.id)
     return true;
+  }
+
+  public releaseSessionOperation(id: string, claimedVersion: number, leaseToken: string): void {
+    const current = this.sessions.get(id)
+    if (current?.version === claimedVersion && this.pendingSessionOperations.get(id)?.leaseToken === leaseToken) {
+      this.pendingSessionOperations.delete(id)
+    }
   }
 
   public findValidatedConceptIds(): Set<string> {
