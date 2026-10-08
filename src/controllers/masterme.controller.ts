@@ -102,6 +102,8 @@ export class MasterMeController {
 
   public readonly getPerformance: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); res.json({ data: await this.service.getPerformance(id) }); };
 
+  public readonly getPracticeFocus: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); const body = getValidated(res, 'body', CreatePracticeProjectBodySchema); const focus = await this.service.getPracticeFocus(id, body); res.json({ data: { focusMode: body.focusMode, priorities: focus.priorities } }); };
+
   public readonly generatePracticeProject: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); const body = getValidated(res, 'body', CreatePracticeProjectBodySchema); res.status(201).json({ data: await this.service.generatePracticeProject(id, body) }); };
 
   public readonly getPracticeProjects: RequestHandler = async (_req, res) => { const { id } = getValidated(res, 'params', IdParamsSchema); res.json({ data: await this.service.getPracticeProjects(id) }); };

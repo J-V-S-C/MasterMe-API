@@ -13,6 +13,9 @@ export type PracticeFocus = {
   signalSnapshot: unknown;
 };
 
+const ACTIVE_NEED_THRESHOLD = 0.25;
+const AUTOMATIC_FOCUS_LIMIT = 3;
+
 export class PracticeFocusService {
   public select(
     mode: PracticeFocusMode,
@@ -35,39 +38,44 @@ export class PracticeFocusService {
     if (mode === 'CONFIDENCE') {
       const ranked = scoped.flatMap((concept) => {
         const confidence = byConfidence.get(concept.id);
-        return confidence ? [{ concept, confidence }] : [];
-      }).sort((left, right) => left.confidence.value - right.confidence.value || this.byName(left.concept, right.concept));
-      if (!ranked.length) throw new UnprocessableEntityError('Informe a confiança de ao menos um conceito neste escopo.');
-      const selected = ranked.slice(0, 5);
-      return this.result(selected.map(({ concept }) => concept), (concept) => `confiança ${byConfidence.get(concept.id)?.value}/5`, selected.map(({ concept, confidence }) => [concept.id, confidence.value]));
+        if (!confidence) return [];
+        const score = (5 - confidence.value) / 4;
+        return score >= ACTIVE_NEED_THRESHOLD ? [{ concept, confidence, score }] : [];
+      }).sort((left, right) => right.score - left.score || this.byName(left.concept, right.concept));
+      if (!confidences.some(({ conceptId }) => scoped.some(({ id }) => id === conceptId))) throw new UnprocessableEntityError('Informe a confiança de ao menos um conceito neste escopo.');
+      if (!ranked.length) throw this.noActiveDifficulty();
+      const selected = ranked.slice(0, AUTOMATIC_FOCUS_LIMIT);
+      return this.result(selected.map(({ concept }) => concept), (concept) => this.confidenceReason(concept, byConfidence.get(concept.id)?.value), selected.map(({ concept, confidence, score }) => [concept.id, confidence.value, score]));
     }
     if (mode === 'PERFORMANCE') {
       const ranked = scoped.flatMap((concept) => {
         const item = byPerformance.get(concept.id);
-        return item?.weakness === null || !item ? [] : [{ concept, item }];
-      }).sort((left, right) => (right.item.weakness ?? 0) - (left.item.weakness ?? 0) || right.item.failedInitialAttempts - left.item.failedInitialAttempts || this.byName(left.concept, right.concept));
-      if (!ranked.length) throw new UnprocessableEntityError('Responda ao menos uma pergunta inicial neste escopo para usar desempenho.');
-      const selected = ranked.slice(0, 5);
-      return this.result(selected.map(({ concept }) => concept), (concept) => {
-        const item = byPerformance.get(concept.id);
-        return `${item?.failedInitialAttempts ?? 0} de ${item?.totalInitialAttempts ?? 0} tentativas iniciais não aprovadas`;
-      }, selected.map(({ concept, item }) => [concept.id, item.weakness, item.failedInitialAttempts]));
+        if (!item || item.performanceNeed === null) return [];
+        return item.performanceNeed >= ACTIVE_NEED_THRESHOLD ? [{ concept, item, score: item.performanceNeed }] : [];
+      }).sort((left, right) => right.score - left.score || this.byName(left.concept, right.concept));
+      if (!performance.some(({ conceptId, performanceNeed }) => performanceNeed !== null && scoped.some(({ id }) => id === conceptId))) throw new UnprocessableEntityError('Responda ao menos uma pergunta inicial neste escopo para usar desempenho.');
+      if (!ranked.length) throw this.noActiveDifficulty();
+      const selected = ranked.slice(0, AUTOMATIC_FOCUS_LIMIT);
+      return this.result(selected.map(({ concept }) => concept), (concept) => this.performanceReason(concept, byPerformance.get(concept.id)), selected.map(({ concept, item, score }) => [concept.id, score, item.latestStatus]));
     }
 
     const ranked = scoped.flatMap((concept) => {
       const confidence = byConfidence.get(concept.id);
       const item = byPerformance.get(concept.id);
-      const scores = [confidence ? (5 - confidence.value) / 4 : null, item?.weakness ?? null].filter((score): score is number => score !== null);
-      return scores.length ? [{ concept, score: scores.reduce((sum, value) => sum + value, 0) / scores.length, confidence, item }] : [];
+      const scores = [confidence ? (5 - confidence.value) / 4 : null, item?.performanceNeed ?? null].filter((score): score is number => score !== null);
+      const score = scores.length ? Math.max(...scores) : null;
+      return score !== null && score >= ACTIVE_NEED_THRESHOLD ? [{ concept, score, confidence, item }] : [];
     }).sort((left, right) => right.score - left.score || this.byName(left.concept, right.concept));
-    if (!ranked.length) throw new UnprocessableEntityError('Informe confiança ou responda uma pergunta inicial neste escopo.');
-    const selected = ranked.slice(0, 5);
+    const hasSignals = scoped.some((concept) => byConfidence.has(concept.id) || byPerformance.get(concept.id)?.performanceNeed !== null);
+    if (!hasSignals) throw new UnprocessableEntityError('Informe confiança ou responda uma pergunta inicial neste escopo.');
+    if (!ranked.length) throw this.noActiveDifficulty();
+    const selected = ranked.slice(0, AUTOMATIC_FOCUS_LIMIT);
     return this.result(selected.map(({ concept }) => concept), (concept) => {
       const confidence = byConfidence.get(concept.id);
       const item = byPerformance.get(concept.id);
-      if (confidence && item?.weakness !== null && item) return `confiança ${confidence.value}/5 combinada com desempenho`;
-      return confidence ? `confiança ${confidence.value}/5` : 'desempenho nas tentativas iniciais';
-    }, selected.map(({ concept, score, confidence, item }) => [concept.id, score, confidence?.value ?? null, item?.weakness ?? null]));
+      if (confidence && item?.performanceNeed !== null && item) return concept.generatedLocale === 'en-US' ? `confidence ${confidence.value}/5 combined with latest performance` : `confiança ${confidence.value}/5 combinada ao desempenho mais recente`;
+      return confidence ? this.confidenceReason(concept, confidence.value) : this.performanceReason(concept, item);
+    }, selected.map(({ concept, score, confidence, item }) => [concept.id, score, confidence?.value ?? null, item?.performanceNeed ?? null, item?.latestStatus ?? null]));
   }
 
   private scope(concepts: Concept[], conceptIds?: string[]): Concept[] {
@@ -80,6 +88,19 @@ export class PracticeFocusService {
 
   private result(concepts: Concept[], reason: (concept: Concept) => string, signalSnapshot: unknown): PracticeFocus {
     return { concepts, priorities: concepts.map((concept) => ({ conceptId: concept.id, name: concept.name, reason: reason(concept) })), signalSnapshot };
+  }
+
+  private confidenceReason(concept: Concept, value: number | undefined): string {
+    return concept.generatedLocale === 'en-US' ? `self-reported confidence ${value}/5` : `confiança informada ${value}/5`;
+  }
+
+  private performanceReason(concept: Concept, item: ConceptPerformance | undefined): string {
+    const status = item?.latestStatus ?? 'INCOMPLETE';
+    return concept.generatedLocale === 'en-US' ? `latest initial answer: ${status}` : `resposta inicial mais recente: ${status}`;
+  }
+
+  private noActiveDifficulty(): UnprocessableEntityError {
+    return new UnprocessableEntityError('Nenhuma dificuldade ativa foi encontrada. Use seleção manual ou visão geral se ainda quiser gerar um projeto.');
   }
 
   private readonly byName = (left: Concept, right: Concept): number => left.name.localeCompare(right.name, 'pt-BR');
