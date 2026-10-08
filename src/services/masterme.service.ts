@@ -17,6 +17,7 @@ import { ConflictError, NotFoundError } from './errors';
 import type { ExtractionProgress, MasterMeLlmGateway } from './llm.gateway';
 import { MasterMeTemplateService } from './masterme-template.service';
 import { PracticeFocusService } from './practice-focus.service';
+import type { PracticeFocus } from './practice-focus.service';
 import { isUsefulAssessmentQuestion } from './assessment-quality';
 
 const now = (): string => new Date().toISOString();
@@ -239,11 +240,7 @@ export class MasterMeService {
 
   public async generatePracticeProject(materialId: string, input: CreatePracticeProjectBody): Promise<PracticeProject> {
     const material = await this.getMaterial(materialId);
-    const concepts = await this.repository.findConceptsByMaterial(materialId);
-    if (!concepts.length) throw new ConflictError('Extraia os conceitos antes de gerar um Projeto de prática.');
-    const confidences = await this.repository.findConfidencesByConceptIds(concepts.map(({ id }) => id));
-    const performance = await this.getPerformance(materialId);
-    const focus = this.focus.select(input.focusMode, concepts, input.conceptIds, confidences, performance);
+    const focus = await this.getPracticeFocus(materialId, input);
     const inputHash = this.hash({ version: PRACTICE_PROMPT_VERSION, material: { id: material.id, title: material.title }, concepts: focus.concepts.map(({ id, name, description, sourceExcerpt, fundamentalPremises, edgeCases }) => ({ id, name, description, sourceExcerpt, fundamentalPremises, edgeCases })), focusMode: input.focusMode, conceptIds: input.conceptIds ? [...input.conceptIds].sort() : null, signals: focus.signalSnapshot });
     const cached = await this.repository.findPracticeProjectByHash(inputHash);
     if (cached) return cached;
@@ -251,6 +248,14 @@ export class MasterMeService {
     const project: PracticeProject = { id: randomUUID(), materialId, ...generated, prioritizedConcepts: focus.priorities, focusMode: input.focusMode, createdAt: now() };
     await this.repository.savePracticeProject(project, inputHash);
     return project;
+  }
+
+  public async getPracticeFocus(materialId: string, input: CreatePracticeProjectBody): Promise<PracticeFocus> {
+    const concepts = await this.getConcepts(materialId);
+    if (!concepts.length) throw new ConflictError('Extraia os conceitos antes de preparar um Projeto de prática.');
+    const confidences = await this.repository.findConfidencesByConceptIds(concepts.map(({ id }) => id));
+    const performance = await this.getPerformance(materialId);
+    return this.focus.select(input.focusMode, concepts, input.conceptIds, confidences, performance);
   }
 
   public async getPracticeProjects(materialId: string): Promise<PracticeProject[]> { await this.getMaterial(materialId); return this.repository.findPracticeProjectsByMaterial(materialId); }

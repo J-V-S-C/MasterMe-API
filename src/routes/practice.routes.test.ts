@@ -41,6 +41,8 @@ describe('rotas da nova jornada', () => {
   }));
 
   test('gera, lista e recupera Projeto de prática sem sessão', async () => setup(async (baseUrl, material) => {
+    const preview = await fetch(`${baseUrl}/api/materials/${material.id}/practice-focus`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ focusMode: 'OVERVIEW' }) });
+    expect(await preview.json()).toMatchObject({ data: { focusMode: 'OVERVIEW', priorities: [{ name: 'Contrato' }] } });
     const created = await fetch(`${baseUrl}/api/materials/${material.id}/practice-projects`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ focusMode: 'OVERVIEW' }) });
     expect(created.status).toBe(201);
     const payload = await created.json() as { data: { id: string } };

@@ -61,6 +61,7 @@ bun test
 | PUT    | `/api/concepts/:id/confidence`         | Cria ou atualiza confiança de 1 a 5.                        |
 | DELETE | `/api/concepts/:id/confidence`         | Remove confiança.                                           |
 | GET    | `/api/materials/:id/performance`       | Expõe desempenho determinístico por conceito.               |
+| POST   | `/api/materials/:id/practice-focus`    | Pré-visualiza o foco sem consumir IA.                        |
 | POST   | `/api/materials/:id/practice-projects` | Gera ou recupera do cache um Projeto de prática.            |
 | GET    | `/api/materials/:id/practice-projects` | Lista projetos do material.                                 |
 | GET    | `/api/practice-projects/:id`           | Recupera um projeto.                                        |
