@@ -63,10 +63,43 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
 
   public async findConcept(id: string): Promise<Concept | undefined> { const result = await this.pool.query('SELECT * FROM concepts WHERE id=$1', [id]); return this.toConcept(result.rows[0]) }
   public async findConceptsByMaterial(materialId: string): Promise<Concept[]> { const result = await this.pool.query('SELECT * FROM concepts WHERE material_id=$1', [materialId]); return result.rows.flatMap((row) => { const concept = this.toConcept(row); return concept ? [concept] : [] }) }
-  public async saveSession(session: StudySession): Promise<void> { await this.pool.query('INSERT INTO study_sessions (id,concept_id,state,question,stress_test,edge_case_status,edge_case_challenge,attempts,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)', [session.id,session.conceptId,session.state,JSON.stringify(session.question),null,session.edgeCaseStatus,JSON.stringify(session.edgeCaseChallenge),JSON.stringify(session.attempts),session.createdAt,session.updatedAt]) }
+  public async saveSession(session: StudySession): Promise<void> { await this.pool.query('INSERT INTO study_sessions (id,concept_id,version,state,question,stress_test,edge_case_status,edge_case_challenge,attempts,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [session.id,session.conceptId,session.version,session.state,JSON.stringify(session.question),null,session.edgeCaseStatus,JSON.stringify(session.edgeCaseChallenge),JSON.stringify(session.attempts),session.createdAt,session.updatedAt]) }
   public async findSession(id: string): Promise<StudySession | undefined> { const result = await this.pool.query('SELECT * FROM study_sessions WHERE id=$1',[id]); return this.toSession(result.rows[0]) }
   public async findSessionsByConceptIds(conceptIds: string[]): Promise<StudySession[]> { if (conceptIds.length === 0) return []; const result = await this.pool.query('SELECT * FROM study_sessions WHERE concept_id = ANY($1::uuid[])',[conceptIds]); return result.rows.flatMap((row) => { const session = this.toSession(row); return session ? [session] : [] }) }
-  public async replaceSession(session: StudySession, expectedState: StudySession['state']): Promise<boolean> { const result = await this.pool.query('UPDATE study_sessions SET state=$1, edge_case_status=$2, edge_case_challenge=$3, attempts=$4, updated_at=$5 WHERE id=$6 AND state=$7',[session.state,session.edgeCaseStatus,JSON.stringify(session.edgeCaseChallenge),JSON.stringify(session.attempts),session.updatedAt,session.id,expectedState]); return result.rowCount === 1 }
+  public async claimSessionOperation(id: string, expectedVersion: number, operationHash: string, leaseToken: string): Promise<number | undefined> {
+    const result = await this.pool.query(
+      `UPDATE study_sessions SET pending_operation_hash=$3,pending_operation_token=$4,pending_operation_started_at=now()
+       WHERE id=$1 AND version=$2
+         AND (pending_operation_hash IS NULL OR pending_operation_started_at < now() - interval '10 minutes')
+       RETURNING version`,
+      [id, expectedVersion, operationHash, leaseToken],
+    )
+    return result.rows[0] ? Number(result.rows[0].version) : undefined
+  }
+  public async renewSessionOperation(id: string, claimedVersion: number, leaseToken: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE study_sessions SET pending_operation_started_at=now()
+       WHERE id=$1 AND version=$2 AND pending_operation_token=$3::uuid RETURNING id`,
+      [id, claimedVersion, leaseToken],
+    )
+    return result.rowCount === 1
+  }
+  public async completeSessionOperation(session: StudySession, claimedVersion: number, leaseToken: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE study_sessions SET state=$1,edge_case_status=$2,edge_case_challenge=$3,attempts=$4,updated_at=$5,
+       version=$6,pending_operation_hash=NULL,pending_operation_token=NULL,pending_operation_started_at=NULL
+       WHERE id=$7 AND version=$8 AND pending_operation_token=$9::uuid`,
+      [session.state,session.edgeCaseStatus,JSON.stringify(session.edgeCaseChallenge),JSON.stringify(session.attempts),session.updatedAt,session.version,session.id,claimedVersion,leaseToken],
+    )
+    return result.rowCount === 1
+  }
+  public async releaseSessionOperation(id: string, claimedVersion: number, leaseToken: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE study_sessions SET pending_operation_hash=NULL,pending_operation_token=NULL,pending_operation_started_at=NULL
+       WHERE id=$1 AND version=$2 AND pending_operation_token=$3::uuid`,
+      [id, claimedVersion, leaseToken],
+    )
+  }
   public async findValidatedConceptIds(): Promise<Set<string>> { const result = await this.pool.query("SELECT DISTINCT concept_id FROM study_sessions WHERE state = 'EXPLANATION_PASSED'"); return new Set(result.rows.map((row) => z.string().uuid().parse(row.concept_id))) }
   public async saveConfidence(confidence: ConceptConfidence): Promise<void> { await this.pool.query('INSERT INTO concept_confidences (concept_id,value) VALUES ($1,$2) ON CONFLICT (concept_id) DO UPDATE SET value=EXCLUDED.value,updated_at=now()', [confidence.conceptId, confidence.value]) }
   public async deleteConfidence(conceptId: string): Promise<void> { await this.pool.query('DELETE FROM concept_confidences WHERE concept_id=$1', [conceptId]) }
@@ -112,5 +145,5 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
   }
 
   private toConcept(row: unknown): Concept | undefined { if (!row) return undefined; const value = z.object({ id:z.string(), material_id:z.string(), name:z.string(), description:z.string(), kind:z.string(), source_excerpt:z.string(), fundamental_premises:z.unknown(), edge_cases:z.unknown(), study_question:z.unknown().nullable().optional(), edge_case_question:z.string().nullable().optional(), generated_locale:z.string().optional(), prerequisite_ids:z.unknown(), next_ids:z.unknown() }).parse(row); return ConceptSchema.parse({ id:value.id, materialId:value.material_id, name:value.name, description:value.description, kind:value.kind, sourceExcerpt:value.source_excerpt, fundamentalPremises:value.fundamental_premises, edgeCases:value.edge_cases, studyQuestion:value.study_question ?? undefined, edgeCaseQuestion:value.edge_case_question ?? undefined, generatedLocale:value.generated_locale ?? 'und', prerequisiteIds:value.prerequisite_ids, nextIds:value.next_ids }) }
-  private toSession(row: unknown): StudySession | undefined { if (!row) return undefined; const value = z.object({ id:z.string(), concept_id:z.string(), state:z.string(), question:z.unknown(), stress_test:z.unknown().nullable(), edge_case_status:z.string(), edge_case_challenge:z.unknown().nullable(), attempts:z.unknown(), created_at:z.unknown(), updated_at:z.unknown() }).parse(row); return StudySessionSchema.parse({ id:value.id, conceptId:value.concept_id, state:value.state, question:value.question, edgeCaseStatus:value.edge_case_status, edgeCaseChallenge:value.edge_case_challenge, attempts:value.attempts, createdAt:DatabaseDateSchema.parse(value.created_at).toISOString(), updatedAt:DatabaseDateSchema.parse(value.updated_at).toISOString() }) }
+  private toSession(row: unknown): StudySession | undefined { if (!row) return undefined; const value = z.object({ id:z.string(), concept_id:z.string(), version:z.number().int(), state:z.string(), question:z.unknown(), stress_test:z.unknown().nullable(), edge_case_status:z.string(), edge_case_challenge:z.unknown().nullable(), attempts:z.unknown(), created_at:z.unknown(), updated_at:z.unknown() }).parse(row); return StudySessionSchema.parse({ id:value.id, conceptId:value.concept_id, version:value.version, state:value.state, question:value.question, edgeCaseStatus:value.edge_case_status, edgeCaseChallenge:value.edge_case_challenge, attempts:value.attempts, createdAt:DatabaseDateSchema.parse(value.created_at).toISOString(), updatedAt:DatabaseDateSchema.parse(value.updated_at).toISOString() }) }
 }

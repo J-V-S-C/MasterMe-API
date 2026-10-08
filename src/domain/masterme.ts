@@ -96,6 +96,7 @@ export type Attempt = z.infer<typeof AttemptSchema>;
 export const StudySessionSchema = z.object({
   id: z.uuid(),
   conceptId: z.uuid(),
+  version: z.number().int().positive(),
   state: SessionStateSchema,
   question: QuestionSchema,
   edgeCaseStatus: EdgeCaseStatusSchema,
