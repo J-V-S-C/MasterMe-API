@@ -81,6 +81,11 @@ Depois do primeiro lançamento, pushes em `main` fazem deploy automático. A
 execução manual também é recusada fora de `main`; pull requests executam somente
 CI.
 
+O comando `bun run migrate` serializa execuções com advisory lock e registra
+nome/checksum em `schema_migrations`. Instalações anteriores completas recebem
+um baseline seguro até `012`; schema parcial ou migração já aplicada que mudou
+é bloqueado para impedir reaplicação destrutiva.
+
 ## Rollback
 
 Cada backend é publicado com a tag imutável do SHA do commit. Para rollback, execute na VM usando um SHA anterior:

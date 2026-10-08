@@ -1,6 +1,15 @@
--- A autenticação inaugura um ambiente multiusuário. Os dados anônimos do MVP
--- não têm proprietário confiável e são descartados deliberadamente.
-TRUNCATE TABLE study_materials, activity_events, ai_evaluation_cache, ai_usage_events RESTART IDENTITY CASCADE;
+-- A migração antiga apagava dados anônimos para inaugurar o ambiente
+-- multiusuário. Migrações de produção nunca devem destruir dados: instalações
+-- legadas com registros sem proprietário exigem reconciliação manual explícita.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM study_materials LIMIT 1)
+    OR EXISTS (SELECT 1 FROM activity_events LIMIT 1)
+    OR EXISTS (SELECT 1 FROM ai_evaluation_cache LIMIT 1)
+    OR EXISTS (SELECT 1 FROM ai_usage_events LIMIT 1) THEN
+    RAISE EXCEPTION 'Migração 009 bloqueada: existem dados sem proprietário; reconcilie-os antes de continuar.';
+  END IF;
+END $$;
 
 ALTER TABLE study_materials
   ADD COLUMN IF NOT EXISTS owner_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE;
