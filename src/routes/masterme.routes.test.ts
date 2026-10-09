@@ -20,6 +20,7 @@ import { MasterMeService } from '../services/masterme.service'
 
 class EmptyFakeLlm implements MasterMeLlmGateway {
   public async extractKnowledge(_material: StudyMaterial): Promise<ExtractedKnowledge> { return { fragments: [] } }
+  public async localizeKnowledge() { return { fragments: [] } }
   public async generateQuestion(_concept: Concept): Promise<MasterMeQuestion> { throw new Error('Não usado neste teste.') }
   public async evaluateAnswer(_concept: Concept, _question: MasterMeQuestion, _answer: string): Promise<Evaluation> { throw new Error('Não usado neste teste.') }
   public async generateEdgeCaseChallenge(_concept: Concept): Promise<EdgeCaseChallenge> { throw new Error('Não usado neste teste.') }
@@ -43,8 +44,8 @@ const withServer = async (run: (baseUrl: string) => Promise<void>, repository: M
 
 describe('rotas de estudo guiado', () => {
   test.each([{ rows: [] }, { rows: [
-    { id: '11111111-1111-4111-8111-111111111111', title: 'Primeiro', content: 'Primeiro material', created_at: new Date('2026-01-01T00:00:00.000Z') },
-    { id: '22222222-2222-4222-8222-222222222222', title: 'Segundo', content: 'Segundo material', created_at: new Date('2026-01-02T00:00:00.000Z') },
+    { id: '11111111-1111-4111-8111-111111111111', title: 'Primeiro', created_at: new Date('2026-01-01T00:00:00.000Z') },
+    { id: '22222222-2222-4222-8222-222222222222', title: 'Segundo', created_at: new Date('2026-01-02T00:00:00.000Z') },
   ] }])('lista todos os materiais do PostgreSQL: %j', async ({ rows }) => {
     const pool = new Pool()
     const query = spyOn(pool, 'query').mockImplementation(async () => ({ rows: [...rows], rowCount: rows.length, command: 'SELECT', oid: 0, fields: [] }))
@@ -52,10 +53,14 @@ describe('rotas de estudo guiado', () => {
       await withServer(async (baseUrl) => {
         const response = await fetch(`${baseUrl}/api/materials`)
         expect(response.status).toBe(200)
+        expect(response.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate')
+        const etag = response.headers.get('etag')
+        expect(etag).toBeTruthy()
         expect(await response.json()).toEqual({ data: rows.map((row) => ({
-          id: row.id, title: row.title, content: row.content, createdAt: row.created_at.toISOString(),
+          id: row.id, title: row.title, locale: 'pt-BR', createdAt: row.created_at.toISOString(),
         })) })
-        expect(query).toHaveBeenCalledTimes(1)
+        if (etag) expect((await fetch(`${baseUrl}/api/materials`, { headers: { 'if-none-match': etag } })).status).toBe(304)
+        expect(query).toHaveBeenCalledTimes(etag ? 2 : 1)
       }, new PostgresMasterMeRepository(pool))
     } finally {
       query.mockRestore()

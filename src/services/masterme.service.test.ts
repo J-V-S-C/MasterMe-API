@@ -9,16 +9,46 @@ const passed: Evaluation = { status: 'PASSED', missingPremises: [], logicalBreak
 
 class FakeLlm implements MasterMeLlmGateway {
   public projects = 0;
+  public initialEvaluations = 0;
+  public edgeEvaluations = 0;
   public initialResult: Evaluation = passed;
+  public initialError: Error | undefined;
+  public initialEvaluationGate: Promise<void> | undefined;
+  public edgeEvaluationGate: Promise<void> | undefined;
   public async extractKnowledge(_material: StudyMaterial): Promise<ExtractedKnowledge> {
     return { fragments: [
       { name: 'Abstrações', description: 'Separam regras dos detalhes.', kind: 'AXIOM', sourceExcerpt: 'Regras dependem de abstrações.', fundamentalPremises: ['Detalhes variam.'], edgeCases: ['A abstração não possui variação útil.'], edgeCaseQuestion: 'Quando esta abstração vira complexidade acidental?', studyQuestion: { text: 'Como a abstração protege a regra?', targetPremise: 'Detalhes variam.', expectedReasoningSteps: ['Separar regra e detalhe'] }, prerequisiteNames: [] },
       { name: 'Injeção', description: 'Fornece dependências externamente.', kind: 'NODE', sourceExcerpt: 'Dependências são fornecidas externamente.', fundamentalPremises: ['O consumidor não constrói detalhes.'], edgeCases: ['Existem dependências demais.'], edgeCaseQuestion: 'Como limitar dependências excessivas?', studyQuestion: { text: 'Como o fornecimento externo reduz acoplamento?', targetPremise: 'O consumidor não constrói detalhes.', expectedReasoningSteps: ['Identificar o consumidor'] }, prerequisiteNames: ['Abstrações'] },
     ] };
   }
-  public async evaluateAnswer(_concept: Concept, _question: MasterMeQuestion, _answer: string): Promise<Evaluation> { return this.initialResult; }
+  public async localizeKnowledge(concepts: Concept[]) {
+    return { fragments: concepts.map((concept) => ({
+      id: concept.id,
+      name: `${concept.name} localizado`,
+      description: 'Descrição localizada.',
+      fundamentalPremises: ['Premissa localizada.'],
+      edgeCases: ['Condição-limite localizada.'],
+      edgeCaseQuestion: 'Como a condição-limite altera o mecanismo e qual premissa deve permanecer?',
+      questionText: 'Como o mecanismo preserva a premissa quando os detalhes mudam?',
+      targetPremise: 'A premissa precisa permanecer.',
+      expectedReasoningSteps: ['Identificar a premissa.', 'Explicar o mecanismo.'],
+      learningObjective: 'Explicar o mecanismo sem depender de detalhes.',
+      requiredIdeas: ['Separação entre regra e detalhe.', 'Efeito causal da separação.'],
+      commonMisconceptions: ['Confundir abstração com camada adicional.'],
+    })) };
+  }
+  public async evaluateAnswer(_concept: Concept, _question: MasterMeQuestion, _answer: string): Promise<Evaluation> {
+    this.initialEvaluations++;
+    await this.initialEvaluationGate;
+    if (this.initialError) throw this.initialError;
+    return this.initialResult;
+  }
   public async generateEdgeCaseChallenge(_concept: Concept): Promise<EdgeCaseChallenge> { return { scenario: 'Legado', edgeCaseTested: 'Limite', question: 'O que ocorre no limite?' }; }
-  public async evaluateEdgeCaseAnswer(_concept: Concept, _challenge: EdgeCaseChallenge, _answer: string): Promise<Evaluation> { return this.initialResult; }
+  public async evaluateEdgeCaseAnswer(_concept: Concept, _challenge: EdgeCaseChallenge, _answer: string): Promise<Evaluation> {
+    this.edgeEvaluations++;
+    await this.edgeEvaluationGate;
+    return this.initialResult;
+  }
   public async generatePracticeProject(_material: StudyMaterial, _concepts: Concept[], _priorities: import('../domain/masterme').PrioritizedConcept[]): Promise<PracticeProjectContent> { this.projects++; return { title: 'Adaptador de pagamentos', context: 'Construa uma pequena integração desacoplada.', goal: 'Aplicar abstrações.', deliverables: ['Diagrama'], constraints: ['Sem acoplamento ao provedor'], firstStep: 'Liste os contratos.' }; }
   public async generateIsomorphicProblem(_concepts: Concept[], _failures: string[]): Promise<IsomorphicProblem> { return { title: 'Legado', scenario: 'Legado', constraints: ['Uma'], responseInstruction: 'Explique.' }; }
 }
@@ -42,6 +72,41 @@ describe('MasterMeService — jornada livre', () => {
     expect(updated.edgeCaseChallenge).toBeNull();
   });
 
+  test('duas respostas concorrentes reivindicam a sessão antes de chamar IA', async () => {
+    const { service, llm, concepts } = await setup();
+    const session = await service.startSession(concepts[0]!.id);
+    let releaseEvaluation = (): void => undefined;
+    llm.initialEvaluationGate = new Promise<void>((resolve) => { releaseEvaluation = resolve });
+
+    const winner = service.evaluateInitialAnswer(session.id, 'Primeira explicação concorrente com detalhes suficientes.');
+    while (llm.initialEvaluations === 0) await Promise.resolve();
+    await expect(service.evaluateInitialAnswer(session.id, 'Segunda explicação concorrente com detalhes suficientes.')).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'SESSION_CONFLICT',
+    });
+    expect(llm.initialEvaluations).toBe(1);
+
+    releaseEvaluation();
+    const completed = await winner;
+    expect(completed.version).toBe(2);
+    expect(completed.attempts).toHaveLength(1);
+    expect((await service.getSession(session.id)).attempts).toHaveLength(1);
+  });
+
+  test('falha da IA libera a mesma versão para uma nova tentativa', async () => {
+    const { service, llm, concepts } = await setup();
+    const session = await service.startSession(concepts[0]!.id);
+    llm.initialError = new Error('provider unavailable');
+    await expect(service.evaluateInitialAnswer(session.id, 'Resposta que falha temporariamente no provedor.')).rejects.toThrow('provider unavailable');
+    expect((await service.getSession(session.id)).version).toBe(1);
+
+    llm.initialError = undefined;
+    const retried = await service.evaluateInitialAnswer(session.id, 'Resposta que falha temporariamente no provedor.');
+    expect(retried.version).toBe(2);
+    expect(retried.attempts).toHaveLength(1);
+    expect(llm.initialEvaluations).toBe(2);
+  });
+
   test('caso-limite é opt-in, idempotente e falha não rebaixa explicação', async () => {
     const { service, llm, concepts } = await setup();
     const session = await service.startSession(concepts[0]!.id);
@@ -52,6 +117,24 @@ describe('MasterMeService — jornada livre', () => {
     const reviewed = await service.evaluateEdgeCaseAnswer(session.id, 'Eu avaliaria o custo antes de criar a abstração.');
     expect(reviewed.state).toBe('EXPLANATION_PASSED');
     expect(reviewed.edgeCaseStatus).toBe('REVIEW');
+  });
+
+  test('respostas concorrentes do caso-limite iniciam somente uma avaliação', async () => {
+    const { service, llm, concepts } = await setup();
+    const session = await service.startSession(concepts[0]!.id);
+    await service.evaluateInitialAnswer(session.id, 'Explicação inicial completa para liberar o caso-limite.');
+    await service.requestEdgeCase(session.id);
+    let releaseEvaluation = (): void => undefined;
+    llm.edgeEvaluationGate = new Promise<void>((resolve) => { releaseEvaluation = resolve });
+
+    const winner = service.evaluateEdgeCaseAnswer(session.id, 'Primeira resposta concorrente para o caso-limite.');
+    while (llm.edgeEvaluations === 0) await Promise.resolve();
+    await expect(service.evaluateEdgeCaseAnswer(session.id, 'Segunda resposta concorrente para o caso-limite.')).rejects.toMatchObject({
+      code: 'SESSION_CONFLICT',
+    });
+    expect(llm.edgeEvaluations).toBe(1);
+    releaseEvaluation();
+    expect((await winner).attempts.filter(({ stage }) => stage === 'EDGE_CASE_REPLY')).toHaveLength(1);
   });
 
   test('desempenho usa apenas tentativas INITIAL e a fórmula ponderada', async () => {
@@ -72,6 +155,11 @@ describe('MasterMeService — jornada livre', () => {
     expect(second).toEqual(first);
     expect(first.prioritizedConcepts).toHaveLength(2);
     expect(llm.projects).toBe(1);
+    const context = await service.getPracticeContext(material.id);
+    expect(context.knowledgeMap).toHaveLength(2);
+    expect(context.confidences).toEqual([]);
+    expect(context.performance).toHaveLength(2);
+    expect(context.projects[0]?.id).toBe(first.id);
   });
 
   test('confiança pode ser criada, atualizada e removida', async () => {
@@ -81,5 +169,17 @@ describe('MasterMeService — jornada livre', () => {
     expect((await service.saveConfidence(concepts[0]!.id, 4)).value).toBe(4);
     await service.deleteConfidence(concepts[0]!.id);
     expect(await service.getConfidences(material.id)).toEqual([]);
+  });
+
+  test('localiza conteúdo gerado sem alterar trecho-fonte, relações ou IDs', async () => {
+    const { service, material, concepts } = await setup();
+    const localized = await service.localizeMaterial(material.id, 'en-US');
+    expect(localized[0]).toMatchObject({
+      id: concepts[0]!.id,
+      sourceExcerpt: concepts[0]!.sourceExcerpt,
+      prerequisiteIds: concepts[0]!.prerequisiteIds,
+      generatedLocale: 'en-US',
+    });
+    expect((await service.getMaterial(material.id)).locale).toBe('en-US');
   });
 });

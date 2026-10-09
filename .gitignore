@@ -29,3 +29,4 @@ report.*.json
 .idea/
 .codex/
 .DS_Store
+.task-prds/

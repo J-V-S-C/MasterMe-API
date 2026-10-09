@@ -14,6 +14,7 @@ const EnvironmentSchema = z.object({
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(10).default(3),
   MATERIAL_STORAGE_PATH: z.string().min(1).default('/app/data/materials'),
   EXTRACTION_CONCURRENCY: z.coerce.number().int().min(1).max(6).default(1),
+  AI_DAILY_REQUEST_LIMIT: z.coerce.number().int().min(1).max(100_000).default(100),
 })
 
 export type Environment = z.infer<typeof EnvironmentSchema>

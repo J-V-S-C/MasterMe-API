@@ -1,6 +1,8 @@
 import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
 import type { Environment } from './environment';
+import { currentAiUsageOwner } from '../services/ai-usage-context';
+import { AppError } from '../services/errors';
 
 export type AiOperation =
   | 'EXTRACTION'
@@ -8,6 +10,7 @@ export type AiOperation =
   | 'EDGE_CASE_GENERATION'
   | 'EDGE_CASE_EVALUATION'
   | 'PRACTICE_PROJECT'
+  | 'LOCALIZATION'
   | 'STRESS_EVALUATION'
   | 'ISOMORPHIC_PROBLEM';
 export type AiUsageEvent = {
@@ -57,6 +60,7 @@ const providerSchema = (value: unknown): unknown => {
 
 export class GeminiStructuredClient {
   private readonly models: string[];
+  private readonly dailyLimit: number;
   private readonly quotaBlockedModels = new Set<string>();
   private readonly generator: ContentGenerator;
   public readonly extractionConcurrency: number;
@@ -65,9 +69,12 @@ export class GeminiStructuredClient {
     environment: Environment,
     private readonly recordUsage: (
       event: AiUsageEvent,
+      ownerId: string,
     ) => Promise<void> = async () => undefined,
     generator?: ContentGenerator,
+    private readonly consumeRequest: (ownerId: string) => Promise<number> = async () => 0,
   ) {
+    this.dailyLimit = environment.AI_DAILY_REQUEST_LIMIT;
     this.extractionConcurrency = environment.EXTRACTION_CONCURRENCY;
     this.models = [
       ...new Set([
@@ -89,6 +96,12 @@ export class GeminiStructuredClient {
 
     for (const modelName of this.models) {
       if (this.quotaBlockedModels.has(modelName)) continue;
+      const ownerId = currentAiUsageOwner();
+      if (ownerId) {
+        const used = await this.consumeRequest(ownerId);
+        if (used > this.dailyLimit)
+          throw new AppError(429, 'AI_DAILY_LIMIT_REACHED', 'Seu limite diário de chamadas de IA foi atingido. Tente novamente após a renovação da quota.');
+      }
       let usageMetadata:
         | { promptTokenCount?: number; candidatesTokenCount?: number }
         | undefined;
@@ -124,7 +137,7 @@ export class GeminiStructuredClient {
           inputTokens: usageMetadata?.promptTokenCount ?? null,
           outputTokens: usageMetadata?.candidatesTokenCount ?? null,
           errorCode: null,
-        });
+        }, ownerId);
         return parsed;
       } catch (error) {
         lastError = error;
@@ -135,7 +148,7 @@ export class GeminiStructuredClient {
           inputTokens: usageMetadata?.promptTokenCount ?? null,
           outputTokens: usageMetadata?.candidatesTokenCount ?? null,
           errorCode: classifyError(error),
-        });
+        }, ownerId);
         if (!canUseFallback(error)) throw error;
         if (isDailyQuotaError(error) || isUnavailableModelError(error))
           this.quotaBlockedModels.add(modelName);
@@ -157,9 +170,10 @@ export class GeminiStructuredClient {
     );
   }
 
-  private async safeRecordUsage(event: AiUsageEvent): Promise<void> {
+  private async safeRecordUsage(event: AiUsageEvent, ownerId: string | undefined): Promise<void> {
+    if (!ownerId) return
     try {
-      await this.recordUsage(event);
+      await this.recordUsage(event, ownerId);
     } catch (error) {
       console.warn(
         JSON.stringify({
@@ -171,6 +185,7 @@ export class GeminiStructuredClient {
     }
   }
 }
+
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);

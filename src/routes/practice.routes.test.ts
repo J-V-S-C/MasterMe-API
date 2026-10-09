@@ -10,6 +10,7 @@ import { MasterMeService } from '../services/masterme.service';
 const passed: Evaluation = { status: 'PASSED', missingPremises: [], logicalBreak: null, feedback: 'Correto.' };
 class ApiFakeLlm implements MasterMeLlmGateway {
   public async extractKnowledge(): Promise<ExtractedKnowledge> { throw new Error('Não usado.'); }
+  public async localizeKnowledge() { return { fragments: [] } }
   public async evaluateAnswer(_concept: Concept, _question: MasterMeQuestion, _answer: string): Promise<Evaluation> { return passed; }
   public async generateEdgeCaseChallenge(_concept: Concept): Promise<EdgeCaseChallenge> { throw new Error('Não usado.'); }
   public async evaluateEdgeCaseAnswer(_concept: Concept, _challenge: EdgeCaseChallenge, _answer: string): Promise<Evaluation> { return passed; }
@@ -21,7 +22,7 @@ const setup = async (run: (baseUrl: string, material: StudyMaterial, concept: Co
   const repository = new InMemoryMasterMeRepository();
   const service = new MasterMeService(repository, new ApiFakeLlm());
   const material = await service.createMaterial({ title: 'Material', content: 'Trecho técnico.' }, '00000000-0000-0000-0000-000000000001');
-  const concept: Concept = { id: '11111111-1111-4111-8111-111111111111', materialId: material.id, name: 'Contrato', description: 'Separa política de detalhe.', kind: 'AXIOM', sourceExcerpt: 'Trecho técnico.', fundamentalPremises: ['Detalhes variam.'], edgeCases: ['Não há variação.'], edgeCaseQuestion: 'Quando o contrato não compensa?', studyQuestion: { text: 'Como o contrato protege a política?', targetPremise: 'Detalhes variam.', expectedReasoningSteps: ['Separar política e detalhe'] }, prerequisiteIds: [], nextIds: [] };
+  const concept: Concept = { id: '11111111-1111-4111-8111-111111111111', materialId: material.id, name: 'Contrato', description: 'Separa política de detalhe.', kind: 'AXIOM', sourceExcerpt: 'Trecho técnico.', fundamentalPremises: ['Detalhes variam.'], edgeCases: ['Não há variação.'], edgeCaseQuestion: 'Quando o contrato não compensa?', studyQuestion: { text: 'Como o contrato protege a política?', targetPremise: 'Detalhes variam.', expectedReasoningSteps: ['Separar política e detalhe'] }, generatedLocale: 'pt-BR', prerequisiteIds: [], nextIds: [] };
   await repository.saveConcepts([concept]);
   const server: Server = createApp(service).listen(0);
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -40,11 +41,15 @@ describe('rotas da nova jornada', () => {
   }));
 
   test('gera, lista e recupera Projeto de prática sem sessão', async () => setup(async (baseUrl, material) => {
+    const preview = await fetch(`${baseUrl}/api/materials/${material.id}/practice-focus`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ focusMode: 'OVERVIEW' }) });
+    expect(await preview.json()).toMatchObject({ data: { focusMode: 'OVERVIEW', priorities: [{ name: 'Contrato' }] } });
     const created = await fetch(`${baseUrl}/api/materials/${material.id}/practice-projects`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ focusMode: 'OVERVIEW' }) });
     expect(created.status).toBe(201);
     const payload = await created.json() as { data: { id: string } };
     expect((await fetch(`${baseUrl}/api/materials/${material.id}/practice-projects`)).status).toBe(200);
     expect((await fetch(`${baseUrl}/api/practice-projects/${payload.data.id}`)).status).toBe(200);
+    const context = await fetch(`${baseUrl}/api/materials/${material.id}/practice-context`);
+    expect(await context.json()).toMatchObject({ data: { knowledgeMap: [{ concept: { id: '11111111-1111-4111-8111-111111111111' } }], confidences: [], performance: [{ performanceNeed: null }], projects: [{ id: payload.data.id }] } });
   }));
 
   test('explicação aprovada permite solicitar e responder caso-limite', async () => setup(async (baseUrl, _material, concept) => {

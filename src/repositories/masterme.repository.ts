@@ -1,10 +1,13 @@
-import type { Concept, ConceptConfidence, Evaluation, IsomorphicProblem, PracticeProject, StudyMaterial, StudySession } from '../domain/masterme';
+import type { Concept, ConceptConfidence, Evaluation, IsomorphicProblem, MaterialSummary, PracticeProject, StudyMaterial, StudySession, SupportedLocale } from '../domain/masterme';
 import type { AiUsageEvent } from '../config/llm';
 
 export type AiUsageSummary = {
   totalRequests: number;
   totalInputTokens: number;
   totalOutputTokens: number;
+  dailyLimit: number;
+  remainingRequests: number;
+  resetsAt: string;
   byModel: Array<{ model: string; requests: number; successes: number; inputTokens: number; outputTokens: number }>;
   byOperation: Array<{ operation: string; requests: number; successes: number; inputTokens: number; outputTokens: number }>;
 };
@@ -14,17 +17,18 @@ type Awaitable<T> = T | Promise<T>;
 export interface MasterMeRepository {
   saveMaterial(material: StudyMaterial, ownerId: string): Awaitable<void>;
   findMaterial(id: string): Awaitable<StudyMaterial | undefined>;
-  findAllMaterials(ownerId: string): Promise<StudyMaterial[]>;
+  findAllMaterials(ownerId: string): Promise<MaterialSummary[]>;
   saveConcepts(concepts: Concept[]): Awaitable<void>;
+  saveConceptLocalizations(materialId: string, locale: SupportedLocale, concepts: Concept[]): Awaitable<void>;
   findConcept(id: string): Awaitable<Concept | undefined>;
   findConceptsByMaterial(materialId: string): Awaitable<Concept[]>;
   saveSession(session: StudySession): Awaitable<void>;
   findSession(id: string): Awaitable<StudySession | undefined>;
   findSessionsByConceptIds(conceptIds: string[]): Awaitable<StudySession[]>;
-  replaceSession(
-    session: StudySession,
-    expectedState: StudySession['state'],
-  ): Awaitable<boolean>;
+  claimSessionOperation(id: string, expectedVersion: number, operationHash: string, leaseToken: string): Awaitable<number | undefined>;
+  renewSessionOperation(id: string, claimedVersion: number, leaseToken: string): Awaitable<boolean>;
+  completeSessionOperation(session: StudySession, claimedVersion: number, leaseToken: string): Awaitable<boolean>;
+  releaseSessionOperation(id: string, claimedVersion: number, leaseToken: string): Awaitable<void>;
   findValidatedConceptIds(): Awaitable<Set<string>>;
   saveConfidence(confidence: ConceptConfidence): Awaitable<void>;
   deleteConfidence(conceptId: string): Awaitable<void>;
@@ -38,8 +42,9 @@ export interface MasterMeRepository {
   saveEvaluation(requestHash: string, evaluation: Evaluation): Awaitable<void>;
   findIsomorphicProblem(inputHash: string): Awaitable<IsomorphicProblem | undefined>;
   saveIsomorphicProblem(materialId: string, inputHash: string, problem: IsomorphicProblem): Awaitable<void>;
-  recordAiUsage(event: AiUsageEvent): Awaitable<void>;
-  getAiUsageToday(): Awaitable<AiUsageSummary>;
+  consumeAiRequest(ownerId: string, dailyLimit: number): Awaitable<number>;
+  recordAiUsage(event: AiUsageEvent, ownerId: string): Awaitable<void>;
+  getAiUsageToday(ownerId: string, dailyLimit: number): Awaitable<AiUsageSummary>;
 }
 
 export class InMemoryMasterMeRepository implements MasterMeRepository {
@@ -51,8 +56,10 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
   private readonly confidences = new Map<string, ConceptConfidence>();
   private readonly practiceProjects = new Map<string, PracticeProject>();
   private readonly practiceHashes = new Map<string, string>();
-  private readonly aiUsage: Array<AiUsageEvent & { createdAt: Date }> = [];
+  private readonly aiUsage: Array<AiUsageEvent & { ownerId: string; createdAt: Date }> = [];
+  private readonly dailyUsage = new Map<string, number>();
   private readonly materialOwners = new Map<string, string>();
+  private readonly pendingSessionOperations = new Map<string, { operationHash: string; leaseToken: string }>();
 
   public saveMaterial(material: StudyMaterial, ownerId: string): void {
     this.materials.set(material.id, material);
@@ -63,14 +70,20 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
     return this.materials.get(id);
   }
 
-  public async findAllMaterials(ownerId: string): Promise<StudyMaterial[]> {
+  public async findAllMaterials(ownerId: string): Promise<MaterialSummary[]> {
     return Array.from(this.materials.values()).filter(
       (material) => this.materialOwners.get(material.id) === ownerId,
-    );
+    ).map(({ content: _content, ...summary }) => summary);
   }
 
   public saveConcepts(concepts: Concept[]): void {
     for (const concept of concepts) this.concepts.set(concept.id, concept);
+  }
+
+  public saveConceptLocalizations(materialId: string, locale: SupportedLocale, concepts: Concept[]): void {
+    const material = this.materials.get(materialId)
+    if (material) this.materials.set(materialId, { ...material, locale })
+    for (const concept of concepts) this.concepts.set(concept.id, concept)
   }
 
   public findConcept(id: string): Concept | undefined {
@@ -98,14 +111,31 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
     );
   }
 
-  public replaceSession(
-    session: StudySession,
-    expectedState: StudySession['state'],
-  ): boolean {
+  public claimSessionOperation(id: string, expectedVersion: number, operationHash: string, leaseToken: string): number | undefined {
+    const current = this.sessions.get(id)
+    if (!current || current.version !== expectedVersion || this.pendingSessionOperations.has(id)) return undefined
+    this.pendingSessionOperations.set(id, { operationHash, leaseToken })
+    return current.version
+  }
+
+  public renewSessionOperation(id: string, claimedVersion: number, leaseToken: string): boolean {
+    const current = this.sessions.get(id)
+    return current?.version === claimedVersion && this.pendingSessionOperations.get(id)?.leaseToken === leaseToken
+  }
+
+  public completeSessionOperation(session: StudySession, claimedVersion: number, leaseToken: string): boolean {
     const current = this.sessions.get(session.id);
-    if (!current || current.state !== expectedState) return false;
+    if (!current || current.version !== claimedVersion || this.pendingSessionOperations.get(session.id)?.leaseToken !== leaseToken) return false;
     this.sessions.set(session.id, session);
+    this.pendingSessionOperations.delete(session.id)
     return true;
+  }
+
+  public releaseSessionOperation(id: string, claimedVersion: number, leaseToken: string): void {
+    const current = this.sessions.get(id)
+    if (current?.version === claimedVersion && this.pendingSessionOperations.get(id)?.leaseToken === leaseToken) {
+      this.pendingSessionOperations.delete(id)
+    }
   }
 
   public findValidatedConceptIds(): Set<string> {
@@ -125,10 +155,19 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
   public saveEvaluation(requestHash: string, evaluation: Evaluation): void { this.evaluations.set(requestHash, evaluation) }
   public findIsomorphicProblem(inputHash: string): IsomorphicProblem | undefined { return this.isomorphicProblems.get(inputHash) }
   public saveIsomorphicProblem(_materialId: string, inputHash: string, problem: IsomorphicProblem): void { this.isomorphicProblems.set(inputHash, problem) }
-  public recordAiUsage(event: AiUsageEvent): void { this.aiUsage.push({ ...event, createdAt: new Date() }) }
-  public getAiUsageToday(): AiUsageSummary {
+  public consumeAiRequest(ownerId: string, dailyLimit: number): number {
+    const key = `${ownerId}:${new Date().toISOString().slice(0, 10)}`
+    const used = this.dailyUsage.get(key) ?? 0
+    if (used >= dailyLimit) return dailyLimit + 1
+    this.dailyUsage.set(key, used + 1)
+    return used + 1
+  }
+  public recordAiUsage(event: AiUsageEvent, ownerId: string): void { this.aiUsage.push({ ...event, ownerId, createdAt: new Date() }) }
+  public getAiUsageToday(ownerId: string, dailyLimit: number): AiUsageSummary {
     const start = new Date(); start.setHours(0, 0, 0, 0)
-    const events = this.aiUsage.filter((event) => event.createdAt >= start)
+    const events = this.aiUsage.filter((event) => event.ownerId === ownerId && event.createdAt >= start)
+    const used = this.dailyUsage.get(`${ownerId}:${new Date().toISOString().slice(0, 10)}`) ?? 0
+    const resetsAt = new Date(); resetsAt.setUTCHours(24, 0, 0, 0)
     const summarize = (selected: typeof events) => ({
       requests: selected.length,
       successes: selected.filter((event) => event.success).length,
@@ -141,6 +180,9 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
       totalRequests: events.length,
       totalInputTokens: events.reduce((total, event) => total + (event.inputTokens ?? 0), 0),
       totalOutputTokens: events.reduce((total, event) => total + (event.outputTokens ?? 0), 0),
+      dailyLimit,
+      remainingRequests: Math.max(0, dailyLimit - used),
+      resetsAt: resetsAt.toISOString(),
       byModel,
       byOperation,
     }

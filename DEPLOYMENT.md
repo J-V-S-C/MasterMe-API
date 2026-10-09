@@ -36,6 +36,7 @@ chmod 600 /opt/masterme/.env
 ```
 
 Edite `/opt/masterme/.env` e preencha a URL do Session pooler do Supabase e a chave Gemini. Não copie a chave para o GitHub nem para o frontend.
+Defina também `AI_DAILY_REQUEST_LIMIT` com a quantidade de tentativas ao provedor permitida por usuário e por dia. O padrão do Compose é 100.
 
 Crie uma chave SSH exclusiva para o deploy. Cadastre a chave pública em `~/.ssh/authorized_keys` do usuário de deploy e dê a esse usuário acesso ao Docker. Obtenha a linha segura para `known_hosts` diretamente do console/host administrado; não aceite uma chave desconhecida automaticamente durante o workflow.
 
@@ -66,16 +67,24 @@ api.seudominio.com {
 ```
 
 O Caddy mantém streaming por padrão. Em Nginx, desative buffering no endpoint SSE (`proxy_buffering off`). Libere somente `80/tcp` e `443/tcp` publicamente; a porta 3333 fica ligada ao loopback.
+Configure também rate limiting no proxy para `/api`, especialmente em uploads e conexões SSE. Os limites em memória da aplicação protegem a instância atual, mas não substituem uma barreira distribuída caso a API seja escalada horizontalmente.
 
 ## 5. Primeiro lançamento
 
-1. Execute manualmente o workflow `Deploy backend to OCI`.
+1. Na branch `main`, execute manualmente o workflow `Deploy backend to OCI`.
 2. Confirme `https://api.seudominio.com/health` retornando `{ "status": "ok" }`.
 3. Execute `Deploy frontend to Cloudflare`.
 4. No Cloudflare, associe o domínio do frontend ao Worker `masterme-frontend`.
 5. Faça upload de um PDF pequeno, acompanhe o SSE, cancele uma extração e rode uma extração completa.
 
-Depois do primeiro lançamento, pushes em `main` com mudanças nos respectivos diretórios fazem deploy automático. Pull requests executam somente CI.
+Depois do primeiro lançamento, pushes em `main` fazem deploy automático. A
+execução manual também é recusada fora de `main`; pull requests executam somente
+CI.
+
+O comando `bun run migrate` serializa execuções com advisory lock e registra
+nome/checksum em `schema_migrations`. Instalações anteriores completas recebem
+um baseline seguro até `012`; schema parcial ou migração já aplicada que mudou
+é bloqueado para impedir reaplicação destrutiva.
 
 ## Rollback
 

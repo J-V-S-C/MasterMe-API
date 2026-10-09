@@ -7,7 +7,6 @@ Zod e contexto explícito; não usa RAG, embeddings, LangChain ou LangGraph.
 
 ## Acesso
 
-- Swagger da API de produção: <https://masterme-api.duckdns.org/docs>
 - Health check: <https://masterme-api.duckdns.org/health>
 - Frontend Repo: <https://github.com/J-V-S-C/MasterMe-Front>
 
@@ -41,18 +40,23 @@ bun test
 - `GeminiMasterMeGateway` extrai conceitos, avalia respostas e gera somente os
   campos textuais do Projeto de prática.
 - Upload e extração usam fila PostgreSQL, worker separado e progresso por SSE.
+- O SSE usa `LISTEN/NOTIFY` para acordar conexões e a tabela de eventos para
+  replay após reconexão; não há consulta ao banco a cada segundo por cliente.
 
 ## Rotas principais
 
 | Método | Rota                                   | Finalidade                                                  |
 | ------ | -------------------------------------- | ----------------------------------------------------------- |
 | POST   | `/api/materials`                       | Cria material textual.                                      |
+| GET    | `/api/materials`                       | Lista metadados sem enviar o conteúdo completo.             |
+| GET    | `/api/materials/:id`                   | Recupera o conteúdo de um material sob demanda.             |
 | POST   | `/api/materials/upload`                | Envia PDF, Markdown ou TXT.                                 |
 | POST   | `/api/materials/:id/extract`           | Enfileira uma extração.                                     |
 | DELETE | `/api/materials/:id/extract`           | Cancela uma extração ativa e descarta seu resultado tardio. |
 | GET    | `/api/materials/:id/status`            | Consulta processamento assíncrono.                          |
 | GET    | `/api/events`                          | Acompanha eventos via SSE.                                  |
 | GET    | `/api/materials/:id/knowledge-map`     | Retorna mapa, status da explicação e do caso-limite.        |
+| POST   | `/api/materials/:id/localize`          | Localiza conteúdo gerado sem alterar evidências.            |
 | POST   | `/api/concepts/:id/sessions`           | Inicia explicação de qualquer conceito.                     |
 | POST   | `/api/sessions/:id/answers`            | Avalia resposta inicial; `PASSED` conclui a explicação.     |
 | POST   | `/api/sessions/:id/edge-case`          | Cria ou recupera caso-limite opt-in.                        |
@@ -61,15 +65,27 @@ bun test
 | PUT    | `/api/concepts/:id/confidence`         | Cria ou atualiza confiança de 1 a 5.                        |
 | DELETE | `/api/concepts/:id/confidence`         | Remove confiança.                                           |
 | GET    | `/api/materials/:id/performance`       | Expõe desempenho determinístico por conceito.               |
+| GET    | `/api/materials/:id/practice-context`  | Agrega mapa, confiança, desempenho e projetos.              |
+| POST   | `/api/materials/:id/practice-focus`    | Pré-visualiza o foco sem consumir IA.                        |
 | POST   | `/api/materials/:id/practice-projects` | Gera ou recupera do cache um Projeto de prática.            |
 | GET    | `/api/materials/:id/practice-projects` | Lista projetos do material.                                 |
 | GET    | `/api/practice-projects/:id`           | Recupera um projeto.                                        |
+| GET    | `/api/ai-usage/today`                  | Uso privado, tokens e quota diária restante.              |
 
 `/api/sessions/:id/stress-replies` e as rotas de `isomorphic-problem` continuam
 temporariamente disponíveis para o frontend legado. Novos consumidores devem
 usar Teste de caso-limite e Projeto de prática.
 
 Swagger UI local: `http://localhost:3333/docs`. Documento bruto: `/openapi.json`.
+Ambos ficam desativados quando `NODE_ENV=production`.
+
+## Segurança e quota de IA
+
+- `AI_DAILY_REQUEST_LIMIT` define quantas tentativas reais ao Gemini cada usuário pode fazer por dia; o padrão é 100.
+- O consumo é reservado atomicamente no PostgreSQL antes da chamada, incluindo fallbacks de modelo.
+- Cache hit não consome quota. A interface mostra o saldo interno do MasterMe, que é independente dos limites do projeto no Google AI Studio.
+- A API limita rajadas globais por IP e aplica um limite por usuário somente nas rotas capazes de consumir IA. Produção deve manter também rate limiting no Caddy/Cloudflare.
+- A chave Gemini permanece somente no backend e deve ser exclusiva, restrita e rotacionada.
 
 ## Projeto de prática
 
@@ -78,6 +94,24 @@ O frontend expõe apenas foco automático e seleção manual. Como contrato inte
 permitir. Ranking e razões são calculados antes do Gemini. Modos sem dados
 retornam `422`, sem fallback oculto. Entradas semanticamente idênticas usam
 cache em `practice_projects`.
+
+## Cache e atualização em tempo real
+
+- Leituras privadas estáveis retornam `ETag` e `Cache-Control: private,
+  max-age=0, must-revalidate`; dados voláteis, mutações, quota e SSE usam
+  `no-store`.
+- Eventos são filtrados por `owner_id`, persistidos antes da notificação e
+  aceitam `Last-Event-ID` para replay seguro.
+- A listagem de materiais nunca inclui o texto integral. Consumidores devem
+  buscar `/api/materials/:id` apenas para o material ativo.
+
+## Idioma e avaliação pedagógica
+
+- Materiais novos usam `pt-BR` por padrão e aceitam `pt-BR` ou `en-US`.
+- Conceitos, perguntas, diagnósticos e projetos são gerados no idioma do material; o trecho-fonte permanece literal.
+- Conteúdo antigo pode ser localizado por `POST /api/materials/:id/localize`. A operação consome quota de IA, é idempotente quando o idioma já coincide e não altera IDs, relações, evidências ou sessões existentes.
+- `INCOMPLETE` representa uma resposta semanticamente correta, mas ambígua ou incompleta. `LOGICAL_BREAK` fica reservado a contradição, causalidade invertida ou mecanismo incorreto.
+- Perguntas de definição ou simples valor de retorno são descartadas e substituídas por desafios causais.
 
 ## Docker
 
@@ -112,9 +146,16 @@ depois de migrations, atualização dos containers e health check bem-sucedidos.
 
 ## Limites do MVP
 
-- Sem autenticação: existe uma confiança por conceito.
+- A quota exibida é a proteção interna do produto; ela não consulta o saldo remoto do Google em tempo real.
 - PDFs sem texto selecionável são rejeitados; não há OCR.
 - O Projeto de prática não recebe, executa ou avalia uma solução.
 - Arquivos brutos ficam em volume local; produção deve usar object storage.
 
-As fontes de verdade de produto são `../scope.md` e `../prd.md`; prioridades ficam em `../backlog.md` e os guardrails de engenharia em `../agents.md`.
+Em um clone independente, este README e os contratos versionados em `docs/`,
+`API.md` quando existir, e `DEPLOYMENT.md` são as fontes operacionais. Contexto
+de produto mantido em um workspace pai pode complementar uma tarefa, mas não é
+pré-requisito oculto nem substitui decisões registradas no PR.
+
+Mudanças de código seguem obrigatoriamente o fluxo de PRD temporário e revisão
+por agente independente descrito em [AGENTS.md](./AGENTS.md) e
+[docs/ENGINEERING_WORKFLOW.md](./docs/ENGINEERING_WORKFLOW.md).

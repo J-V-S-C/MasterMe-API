@@ -6,19 +6,24 @@ import type {
   EdgeCaseChallenge,
   IsomorphicProblem,
   MasterMeQuestion,
+  MaterialSummary,
   PracticeProject,
   StudyMaterial,
   StudySession,
+  SupportedLocale,
 } from '../domain/masterme';
 import type { MasterMeRepository } from '../repositories/masterme.repository';
 import type { CreateMaterialBody, CreatePracticeProjectBody } from '../schemas/http.schema';
-import { ConflictError, NotFoundError } from './errors';
+import { ConflictError, NotFoundError, SessionConflictError } from './errors';
 import type { ExtractionProgress, MasterMeLlmGateway } from './llm.gateway';
 import { MasterMeTemplateService } from './masterme-template.service';
 import { PracticeFocusService } from './practice-focus.service';
+import type { PracticeFocus } from './practice-focus.service';
+import { isUsefulAssessmentQuestion } from './assessment-quality';
 
 const now = (): string => new Date().toISOString();
-const PRACTICE_PROMPT_VERSION = 'practice-project-v1';
+const PRACTICE_PROMPT_VERSION = 'practice-project-v2';
+const EVALUATION_PROMPT_VERSION = 'evaluation-v2';
 
 export interface KnowledgeMapConcept {
   concept: Concept;
@@ -26,6 +31,13 @@ export interface KnowledgeMapConcept {
   edgeCaseStatus: StudySession['edgeCaseStatus'];
   lastAttempt: StudySession['attempts'][number] | null;
   question: MasterMeQuestion;
+}
+
+export interface PracticeContext {
+  knowledgeMap: KnowledgeMapConcept[];
+  confidences: ConceptConfidence[];
+  performance: ConceptPerformance[];
+  projects: PracticeProject[];
 }
 
 export class MasterMeService {
@@ -37,7 +49,7 @@ export class MasterMeService {
   ) {}
 
   public async createMaterial(input: CreateMaterialBody, ownerId: string): Promise<StudyMaterial> {
-    const material = { id: randomUUID(), title: input.title, content: input.content, createdAt: now() };
+    const material: StudyMaterial = { id: randomUUID(), title: input.title, content: input.content, locale: input.locale ?? 'pt-BR', createdAt: now() };
     await this.repository.saveMaterial(material, ownerId);
     return material;
   }
@@ -46,7 +58,7 @@ export class MasterMeService {
     return (await this.repository.findMaterial(id)) ?? this.throwNotFound('Material');
   }
 
-  public getAllMaterials(ownerId: string): Promise<StudyMaterial[]> { return this.repository.findAllMaterials(ownerId); }
+  public getAllMaterials(ownerId: string): Promise<MaterialSummary[]> { return this.repository.findAllMaterials(ownerId); }
 
   public async extractConcepts(
     materialId: string,
@@ -71,7 +83,7 @@ export class MasterMeService {
         if (!prerequisiteId) throw new ConflictError(`Pré-requisito "${name}" não foi extraído.`);
         return prerequisiteId;
       });
-      return { id, materialId, name: fragment.name, description: fragment.description, kind: fragment.kind, sourceExcerpt: fragment.sourceExcerpt, fundamentalPremises: fragment.fundamentalPremises, edgeCases: fragment.edgeCases, edgeCaseQuestion: fragment.edgeCaseQuestion, studyQuestion: fragment.studyQuestion, prerequisiteIds, nextIds: [] };
+      return { id, materialId, name: fragment.name, description: fragment.description, kind: fragment.kind, sourceExcerpt: fragment.sourceExcerpt, fundamentalPremises: fragment.fundamentalPremises, edgeCases: fragment.edgeCases, edgeCaseQuestion: fragment.edgeCaseQuestion, studyQuestion: fragment.studyQuestion, generatedLocale: material.locale, prerequisiteIds, nextIds: [] };
     });
     const byId = new Map(concepts.map((concept) => [concept.id, concept]));
     for (const concept of concepts) for (const prerequisiteId of concept.prerequisiteIds) {
@@ -87,9 +99,51 @@ export class MasterMeService {
     return this.repository.findConceptsByMaterial(materialId);
   }
 
+  public async localizeMaterial(materialId: string, locale: SupportedLocale): Promise<Concept[]> {
+    await this.getMaterial(materialId)
+    const concepts = await this.repository.findConceptsByMaterial(materialId)
+    if (!concepts.length) throw new ConflictError('Extraia os conceitos antes de localizar o conteúdo gerado.')
+    if (concepts.every((concept) => concept.generatedLocale === locale)) return concepts
+    const localized = await this.llm.localizeKnowledge(concepts, locale)
+    const byId = new Map(localized.fragments.map((fragment) => [fragment.id, fragment]))
+    if (byId.size !== concepts.length || concepts.some((concept) => !byId.has(concept.id))) {
+      throw new ConflictError('A localização retornou um conjunto de conceitos incompatível com o material.')
+    }
+    const localizedConcepts = concepts.map((concept): Concept => {
+      const content = byId.get(concept.id)
+      if (!content) throw new ConflictError('A localização omitiu um conceito do material.')
+      const studyQuestion = isUsefulAssessmentQuestion(content.questionText, content.requiredIdeas)
+        ? {
+            text: content.questionText,
+            targetPremise: content.targetPremise,
+            expectedReasoningSteps: content.expectedReasoningSteps,
+            learningObjective: content.learningObjective,
+            requiredIdeas: content.requiredIdeas,
+            commonMisconceptions: content.commonMisconceptions,
+          }
+        : undefined
+      return {
+        ...concept,
+        name: content.name,
+        description: content.description,
+        fundamentalPremises: content.fundamentalPremises,
+        edgeCases: content.edgeCases,
+        edgeCaseQuestion: isUsefulAssessmentQuestion(content.edgeCaseQuestion) ? content.edgeCaseQuestion : undefined,
+        studyQuestion,
+        generatedLocale: locale,
+      }
+    })
+    await this.repository.saveConceptLocalizations(materialId, locale, localizedConcepts)
+    return localizedConcepts
+  }
+
   public async getKnowledgeMap(materialId: string): Promise<KnowledgeMapConcept[]> {
     const concepts = await this.getConcepts(materialId);
     const sessions = await this.repository.findSessionsByConceptIds(concepts.map(({ id }) => id));
+    return this.buildKnowledgeMap(concepts, sessions);
+  }
+
+  private buildKnowledgeMap(concepts: Concept[], sessions: StudySession[]): KnowledgeMapConcept[] {
     const latest = new Map<string, StudySession>();
     for (const session of sessions) if (!latest.get(session.conceptId) || latest.get(session.conceptId)!.updatedAt < session.updatedAt) latest.set(session.conceptId, session);
     return concepts.map((concept) => {
@@ -106,7 +160,7 @@ export class MasterMeService {
     const concepts = await this.repository.findConceptsByMaterial(concept.materialId);
     const previous = await this.repository.findSessionsByConceptIds([conceptId]);
     const timestamp = now();
-    const session: StudySession = { id: randomUUID(), conceptId, state: 'QUESTION_READY', question: this.questionForConcept(concept, concepts, previous.length), edgeCaseStatus: 'NOT_REQUESTED', edgeCaseChallenge: null, attempts: [], createdAt: timestamp, updatedAt: timestamp };
+    const session: StudySession = { id: randomUUID(), conceptId, version: 1, state: 'QUESTION_READY', question: this.questionForConcept(concept, concepts, previous.length), edgeCaseStatus: 'NOT_REQUESTED', edgeCaseChallenge: null, attempts: [], createdAt: timestamp, updatedAt: timestamp };
     await this.repository.saveSession(session);
     return session;
   }
@@ -120,12 +174,12 @@ export class MasterMeService {
     if (session.attempts.some((attempt) => attempt.stage === 'INITIAL' && attempt.answer === answer)) return session;
     if (session.state !== 'QUESTION_READY' && session.state !== 'RETRY_INITIAL') throw new ConflictError('A sessão não aceita uma resposta inicial neste momento.');
     const concept = (await this.repository.findConcept(session.conceptId)) ?? this.throwNotFound('Conceito');
-    const requestHash = this.hash({ stage: 'INITIAL', concept, question: session.question, answer });
-    const evaluation = (await this.repository.findEvaluation(requestHash)) ?? (await this.llm.evaluateAnswer(concept, session.question, answer));
-    await this.repository.saveEvaluation(requestHash, evaluation);
-    const updated: StudySession = { ...session, state: evaluation.status === 'PASSED' ? 'EXPLANATION_PASSED' : 'RETRY_INITIAL', attempts: [...session.attempts, { stage: 'INITIAL', answer, evaluation, createdAt: now() }], updatedAt: now() };
-    await this.replaceSession(updated, session.state);
-    return updated;
+    const requestHash = this.hash({ version: EVALUATION_PROMPT_VERSION, stage: 'INITIAL', concept, question: session.question, answer });
+    return this.mutateSession(session, requestHash, async (claimed) => {
+      const evaluation = (await this.repository.findEvaluation(requestHash)) ?? (await this.llm.evaluateAnswer(concept, claimed.question, answer));
+      await this.repository.saveEvaluation(requestHash, evaluation);
+      return { ...claimed, state: evaluation.status === 'PASSED' ? 'EXPLANATION_PASSED' : 'RETRY_INITIAL', attempts: [...claimed.attempts, { stage: 'INITIAL', answer, evaluation, createdAt: now() }], updatedAt: now() };
+    });
   }
 
   public async requestEdgeCase(sessionId: string): Promise<StudySession> {
@@ -133,13 +187,15 @@ export class MasterMeService {
     if (session.state !== 'EXPLANATION_PASSED') throw new ConflictError('O caso-limite só pode ser solicitado após uma explicação aprovada.');
     if (session.edgeCaseChallenge) return session;
     const concept = (await this.repository.findConcept(session.conceptId)) ?? this.throwNotFound('Conceito');
-    const challenge: EdgeCaseChallenge = concept.edgeCaseQuestion
-      ? { scenario: concept.edgeCases[0] ?? concept.sourceExcerpt, edgeCaseTested: concept.edgeCases[0] ?? concept.fundamentalPremises[0] ?? concept.name, question: concept.edgeCaseQuestion }
-      : await this.llm.generateEdgeCaseChallenge(concept);
-    if (!concept.edgeCaseQuestion) await this.repository.updateConceptEdgeCaseQuestion(concept.id, challenge.question);
-    const updated: StudySession = { ...session, edgeCaseStatus: 'READY', edgeCaseChallenge: challenge, updatedAt: now() };
-    await this.replaceSession(updated, session.state);
-    return updated;
+    const operationHash = this.hash({ version: 'session-operation-v1', type: 'EDGE_CASE_GENERATION', sessionId, sessionVersion: session.version });
+    return this.mutateSession(session, operationHash, async (claimed) => {
+      const challenge: EdgeCaseChallenge = concept.edgeCaseQuestion && isUsefulAssessmentQuestion(concept.edgeCaseQuestion)
+        ? { scenario: concept.edgeCases[0] ?? concept.sourceExcerpt, edgeCaseTested: concept.edgeCases[0] ?? concept.fundamentalPremises[0] ?? concept.name, question: concept.edgeCaseQuestion }
+        : await this.llm.generateEdgeCaseChallenge(concept);
+      const usefulChallenge = isUsefulAssessmentQuestion(challenge.question) ? challenge : this.edgeCaseFallback(concept)
+      if (concept.edgeCaseQuestion !== usefulChallenge.question) await this.repository.updateConceptEdgeCaseQuestion(concept.id, usefulChallenge.question);
+      return { ...claimed, edgeCaseStatus: 'READY', edgeCaseChallenge: usefulChallenge, updatedAt: now() };
+    });
   }
 
   public async evaluateEdgeCaseAnswer(sessionId: string, answer: string): Promise<StudySession> {
@@ -147,12 +203,14 @@ export class MasterMeService {
     if (session.attempts.some((attempt) => (attempt.stage === 'EDGE_CASE_REPLY' || attempt.stage === 'STRESS_REPLY') && attempt.answer === answer)) return session;
     if (session.state !== 'EXPLANATION_PASSED' || !session.edgeCaseChallenge || (session.edgeCaseStatus !== 'READY' && session.edgeCaseStatus !== 'REVIEW')) throw new ConflictError('A sessão não aceita uma resposta de caso-limite neste momento.');
     const concept = (await this.repository.findConcept(session.conceptId)) ?? this.throwNotFound('Conceito');
-    const requestHash = this.hash({ stage: 'EDGE_CASE_REPLY', concept, challenge: session.edgeCaseChallenge, answer });
-    const evaluation = (await this.repository.findEvaluation(requestHash)) ?? (await this.llm.evaluateEdgeCaseAnswer(concept, session.edgeCaseChallenge, answer));
-    await this.repository.saveEvaluation(requestHash, evaluation);
-    const updated: StudySession = { ...session, edgeCaseStatus: evaluation.status === 'PASSED' ? 'PASSED' : 'REVIEW', attempts: [...session.attempts, { stage: 'EDGE_CASE_REPLY', answer, evaluation, createdAt: now() }], updatedAt: now() };
-    await this.replaceSession(updated, session.state);
-    return updated;
+    const requestHash = this.hash({ version: EVALUATION_PROMPT_VERSION, stage: 'EDGE_CASE_REPLY', concept, challenge: session.edgeCaseChallenge, answer });
+    return this.mutateSession(session, requestHash, async (claimed) => {
+      const challenge = claimed.edgeCaseChallenge
+      if (!challenge) throw new ConflictError('O caso-limite não está disponível.')
+      const evaluation = (await this.repository.findEvaluation(requestHash)) ?? (await this.llm.evaluateEdgeCaseAnswer(concept, challenge, answer));
+      await this.repository.saveEvaluation(requestHash, evaluation);
+      return { ...claimed, edgeCaseStatus: evaluation.status === 'PASSED' ? 'PASSED' : 'REVIEW', attempts: [...claimed.attempts, { stage: 'EDGE_CASE_REPLY', answer, evaluation, createdAt: now() }], updatedAt: now() };
+    });
   }
 
   public evaluateStressReply(sessionId: string, answer: string): Promise<StudySession> { return this.evaluateEdgeCaseAnswer(sessionId, answer); }
@@ -176,24 +234,46 @@ export class MasterMeService {
   public async getPerformance(materialId: string): Promise<ConceptPerformance[]> {
     const concepts = await this.getConcepts(materialId);
     const sessions = await this.repository.findSessionsByConceptIds(concepts.map(({ id }) => id));
+    return this.buildPerformance(concepts, sessions);
+  }
+
+  private buildPerformance(concepts: Concept[], sessions: StudySession[]): ConceptPerformance[] {
     return concepts.map((concept) => {
-      const attempts = sessions.filter(({ conceptId }) => conceptId === concept.id).flatMap(({ attempts }) => attempts).filter(({ stage }) => stage === 'INITIAL');
+      const attempts = sessions
+        .filter(({ conceptId }) => conceptId === concept.id)
+        .flatMap(({ attempts }) => attempts)
+        .filter(({ stage }) => stage === 'INITIAL')
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
       const passedAttempts = attempts.filter(({ evaluation }) => evaluation.status === 'PASSED').length;
       const logicalBreaks = attempts.filter(({ evaluation }) => evaluation.status === 'LOGICAL_BREAK').length;
       const incompleteAttempts = attempts.filter(({ evaluation }) => evaluation.status === 'INCOMPLETE').length;
       const totalInitialAttempts = attempts.length;
       const failedInitialAttempts = logicalBreaks + incompleteAttempts;
-      return { conceptId: concept.id, passedAttempts, logicalBreaks, incompleteAttempts, totalInitialAttempts, failedInitialAttempts, weakness: totalInitialAttempts ? (2 * logicalBreaks + incompleteAttempts) / (2 * totalInitialAttempts) : null };
+      const latestStatus = attempts.at(-1)?.evaluation.status ?? null
+      const performanceNeed = latestStatus === 'LOGICAL_BREAK' ? 1 : latestStatus === 'INCOMPLETE' ? 0.6 : latestStatus === 'PASSED' ? 0 : null
+      return { conceptId: concept.id, passedAttempts, logicalBreaks, incompleteAttempts, totalInitialAttempts, failedInitialAttempts, weakness: totalInitialAttempts ? (2 * logicalBreaks + incompleteAttempts) / (2 * totalInitialAttempts) : null, latestStatus, performanceNeed };
     });
+  }
+
+  public async getPracticeContext(materialId: string): Promise<PracticeContext> {
+    const concepts = await this.getConcepts(materialId);
+    const ids = concepts.map(({ id }) => id);
+    const [sessions, confidences, projects] = await Promise.all([
+      this.repository.findSessionsByConceptIds(ids),
+      this.repository.findConfidencesByConceptIds(ids),
+      this.repository.findPracticeProjectsByMaterial(materialId),
+    ]);
+    return {
+      knowledgeMap: this.buildKnowledgeMap(concepts, sessions),
+      confidences,
+      performance: this.buildPerformance(concepts, sessions),
+      projects,
+    };
   }
 
   public async generatePracticeProject(materialId: string, input: CreatePracticeProjectBody): Promise<PracticeProject> {
     const material = await this.getMaterial(materialId);
-    const concepts = await this.repository.findConceptsByMaterial(materialId);
-    if (!concepts.length) throw new ConflictError('Extraia os conceitos antes de gerar um Projeto de prática.');
-    const confidences = await this.repository.findConfidencesByConceptIds(concepts.map(({ id }) => id));
-    const performance = await this.getPerformance(materialId);
-    const focus = this.focus.select(input.focusMode, concepts, input.conceptIds, confidences, performance);
+    const focus = await this.getPracticeFocus(materialId, input);
     const inputHash = this.hash({ version: PRACTICE_PROMPT_VERSION, material: { id: material.id, title: material.title }, concepts: focus.concepts.map(({ id, name, description, sourceExcerpt, fundamentalPremises, edgeCases }) => ({ id, name, description, sourceExcerpt, fundamentalPremises, edgeCases })), focusMode: input.focusMode, conceptIds: input.conceptIds ? [...input.conceptIds].sort() : null, signals: focus.signalSnapshot });
     const cached = await this.repository.findPracticeProjectByHash(inputHash);
     if (cached) return cached;
@@ -201,6 +281,14 @@ export class MasterMeService {
     const project: PracticeProject = { id: randomUUID(), materialId, ...generated, prioritizedConcepts: focus.priorities, focusMode: input.focusMode, createdAt: now() };
     await this.repository.savePracticeProject(project, inputHash);
     return project;
+  }
+
+  public async getPracticeFocus(materialId: string, input: CreatePracticeProjectBody): Promise<PracticeFocus> {
+    const concepts = await this.getConcepts(materialId);
+    if (!concepts.length) throw new ConflictError('Extraia os conceitos antes de preparar um Projeto de prática.');
+    const confidences = await this.repository.findConfidencesByConceptIds(concepts.map(({ id }) => id));
+    const performance = await this.getPerformance(materialId);
+    return this.focus.select(input.focusMode, concepts, input.conceptIds, confidences, performance);
   }
 
   public async getPracticeProjects(materialId: string): Promise<PracticeProject[]> { await this.getMaterial(materialId); return this.repository.findPracticeProjectsByMaterial(materialId); }
@@ -221,13 +309,45 @@ export class MasterMeService {
     return context.concepts.length ? (await this.repository.findIsomorphicProblem(context.inputHash)) ?? null : null;
   }
 
-  public getAiUsageToday() { return this.repository.getAiUsageToday(); }
+  public getAiUsageToday(ownerId: string, dailyLimit: number) { return this.repository.getAiUsageToday(ownerId, dailyLimit); }
 
   private questionForConcept(concept: Concept, concepts: Concept[], sessionNumber: number, persisted?: MasterMeQuestion): MasterMeQuestion { return persisted ?? concept.studyQuestion ?? this.templates.generateQuestion(concept, concepts, sessionNumber); }
   private async requireConcept(id: string): Promise<Concept> { return (await this.repository.findConcept(id)) ?? this.throwNotFound('Conceito'); }
-  private async replaceSession(session: StudySession, expectedState: StudySession['state']): Promise<void> { if (!(await this.repository.replaceSession(session, expectedState))) throw new ConflictError('A sessão foi atualizada por outra solicitação. Tente novamente.'); }
+  private async mutateSession(session: StudySession, operationHash: string, mutation: (claimed: StudySession) => Promise<StudySession>): Promise<StudySession> {
+    const leaseToken = randomUUID()
+    const claimedVersion = await this.repository.claimSessionOperation(session.id, session.version, operationHash, leaseToken)
+    if (claimedVersion === undefined) throw new SessionConflictError()
+    let leaseIsCurrent = true
+    const heartbeat = setInterval(() => {
+      void Promise.resolve(this.repository.renewSessionOperation(session.id, claimedVersion, leaseToken))
+        .then((renewed) => { leaseIsCurrent = leaseIsCurrent && renewed })
+        .catch(() => { leaseIsCurrent = false })
+    }, 60_000)
+    heartbeat.unref()
+    try {
+      const changed = await mutation({ ...session, version: claimedVersion })
+      const completed = { ...changed, version: claimedVersion + 1 }
+      leaseIsCurrent = leaseIsCurrent && await this.repository.renewSessionOperation(session.id, claimedVersion, leaseToken)
+      if (!leaseIsCurrent) throw new SessionConflictError()
+      if (!(await this.repository.completeSessionOperation(completed, claimedVersion, leaseToken))) throw new SessionConflictError()
+      return completed
+    } catch (error: unknown) {
+      try { await this.repository.releaseSessionOperation(session.id, claimedVersion, leaseToken) }
+      catch { /* A falha de cleanup não pode ocultar o erro original. O lease expira de forma segura. */ }
+      throw error
+    } finally {
+      clearInterval(heartbeat)
+    }
+  }
   private hash(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
   private throwNotFound(resource: string): never { throw new NotFoundError(resource); }
+  private edgeCaseFallback(concept: Concept): EdgeCaseChallenge {
+    const scenario = concept.edgeCases[0] ?? concept.sourceExcerpt
+    const question = concept.generatedLocale === 'en-US'
+      ? `How does the scenario "${scenario}" change the mechanism of ${concept.name}, and which condition must still be preserved?`
+      : `Como o cenário “${scenario}” altera o mecanismo de ${concept.name}, e qual condição ainda precisa ser preservada?`
+    return { scenario, edgeCaseTested: scenario, question }
+  }
 
   private async isomorphicContext(materialId: string) {
     const concepts = await this.getConcepts(materialId);

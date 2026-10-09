@@ -21,6 +21,7 @@ export const openApiDocument = {
                 properties: {
                   title: { type: 'string' },
                   content: { type: 'string' },
+                  locale: { type: 'string', enum: ['pt-BR', 'en-US'], default: 'pt-BR' },
                 },
               },
             },
@@ -32,8 +33,8 @@ export const openApiDocument = {
         },
       },
       get: {
-        summary: 'Lista de Materiais',
-        responses: { '200': { description: 'Materiais' } },
+        summary: 'Lista metadados dos Materiais sem o conteúdo integral',
+        responses: { '200': { description: 'Resumos privados e revalidáveis por ETag' } },
       },
     },
     '/api/materials/upload': {
@@ -78,6 +79,14 @@ export const openApiDocument = {
           },
         ],
         responses: { '200': { description: 'Conceitos' } },
+      },
+    },
+    '/api/materials/{id}/localize': {
+      post: {
+        summary: 'Localiza campos gerados sem alterar evidências, IDs ou histórico',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['locale'], properties: { locale: { type: 'string', enum: ['pt-BR', 'en-US'] } } } } } },
+        responses: { '200': { description: 'Conceitos localizados' }, '409': { description: 'Material ainda não extraído ou localização incompatível' } },
       },
     },
     '/api/materials/{id}/knowledge-map': {
@@ -129,14 +138,17 @@ export const openApiDocument = {
         },
         responses: {
           '200': { description: 'Avaliação; PASSED conclui a explicação sem criar caso-limite' },
+          '409': { description: 'SESSION_CONFLICT: outra solicitação alterou ou está alterando a sessão; recarregue antes de tentar novamente' },
         },
       },
     },
-    '/api/sessions/{id}/edge-case': { post: { summary: 'Cria ou recupera um Teste de caso-limite opt-in', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Sessão com caso-limite' }, '409': { description: 'Explicação ainda não aprovada' } } } },
-    '/api/sessions/{id}/edge-case/answers': { post: { summary: 'Avalia resposta ao caso-limite sem alterar a aprovação da explicação', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string', minLength: 20 } } } } } }, responses: { '200': { description: 'Estado separado do caso-limite' }, '409': { description: 'Transição inválida' } } } },
+    '/api/sessions/{id}/edge-case': { post: { summary: 'Cria ou recupera um Teste de caso-limite opt-in', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Sessão com caso-limite' }, '409': { description: 'Transição inválida ou SESSION_CONFLICT; recarregue a sessão antes de repetir' } } } },
+    '/api/sessions/{id}/edge-case/answers': { post: { summary: 'Avalia resposta ao caso-limite sem alterar a aprovação da explicação', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string', minLength: 20 } } } } } }, responses: { '200': { description: 'Estado separado do caso-limite' }, '409': { description: 'Transição inválida ou SESSION_CONFLICT; recarregue a sessão antes de repetir' } } } },
     '/api/materials/{id}/confidences': { get: { summary: 'Lista autoconfianças existentes do material', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Autoconfianças' } } } },
     '/api/concepts/{id}/confidence': { put: { summary: 'Cria ou atualiza autoconfiança de 1 a 5', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['value'], properties: { value: { type: 'integer', minimum: 1, maximum: 5 } } } } } }, responses: { '200': { description: 'Autoconfiança persistida' }, '400': { description: 'Valor inválido' } } }, delete: { summary: 'Remove a autoconfiança', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '204': { description: 'Removida' } } } },
-    '/api/materials/{id}/performance': { get: { summary: 'Desempenho determinístico por conceito usando apenas tentativas iniciais', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Contagens e fraqueza por conceito' } } } },
+    '/api/materials/{id}/performance': { get: { summary: 'Desempenho determinístico por conceito usando apenas tentativas iniciais', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Contagens, histórico e necessidade baseada na tentativa inicial mais recente' } } } },
+    '/api/materials/{id}/practice-context': { get: { summary: 'Agrega mapa, confiança, desempenho e histórico de projetos em uma leitura', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Contexto completo da tela de prática' } } } },
+    '/api/materials/{id}/practice-focus': { post: { summary: 'Pré-visualiza até três dificuldades ativas sem consumir IA', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['focusMode'], properties: { focusMode: { type: 'string', enum: ['OVERVIEW','MANUAL','CONFIDENCE','PERFORMANCE','COMBINED'] }, conceptIds: { type: 'array', maxItems: 5, uniqueItems: true, items: { type: 'string', format: 'uuid' } } } } } } }, responses: { '200': { description: 'Conceitos priorizados e justificativas' }, '422': { description: 'Sinal indisponível ou nenhuma dificuldade ativa' } } } },
     '/api/materials/{id}/practice-projects': { get: { summary: 'Lista Projetos de prática mais recentes primeiro', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Projetos' } } }, post: { summary: 'Gera ou recupera do cache um Projeto de prática', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['focusMode'], properties: { focusMode: { type: 'string', enum: ['OVERVIEW','MANUAL','CONFIDENCE','PERFORMANCE','COMBINED'] }, conceptIds: { type: 'array', maxItems: 5, uniqueItems: true, items: { type: 'string', format: 'uuid' } } } } } } }, responses: { '201': { description: 'Projeto de prática' }, '400': { description: 'Payload inválido' }, '422': { description: 'Sinal escolhido sem dados' } } } },
     '/api/practice-projects/{id}': { get: { summary: 'Recupera um Projeto de prática', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Projeto' }, '404': { description: 'Não encontrado' } } } },
     '/api/sessions/{id}/stress-replies': {
@@ -162,7 +174,7 @@ export const openApiDocument = {
             },
           },
         },
-        responses: { '200': { description: 'Sessão atualizada' } },
+        responses: { '200': { description: 'Sessão atualizada' }, '409': { description: 'Transição inválida ou SESSION_CONFLICT; recarregue a sessão' } },
       },
     },
     '/api/materials/{id}/isomorphic-problem': {
@@ -186,8 +198,8 @@ export const openApiDocument = {
     },
     '/api/ai-usage/today': {
       get: {
-        summary: 'Uso local de IA registrado hoje, agrupado por modelo e operação',
-        responses: { '200': { description: 'Contagem local de chamadas à IA' } },
+        summary: 'Uso de IA do usuário autenticado, quota restante e renovação',
+        responses: { '200': { description: 'Contagem por operação/modelo e quota diária interna' } },
       },
     },
   },

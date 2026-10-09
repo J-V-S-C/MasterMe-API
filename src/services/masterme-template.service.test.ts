@@ -11,6 +11,7 @@ const makeConcept = (kind: Concept['kind'], id: string, name: string): Concept =
   sourceExcerpt: `Evidência de ${name}`,
   fundamentalPremises: [`Premissa de ${name}`],
   edgeCases: [`Caso-limite de ${name}`],
+  generatedLocale: 'pt-BR',
   prerequisiteIds: [],
   nextIds: [],
 })
