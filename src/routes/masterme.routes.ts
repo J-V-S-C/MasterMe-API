@@ -18,18 +18,29 @@ import type { Pool } from 'pg';
 import { authenticate } from '../middleware/authenticate';
 import { authorizeResource } from '../middleware/authorize-resource';
 import { bindAiUsageOwner } from '../middleware/ai-usage-context';
-import { aiBurstRateLimit } from '../middleware/rate-limit';
+import { aiBurstRateLimit, uploadConcurrencyLimit, uploadDailyRateLimit, uploadRateLimit } from '../middleware/rate-limit';
 
 export const createMasterMeRouter = (service: MasterMeService, ingestion?: IngestionService, pool?: Pool, aiDailyLimit = 100): Router => {
   const router = Router();
   const controller = new MasterMeController(service, aiDailyLimit, ingestion);
-  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: 8 * 1024 * 1024,
+      files: 1,
+      fields: 2,
+      parts: 3,
+      fieldSize: 200,
+      fieldNameSize: 32,
+      headerPairs: 20,
+    },
+  });
   if (pool) router.use(authenticate, bindAiUsageOwner, authorizeResource(pool));
   if (ingestion) {
     const files = new IngestionController(ingestion);
     router.get('/events', files.events);
     router.get('/processing/overview', files.overview);
-    router.post('/materials/upload', upload.single('file'), validateRequest({ body: UploadMaterialBodySchema }), files.upload);
+    router.post('/materials/upload', uploadDailyRateLimit, uploadRateLimit, uploadConcurrencyLimit, upload.single('file'), validateRequest({ body: UploadMaterialBodySchema }), files.upload);
     router.post('/materials/:id/extract', aiBurstRateLimit, validateRequest({ params: IdParamsSchema }), files.extract);
     router.delete('/materials/:id/extract', validateRequest({ params: IdParamsSchema }), files.cancelExtraction);
     router.get('/materials/:id/status', validateRequest({ params: IdParamsSchema }), files.status);

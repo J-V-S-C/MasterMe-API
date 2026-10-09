@@ -1,11 +1,21 @@
 import type { ErrorRequestHandler } from 'express'
 import { z } from 'zod'
 import { AppError } from '../services/errors'
+import { MulterError } from 'multer'
 
 export const errorHandler: ErrorRequestHandler = (error: unknown, req, res, _next) => {
   const requestId = res.locals.requestId ?? 'unknown'
   if (error instanceof AppError) {
     res.status(error.statusCode).json({ code: error.code, message: error.message, requestId })
+    return
+  }
+  if (error instanceof MulterError) {
+    const tooLarge = error.code === 'LIMIT_FILE_SIZE'
+    res.status(tooLarge ? 413 : 400).json({
+      code: tooLarge ? 'UPLOAD_TOO_LARGE' : 'INVALID_UPLOAD',
+      message: tooLarge ? 'Envie um arquivo de até 8 MiB.' : 'Envie somente um arquivo válido.',
+      requestId,
+    })
     return
   }
   if (error instanceof z.ZodError) {

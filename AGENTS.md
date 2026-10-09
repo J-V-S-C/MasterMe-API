@@ -1,9 +1,10 @@
 # Instruções para agentes — MasterMe API
 
 Este repositório deve ser operável em um clone independente. Antes de planejar
-ou editar, leia `README.md`, `docs/ENGINEERING_WORKFLOW.md`, `DEPLOYMENT.md` e a
-documentação versionada relacionada à área alterada, quando existir. Documentos
-de um workspace pai são contexto opcional, nunca
+ou editar, leia esta instrução e consulte
+`.agents/skills/masterme-documentation-routing/SKILL.md`. Ela determina quais
+documentos versionados são necessários para o escopo; não leia todos por
+ritual. Documentos de um workspace pai são contexto opcional, nunca
 pré-requisito oculto. O código deve manter TypeScript estrito, validação Zod nas
 bordas, ownership na API, migrações compatíveis e nenhum segredo em Git.
 

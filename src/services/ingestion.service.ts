@@ -1,15 +1,18 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { PDFParse } from 'pdf-parse'
-import type { Pool } from 'pg'
+import { mkdir, unlink, writeFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
+import { Worker } from 'node:worker_threads'
+import type { Pool, PoolClient } from 'pg'
 import type { MasterMeService } from './masterme.service'
 import { AppError, NotFoundError } from './errors'
 import { withAiUsageOwner } from './ai-usage-context'
-import type { SupportedLocale } from '../domain/masterme'
+import { MAX_MATERIAL_LENGTH, type SupportedLocale } from '../domain/masterme'
 import { ActivityEventHub } from './activity-event-hub'
 
-export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+export const MAX_PDF_PAGES = 120
+const PDF_PARSE_TIMEOUT_MS = 15_000
+const PDF_WORKER_MEMORY_MB = 96
 const allowed = new Map([['application/pdf', 'PDF'], ['text/plain', 'TXT'], ['text/markdown', 'MARKDOWN'], ['text/x-markdown', 'MARKDOWN']])
 
 export type ProcessingFailure = { retryable: boolean; message: string; code: 'AI_QUOTA_EXHAUSTED' | 'EXTRACTION_FAILED' }
@@ -41,33 +44,116 @@ export class LocalMaterialStorage {
   public async save(id: string, filename: string, data: Buffer): Promise<string> {
     await mkdir(this.directory, { recursive: true })
     const key = `${id}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-    await writeFile(join(this.directory, key), data)
-    return key
+    try {
+      await writeFile(join(this.directory, key), data)
+      return key
+    } catch (error: unknown) {
+      try { await this.remove(key) } catch { /* preservar erro de escrita */ }
+      throw error
+    }
+  }
+  public async remove(key: string): Promise<void> {
+    if (basename(key) !== key) throw new Error('Chave de storage inválida.')
+    try { await unlink(join(this.directory, key)) }
+    catch (error: unknown) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+    }
   }
 }
 
-const textFromFile = async (mime: string, data: Buffer): Promise<string> => {
-  if (mime !== 'application/pdf') return new TextDecoder('utf-8', { fatal: true }).decode(data).trim()
+type PdfWorkerResult =
+  | { ok: true; text: string }
+  | { ok: false; code: 'PDF_TOO_MANY_PAGES' | 'MATERIAL_TOO_LARGE' | 'INVALID_FILE'; message: string }
+
+export const extractPdfText = async (data: Buffer): Promise<string> => {
   if (!data.subarray(0, 5).equals(Buffer.from('%PDF-'))) throw new AppError(400, 'INVALID_FILE', 'O arquivo PDF é inválido.')
-  const parser = new PDFParse({ data })
-  try { return (await parser.getText()).text.trim() } finally { await parser.destroy() }
+  const worker = new Worker(new URL('../workers/pdf-text.worker.ts', import.meta.url), {
+    resourceLimits: {
+      maxOldGenerationSizeMb: PDF_WORKER_MEMORY_MB,
+      maxYoungGenerationSizeMb: 16,
+      stackSizeMb: 4,
+    },
+  })
+  return await new Promise<string>((resolve, reject) => {
+    let settled = false
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      void worker.terminate()
+      callback()
+    }
+    const timeout = setTimeout(() => finish(() => reject(new AppError(408, 'PDF_PARSE_TIMEOUT', 'O PDF demorou demais para ser processado. Divida o arquivo e tente novamente.'))), PDF_PARSE_TIMEOUT_MS)
+    timeout.unref()
+    worker.once('message', (result: PdfWorkerResult) => finish(() => {
+      if (result.ok) resolve(result.text)
+      else reject(new AppError(result.code === 'INVALID_FILE' ? 400 : 413, result.code, result.message))
+    }))
+    worker.once('error', () => finish(() => reject(new AppError(400, 'INVALID_FILE', 'Não foi possível ler o PDF.'))))
+    worker.once('exit', (code) => {
+      if (code !== 0) finish(() => reject(new AppError(400, 'INVALID_FILE', 'Não foi possível ler o PDF com segurança.')))
+    })
+    worker.postMessage({ data, maxPages: MAX_PDF_PAGES, maxCharacters: MAX_MATERIAL_LENGTH })
+  })
+}
+
+const textFromFile = async (mime: string, data: Buffer): Promise<string> => {
+  if (mime !== 'application/pdf') {
+    if (data.byteLength > MAX_MATERIAL_LENGTH * 4) throw new AppError(413, 'MATERIAL_TOO_LARGE', 'O arquivo de texto excede o limite seguro.')
+    return new TextDecoder('utf-8', { fatal: true }).decode(data).trim()
+  }
+  return extractPdfText(data)
 }
 
 export class IngestionService {
   public constructor(private readonly pool: Pool, private readonly storage: LocalMaterialStorage, private readonly eventHub = new ActivityEventHub(pool)) {}
   public async upload(file: Express.Multer.File, title: string | undefined, locale: SupportedLocale, ownerId: string): Promise<{ id: string; title: string; status: string }> {
     const kind = allowed.get(file.mimetype)
-    if (!kind || file.size > MAX_UPLOAD_BYTES) throw new AppError(400, 'INVALID_FILE', 'Envie um PDF, Markdown ou TXT de até 15 MiB.')
+    if (!kind) throw new AppError(400, 'INVALID_FILE', 'Envie um PDF, Markdown ou TXT válido.')
+    if (file.size > MAX_UPLOAD_BYTES) throw new AppError(413, 'UPLOAD_TOO_LARGE', 'Envie um arquivo de até 8 MiB.')
     let content: string
-    try { content = await textFromFile(file.mimetype, file.buffer) } catch { throw new AppError(400, 'INVALID_FILE', 'Não foi possível ler o arquivo. PDFs escaneados sem texto não são suportados.') }
+    try { content = await textFromFile(file.mimetype, file.buffer) }
+    catch (error: unknown) {
+      if (error instanceof AppError) throw error
+      throw new AppError(400, 'INVALID_FILE', 'Não foi possível ler o arquivo. PDFs escaneados sem texto não são suportados.')
+    }
     if (content.length < 20) throw new AppError(400, 'INVALID_FILE', 'O arquivo não possui texto legível suficiente. Envie um PDF com camada de texto.')
+    if (content.length > MAX_MATERIAL_LENGTH) throw new AppError(413, 'MATERIAL_TOO_LARGE', `O texto extraído excede ${MAX_MATERIAL_LENGTH.toLocaleString('pt-BR')} caracteres. Divida o material antes de enviar.`)
     const id = randomUUID(); const storageKey = await this.storage.save(id, file.originalname, file.buffer)
     const requestedTitle = title?.trim() || file.originalname.replace(/\.[^.]+$/, '').trim() || 'Material importado'
     const materialTitle = requestedTitle.slice(0, 160)
-    await this.pool.query('INSERT INTO study_materials (id,title,content,locale,created_at,source_type,original_filename,mime_type,storage_key,processing_status,owner_id) VALUES ($1,$2,$3,$4,now(),$5,$6,$7,$8,$9,$10)', [id, materialTitle, content, locale, kind, file.originalname, file.mimetype, storageKey, 'PENDING', ownerId])
-    await this.pool.query('INSERT INTO processing_jobs (id,material_id,type) VALUES ($1,$2,$3)', [randomUUID(), id, 'EXTRACT'])
-    await this.event('material.queued', { materialId: id }, ownerId)
-    return { id, title: materialTitle, status: 'PENDING' }
+    let client: PoolClient | undefined
+    let commitAttempted = false
+    try {
+      client = await this.pool.connect()
+      await client.query('BEGIN')
+      await client.query('INSERT INTO study_materials (id,title,content,locale,created_at,source_type,original_filename,mime_type,storage_key,processing_status,owner_id) VALUES ($1,$2,$3,$4,now(),$5,$6,$7,$8,$9,$10)', [id, materialTitle, content, locale, kind, file.originalname, file.mimetype, storageKey, 'PENDING', ownerId])
+      const jobId = randomUUID()
+      await client.query('INSERT INTO processing_jobs (id,material_id,type) VALUES ($1,$2,$3)', [jobId, id, 'EXTRACT'])
+      await client.query("WITH inserted AS (INSERT INTO activity_events (type,payload,owner_id) VALUES ($1,$2,$3) RETURNING id) SELECT id,pg_notify('masterme_activity',$3::text) FROM inserted", ['material.queued', JSON.stringify({ materialId: id, jobId }), ownerId])
+      commitAttempted = true
+      await client.query('COMMIT')
+      return { id, title: materialTitle, status: 'PENDING' }
+    } catch (error: unknown) {
+      if (commitAttempted) {
+        // Um erro de COMMIT deixa a conexão em estado desconhecido. Descarte-a
+        // antes de reconciliar por outra conexão para não esgotar pools pequenos.
+        client?.release(true)
+        client = undefined
+        try {
+          const confirmed = await this.pool.query('SELECT 1 FROM study_materials WHERE id=$1', [id])
+          if (confirmed.rows[0]) return { id, title: materialTitle, status: 'PENDING' }
+        } catch {
+          console.error(JSON.stringify({ level: 'error', operation: 'upload-commit-reconciliation', code: 'COMMIT_STATUS_UNKNOWN' }))
+          throw new AppError(503, 'UPLOAD_COMMIT_UNKNOWN', 'Não foi possível confirmar o upload. Tente consultar seus materiais antes de reenviar.')
+        }
+      } else if (client) try { await client.query('ROLLBACK') } catch { /* preservar erro original */ }
+      try { await this.storage.remove(storageKey) }
+      catch { console.error(JSON.stringify({ level: 'error', operation: 'upload-cleanup', code: 'STORAGE_REMOVE_FAILED' })) }
+      throw error
+    } finally {
+      client?.release()
+    }
   }
   public async enqueue(materialId: string, ownerId: string): Promise<object> {
     await this.status(materialId)
