@@ -36,7 +36,19 @@ chmod 600 /opt/masterme/.env
 ```
 
 Edite `/opt/masterme/.env` e preencha a URL do Session pooler do Supabase e a chave Gemini. Não copie a chave para o GitHub nem para o frontend.
-Defina também `AI_DAILY_REQUEST_LIMIT` com a quantidade de tentativas ao provedor permitida por usuário e por dia. O padrão do Compose é 100.
+Configure `PUBLIC_APP_URL` com a origem HTTPS canônica do frontend, sem path,
+query ou fragmento. Defina `AI_GLOBAL_DAILY_CREDIT_LIMIT` conforme o orçamento
+diário e mantenha `AI_CREDITS_ENABLED=true`; alterar para `false` é o kill
+switch imediato de novas tentativas no provedor.
+
+Para habilitar cobrança, ative o Checkout Integrado no painel InfinitePay e
+configure `INFINITEPAY_HANDLE` com a InfiniteTag sem `$`. Sem essa variável,
+catálogo, plano gratuito e estudo dentro dos créditos existentes continuam
+disponíveis, mas criação e reconciliação de checkout retornam `503`. O backend
+usa apenas os endpoints fixos `api.checkout.infinitepay.io`, com timeout e
+resposta limitada. O contrato deve ser conferido na
+[documentação oficial do Checkout Integrado](https://ajuda.infinitepay.io/pt-BR/articles/10766888-como-usar-o-checkout-integrado-da-infinitepay)
+antes de alterações no payload ou nos endpoints.
 
 Crie uma chave SSH exclusiva para o deploy. Cadastre a chave pública em `~/.ssh/authorized_keys` do usuário de deploy e dê a esse usuário acesso ao Docker. Obtenha a linha segura para `known_hosts` diretamente do console/host administrado; não aceite uma chave desconhecida automaticamente durante o workflow.
 
@@ -75,6 +87,16 @@ O teto de corpo no proxy é obrigatório: ele interrompe multipart abusivo antes
 de o payload alcançar o processo Bun. Mantenha-o pouco acima dos 8 MiB aceitos
 pela API apenas para comportar os headers e campos do formulário. Configure
 também timeout de leitura no proxy para impedir uploads lentos indefinidos.
+O webhook `/api/billing/webhooks/infinitepay` aceita no máximo 16 KiB dentro da
+API. Se o proxy permitir regras por rota, aplique o mesmo teto e rate limit
+próprio. Não exija autenticação do usuário nesse endpoint: o payload público
+não concede acesso; ele apenas agenda a confirmação ativa via `payment_check`.
+Uma rajada de webhooks é coalescida pelo processo. Leases no PostgreSQL
+limitam o conjunto das réplicas a cinco reconciliações ativas, com no máximo
+uma por pedido, e expiram em cinco minutos para recuperação após crash. A
+admissão máxima de cinco pendências por pedido também é serializada no banco.
+Uma resposta `paid=false` fica terminal; replay idêntico não reabre o evento,
+e somente um webhook com sinal novo cria outra tentativa.
 
 ## 5. Primeiro lançamento
 
@@ -83,6 +105,9 @@ também timeout de leitura no proxy para impedir uploads lentos indefinidos.
 3. Execute `Deploy frontend to Cloudflare`.
 4. No Cloudflare, associe o domínio do frontend ao Worker `masterme-frontend`.
 5. Faça upload de um PDF pequeno, acompanhe o SSE, cancele uma extração e rode uma extração completa.
+6. Com `INFINITEPAY_HANDLE` configurado, crie um pedido controlado, conclua o
+   pagamento, chame a reconciliação autenticada e confirme que uma repetição
+   não amplia a vigência nem os créditos.
 
 Depois do primeiro lançamento, pushes em `main` fazem deploy automático. A
 execução manual também é recusada fora de `main`; pull requests executam somente
@@ -92,6 +117,9 @@ O comando `bun run migrate` serializa execuções com advisory lock e registra
 nome/checksum em `schema_migrations`. Instalações anteriores completas recebem
 um baseline seguro até `012`; schema parcial ou migração já aplicada que mudou
 é bloqueado para impedir reaplicação destrutiva.
+O workflow de CI sobe PostgreSQL descartável e define
+`MIGRATION_TEST_REQUIRED=true`; remover a URL de teste faz a suíte falhar em vez
+de ignorar os invariantes de tiers, repetição, concorrência e webhook.
 
 ## Rollback
 
@@ -103,6 +131,11 @@ MASTERME_IMAGE=ghcr.io/OWNER/masterme-backend:COMMIT_SHA docker compose --env-fi
 ```
 
 Os dados permanecem no Supabase e os uploads no volume Docker. Antes de mudanças de schema destrutivas, faça backup do banco no Supabase e do volume de uploads; as migrações atuais rodam antes da troca dos containers.
+
+O rollback da aplicação preserva pedidos, eventos, concessões e entitlements
+da migração `014`; não remova essas tabelas. Em incidente de custo, use primeiro
+`AI_CREDITS_ENABLED=false`. Em incidente isolado no checkout, remova
+`INFINITEPAY_HANDLE`; isso não revoga entitlements já confirmados.
 
 ## Alternativa se a OCI estiver sem capacidade
 

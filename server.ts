@@ -13,10 +13,15 @@ import { createMasterMeRouter } from './src/routes/masterme.routes'
 import { GeminiMasterMeGateway } from './src/services/gemini.gateway'
 import { MasterMeService } from './src/services/masterme.service'
 import { IngestionService, LocalMaterialStorage, ProcessingWorker } from './src/services/ingestion.service'
+import { PostgresBillingRepository } from './src/repositories/postgres-billing.repository'
+import { InfinitePayClient } from './src/services/infinitepay.client'
+import { BillingService } from './src/services/billing.service'
+import { createBillingRouter } from './src/routes/billing.routes'
+import { BillingReconciler } from './src/services/billing-reconciler'
 
 dotenv.config()
 
-export const createApp = (service: MasterMeService, ingestion?: IngestionService, pool?: Pool, aiDailyLimit = 100): Express => {
+export const createApp = (service: MasterMeService, ingestion?: IngestionService, pool?: Pool, aiDailyLimit = 100, billing?: BillingService, triggerBillingReconciliation?: () => void): Express => {
   const app = express()
   app.disable('x-powered-by')
   app.set('etag', 'strong')
@@ -33,8 +38,9 @@ export const createApp = (service: MasterMeService, ingestion?: IngestionService
     next()
   })
   app.use(globalRateLimit)
-  app.use(express.json({ limit: '110kb' }))
   app.use(requestLogger)
+  app.use('/api/billing/webhooks/infinitepay', express.json({ limit: '16kb' }))
+  app.use(express.json({ limit: '110kb' }))
   app.get('/health', (_req, res) => res.json({ status: 'ok' }))
   if (process.env.NODE_ENV !== 'production') {
     app.get('/openapi.json', (_req, res) => res.json(openApiDocument))
@@ -48,6 +54,7 @@ export const createApp = (service: MasterMeService, ingestion?: IngestionService
     } else res.set('cache-control', 'no-store')
     next()
   })
+  if (billing) app.use('/api/billing', createBillingRouter(billing, undefined, triggerBillingReconciliation))
   app.use('/api', createMasterMeRouter(service, ingestion, pool, aiDailyLimit))
   app.use(errorHandler)
   return app
@@ -55,12 +62,23 @@ export const createApp = (service: MasterMeService, ingestion?: IngestionService
 
 const startServer = (environment: Environment): void => {
   const pool = new Pool({ connectionString: environment.DATABASE_URL, max: environment.DATABASE_POOL_MAX }); const repository = new PostgresMasterMeRepository(pool)
+  const billingRepository = new PostgresBillingRepository(pool)
+  const billing = new BillingService(
+    billingRepository,
+    environment.INFINITEPAY_HANDLE ? new InfinitePayClient(fetch, environment.INFINITEPAY_TIMEOUT_MS) : undefined,
+    {
+      publicAppUrl: environment.PUBLIC_APP_URL,
+      infinitePayHandle: environment.INFINITEPAY_HANDLE,
+      maxProviderAttempts: new Set([environment.MODEL_NAME, ...environment.GEMINI_MODEL_FALLBACKS]).size,
+      creditPolicy: { enabled: environment.AI_CREDITS_ENABLED, globalDailyLimit: environment.AI_GLOBAL_DAILY_CREDIT_LIMIT },
+    },
+  )
   const gateway = new GeminiMasterMeGateway(
     new GeminiStructuredClient(
       environment,
       (event, ownerId) => repository.recordAiUsage(event, ownerId),
       undefined,
-      (ownerId) => repository.consumeAiRequest(ownerId, environment.AI_DAILY_REQUEST_LIMIT),
+      (ownerId, operation) => billing.reserveCredits(ownerId, operation),
     ),
     environment.EXTRACTION_MAX_CONCEPTS,
   )
@@ -81,7 +99,15 @@ const startServer = (environment: Environment): void => {
     }, 1_000)
     return
   }
-  const app = createApp(study, ingestion, pool, environment.AI_DAILY_REQUEST_LIMIT)
+  const billingReconciler = new BillingReconciler(billing)
+  const reportBillingReconciliationFailure = () => {
+    console.warn(JSON.stringify({ level: 'warn', operation: 'payment-reconciliation-drain', code: 'DRAIN_FAILED' }))
+  }
+  const triggerBillingReconciliation = () => {
+    void billingReconciler.trigger().catch(reportBillingReconciliationFailure)
+  }
+  billingReconciler.start(60_000, reportBillingReconciliationFailure)
+  const app = createApp(study, ingestion, pool, environment.AI_DAILY_REQUEST_LIMIT, billing, triggerBillingReconciliation)
   app.listen(environment.PORT, () => {
     console.info(`MasterMe Backend rodando na porta ${environment.PORT}`)
   })

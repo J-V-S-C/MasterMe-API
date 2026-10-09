@@ -2,7 +2,6 @@ import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
 import type { Environment } from './environment';
 import { currentAiUsageOwner } from '../services/ai-usage-context';
-import { AppError } from '../services/errors';
 
 export type AiOperation =
   | 'EXTRACTION'
@@ -60,7 +59,6 @@ const providerSchema = (value: unknown): unknown => {
 
 export class GeminiStructuredClient {
   private readonly models: string[];
-  private readonly dailyLimit: number;
   private readonly quotaBlockedModels = new Set<string>();
   private readonly generator: ContentGenerator;
   public readonly extractionConcurrency: number;
@@ -72,9 +70,8 @@ export class GeminiStructuredClient {
       ownerId: string,
     ) => Promise<void> = async () => undefined,
     generator?: ContentGenerator,
-    private readonly consumeRequest: (ownerId: string) => Promise<number> = async () => 0,
+    private readonly reserveCredits: (ownerId: string, operation: AiOperation) => Promise<void> = async () => undefined,
   ) {
-    this.dailyLimit = environment.AI_DAILY_REQUEST_LIMIT;
     this.extractionConcurrency = environment.EXTRACTION_CONCURRENCY;
     this.models = [
       ...new Set([
@@ -97,11 +94,7 @@ export class GeminiStructuredClient {
     for (const modelName of this.models) {
       if (this.quotaBlockedModels.has(modelName)) continue;
       const ownerId = currentAiUsageOwner();
-      if (ownerId) {
-        const used = await this.consumeRequest(ownerId);
-        if (used > this.dailyLimit)
-          throw new AppError(429, 'AI_DAILY_LIMIT_REACHED', 'Seu limite diário de chamadas de IA foi atingido. Tente novamente após a renovação da quota.');
-      }
+      if (ownerId) await this.reserveCredits(ownerId, options.operation);
       let usageMetadata:
         | { promptTokenCount?: number; candidatesTokenCount?: number }
         | undefined;

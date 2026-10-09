@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
 import type { Environment } from './environment';
-import { GeminiStructuredClient, type AiUsageEvent } from './llm';
+import { GeminiStructuredClient, type AiOperation, type AiUsageEvent } from './llm';
 import { withAiUsageOwner } from '../services/ai-usage-context';
+import { AppError } from '../services/errors';
 
 const environment = {
   GEMINI_API_KEY: 'test-key',
@@ -142,17 +143,36 @@ describe('GeminiStructuredClient', () => {
     });
   });
 
-  test('bloqueia a chamada antes do provedor quando a quota diária acabou', async () => {
+  test('reserva créditos antes do provedor e bloqueia sem efetuar a chamada', async () => {
     let providerCalls = 0;
     const generator = {
       generateContent: async () => { providerCalls += 1; return { text: '{"value":"ok"}' }; },
     } as unknown as ConstructorParameters<typeof GeminiStructuredClient>[2];
-    const client = new GeminiStructuredClient(environment, undefined, generator, async () => 3);
+    const client = new GeminiStructuredClient(environment, undefined, generator, async () => {
+      throw new AppError(429, 'AI_CREDIT_LIMIT_REACHED', 'Créditos insuficientes.')
+    });
 
     await expect(withAiUsageOwner('11111111-1111-4111-8111-111111111111', () => client.generateStructured(schema, 'prompt', {
       operation: 'INITIAL_EVALUATION',
       maxOutputTokens: 100,
-    }))).rejects.toMatchObject({ statusCode: 429, code: 'AI_DAILY_LIMIT_REACHED' });
+    }))).rejects.toMatchObject({ statusCode: 429, code: 'AI_CREDIT_LIMIT_REACHED' });
     expect(providerCalls).toBe(0);
   });
+
+  test('cada tentativa real de fallback reserva novamente o peso da operação', async () => {
+    const reservations: AiOperation[] = []
+    const generator = {
+      generateContent: async (request: { model: string }) => request.model === 'gemini-primary'
+        ? { text: '{invalid' }
+        : { text: '{"value":"ok"}' },
+    } as unknown as ConstructorParameters<typeof GeminiStructuredClient>[2]
+    const client = new GeminiStructuredClient(environment, undefined, generator, async (_ownerId, operation) => { reservations.push(operation) })
+
+    await withAiUsageOwner('11111111-1111-4111-8111-111111111111', () => client.generateStructured(schema, 'prompt', {
+      operation: 'EXTRACTION',
+      maxOutputTokens: 100,
+    }))
+
+    expect(reservations).toEqual(['EXTRACTION', 'EXTRACTION'])
+  })
 });

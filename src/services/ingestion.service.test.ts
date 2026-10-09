@@ -5,8 +5,16 @@ import { join } from 'node:path'
 import { Pool } from 'pg'
 import { MAX_MATERIAL_LENGTH } from '../domain/masterme'
 import { classifyProcessingFailure, extractPdfText, IngestionService, LocalMaterialStorage, MAX_PDF_PAGES } from './ingestion.service'
+import { AppError } from './errors'
 
 describe('classifyProcessingFailure', () => {
+  test('não repete extração bloqueada pelos créditos antes do provedor', () => {
+    expect(classifyProcessingFailure(new AppError(429, 'AI_PERIOD_CREDIT_LIMIT_REACHED', 'Seu saldo de créditos do período foi atingido.'))).toEqual({
+      retryable: false,
+      message: 'Seu saldo de créditos do período foi atingido.',
+      code: 'AI_CREDIT_LIMIT_REACHED',
+    })
+  })
   test('interrompe retentativas quando a cota diária do provedor acabou', () => {
     const failure = classifyProcessingFailure(new Error('429 Too Many Requests: generate_content_free_tier_requests quota exceeded'))
     expect(failure).toEqual({

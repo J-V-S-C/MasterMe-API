@@ -1,6 +1,7 @@
 export const openApiDocument = {
   openapi: '3.0.3',
   info: { title: 'MasterMe API', version: '0.1.0' },
+  externalDocs: { description: 'Contrato oficial do Checkout Integrado InfinitePay', url: 'https://ajuda.infinitepay.io/pt-BR/articles/10766888-como-usar-o-checkout-integrado-da-infinitepay' },
   paths: {
     '/health': {
       get: {
@@ -198,9 +199,75 @@ export const openApiDocument = {
     },
     '/api/ai-usage/today': {
       get: {
-        summary: 'Uso de IA do usuário autenticado, quota restante e renovação',
-        responses: { '200': { description: 'Contagem por operação/modelo e quota diária interna' } },
+        summary: 'Telemetria legada de uso de IA do usuário autenticado',
+        description: 'Compatibilidade temporária para contagem de chamadas e tokens. Use /api/billing/me como fonte autoritativa de saldo e renovação.',
+        responses: { '200': { description: 'Contagem por operação/modelo e campos legados de quota' } },
       },
+    },
+    '/api/billing/catalog': {
+      get: {
+        summary: 'Catálogo público de planos e pesos de créditos',
+        description: 'Expõe preços definidos pelo servidor. Essencial e Pro são pagamentos únicos, sem renovação automática.',
+        responses: { '200': { description: 'Catálogo público cacheável' } },
+      },
+    },
+    '/api/billing/checkouts': {
+      post: {
+        summary: 'Cria ou recupera checkout InfinitePay idempotente',
+        description: 'O servidor determina preço, descrição, redirect e webhook. O cliente envia somente um planId conhecido.',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string', minLength: 8, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, required: ['planId'], properties: { planId: { type: 'string', enum: ['ESSENTIAL', 'PRO'] } } } } } },
+        responses: {
+          '200': { description: 'Checkout idempotente já existente' },
+          '201': { description: 'Pedido criado' },
+          '400': { description: 'Plano ou chave de idempotência inválidos' },
+          '409': { description: 'Chave reutilizada para outro plano ou checkout ainda em criação' },
+          '429': { description: 'Limite de criação/reconciliação de checkout' },
+          '503': { description: 'InfinitePay não configurada ou estado do pedido indisponível' },
+        },
+      },
+    },
+    '/api/billing/webhooks/infinitepay': {
+      post: {
+        summary: 'Recebe sinal público de pagamento da InfinitePay',
+        description: 'Payload limitado a 16 KiB. Nunca concede entitlement diretamente; agenda payment_check server-to-server. Replay idêntico é idempotente e não reabre evento terminal.',
+        requestBody: { required: true, content: { 'application/json': { schema: {
+          type: 'object',
+          required: ['invoice_slug', 'amount', 'transaction_nsu', 'order_nsu'],
+          properties: {
+            invoice_slug: { type: 'string', maxLength: 160 },
+            amount: { type: 'integer', minimum: 0 },
+            paid_amount: { type: 'integer', minimum: 0 },
+            transaction_nsu: { type: 'string', maxLength: 160 },
+            order_nsu: { type: 'string', format: 'uuid' },
+          },
+        } } } },
+        responses: { '200': { description: 'Evento novo persistido ou replay idempotente aceito; reconciliação sinalizada' }, '400': { description: 'Payload inválido ou pedido inexistente' }, '413': { description: 'Payload acima de 16 KiB' }, '429': { description: 'Limite por IP ou cinco eventos pendentes para o pedido' } },
+      },
+    },
+    '/api/billing/orders/{id}/reconcile': {
+      post: {
+        summary: 'Reconcilia pagamento de pedido do usuário',
+        description: 'Confirma status e valor com payment_check antes de conceder entitlement. Repetições não duplicam vigência ou créditos.',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+        requestBody: { required: false, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, properties: { transactionNsu: { type: 'string', maxLength: 160 }, slug: { type: 'string', maxLength: 160 } } } } } },
+        responses: { '200': { description: 'Estado autoritativo do pedido' }, '400': { description: 'Referência ausente ou inválida' }, '404': { description: 'Pedido não encontrado para este usuário' }, '409': { description: 'Pagamento pendente, valor divergente ou transação já usada' }, '429': { description: 'Limite de reconciliações' }, '503': { description: 'InfinitePay não configurada' } },
+      },
+    },
+    '/api/billing/me': {
+      get: {
+        summary: 'Entitlement, saldo e estimativas conservadoras do usuário',
+        description: 'Expõe limites diário e do período do tier efetivo. Pro tem prioridade quando os dois tiers estão ativos, sem incorporar saldo ou vigência Essencial. Estimativas consideram o número máximo configurado de tentativas/fallbacks.',
+        security: [{ bearerAuth: [] }],
+        responses: { '200': { description: 'Plano efetivo, vigência, créditos usados/restantes, pesos e estimativas por operação' } },
+      },
+    },
+  },
+  components: {
+    securitySchemes: {
+      bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
     },
   },
 } as const;

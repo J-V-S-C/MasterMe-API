@@ -15,9 +15,14 @@ const PDF_PARSE_TIMEOUT_MS = 15_000
 const PDF_WORKER_MEMORY_MB = 96
 const allowed = new Map([['application/pdf', 'PDF'], ['text/plain', 'TXT'], ['text/markdown', 'MARKDOWN'], ['text/x-markdown', 'MARKDOWN']])
 
-export type ProcessingFailure = { retryable: boolean; message: string; code: 'AI_QUOTA_EXHAUSTED' | 'EXTRACTION_FAILED' }
+export type ProcessingFailure = { retryable: boolean; message: string; code: 'AI_QUOTA_EXHAUSTED' | 'AI_CREDIT_LIMIT_REACHED' | 'EXTRACTION_FAILED' }
 
 export const classifyProcessingFailure = (error: unknown): ProcessingFailure => {
+  if (error instanceof AppError && ['AI_DISABLED', 'AI_GLOBAL_LIMIT_REACHED', 'AI_DAILY_CREDIT_LIMIT_REACHED', 'AI_PERIOD_CREDIT_LIMIT_REACHED'].includes(error.code)) return {
+    retryable: false,
+    message: error.message,
+    code: 'AI_CREDIT_LIMIT_REACHED',
+  }
   const details = String(error).toLowerCase()
   const quotaExhausted = details.includes('quota exceeded') || details.includes('free_tier_requests')
   if (quotaExhausted) return {

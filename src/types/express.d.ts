@@ -6,6 +6,7 @@ declare global {
       requestId?: string
       validated?: ValidatedRequestData
       userId?: string
+      idempotencyKey?: string
     }
   }
 }
