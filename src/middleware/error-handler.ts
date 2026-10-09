@@ -18,6 +18,10 @@ export const errorHandler: ErrorRequestHandler = (error: unknown, req, res, _nex
     })
     return
   }
+  if (error && typeof error === 'object' && 'type' in error && error.type === 'entity.too.large') {
+    res.status(413).json({ code: 'PAYLOAD_TOO_LARGE', message: 'O corpo da requisição excede o limite permitido.', requestId })
+    return
+  }
   if (error instanceof z.ZodError) {
     res.status(500).json({
       code: 'INVALID_EXTERNAL_RESPONSE',

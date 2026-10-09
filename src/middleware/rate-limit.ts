@@ -63,6 +63,18 @@ export const uploadDailyRateLimit = createRateLimit({
   key: (req, res) => `upload-day:${res.locals.userId ?? req.ip}`,
 })
 
+export const billingCheckoutRateLimit = createRateLimit({
+  windowMs: 15 * 60_000,
+  max: 10,
+  key: (req, res) => `billing-checkout:${res.locals.userId ?? req.ip}`,
+})
+
+export const billingWebhookRateLimit = createRateLimit({
+  windowMs: 60_000,
+  max: 120,
+  key: (req) => `billing-webhook:${req.ip}`,
+})
+
 export const uploadConcurrencyLimit = ((): RequestHandler => {
   const active = new Map<string, number>()
   return (req, res, next) => {

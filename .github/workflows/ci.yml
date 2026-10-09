@@ -31,6 +31,7 @@ jobs:
           --health-retries 10
     env:
       MIGRATION_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/masterme_test
+      MIGRATION_TEST_REQUIRED: 'true'
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2

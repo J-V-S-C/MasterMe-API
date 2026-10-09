@@ -70,7 +70,11 @@ bun test
 | POST   | `/api/materials/:id/practice-projects` | Gera ou recupera do cache um Projeto de prática.            |
 | GET    | `/api/materials/:id/practice-projects` | Lista projetos do material.                                 |
 | GET    | `/api/practice-projects/:id`           | Recupera um projeto.                                        |
-| GET    | `/api/ai-usage/today`                  | Uso privado, tokens e quota diária restante.              |
+| GET    | `/api/ai-usage/today`                  | Telemetria legada de chamadas e tokens do dia.            |
+| GET    | `/api/billing/catalog`                 | Catálogo público e pesos de créditos.                     |
+| POST   | `/api/billing/checkouts`               | Cria checkout hospedado idempotente para plano fixo.      |
+| POST   | `/api/billing/orders/:id/reconcile`    | Reconcilia um pedido do usuário com a InfinitePay.        |
+| GET    | `/api/billing/me`                      | Plano, saldo e estimativas conservadoras.                 |
 
 `/api/sessions/:id/stress-replies` e as rotas de `isomorphic-problem` continuam
 temporariamente disponíveis para o frontend legado. Novos consumidores devem
@@ -79,13 +83,25 @@ usar Teste de caso-limite e Projeto de prática.
 Swagger UI local: `http://localhost:3333/docs`. Documento bruto: `/openapi.json`.
 Ambos ficam desativados quando `NODE_ENV=production`.
 
-## Segurança e quota de IA
+## Segurança, entitlement e créditos de IA
 
-- `AI_DAILY_REQUEST_LIMIT` define quantas tentativas reais ao Gemini cada usuário pode fazer por dia; o padrão é 100.
-- O consumo é reservado atomicamente no PostgreSQL antes da chamada, incluindo fallbacks de modelo.
+- O plano gratuito recebe 10 créditos/dia e 120 por mês-calendário. Essencial recebe 120/dia e 1.500 por vigência de 30 dias; Pro recebe 180/dia e 15.000 por vigência de 365 dias.
+- Avaliação custa 2 créditos; caso-limite/problema 4; localização 6; projeto 8; extração 12. Cada fallback real reserva novamente o peso antes da chamada.
+- O consumo é reservado atomicamente no PostgreSQL e respeita simultaneamente limite diário, limite do período, `AI_GLOBAL_DAILY_CREDIT_LIMIT` e o kill switch `AI_CREDITS_ENABLED`.
+- `GET /api/billing/me` é a fonte autoritativa de saldo. `GET /api/ai-usage/today` permanece temporariamente apenas para telemetria compatível de chamadas/tokens.
 - Cache hit não consome quota. A interface mostra o saldo interno do MasterMe, que é independente dos limites do projeto no Google AI Studio.
 - A API limita rajadas globais por IP e aplica um limite por usuário somente nas rotas capazes de consumir IA. Produção deve manter também rate limiting no Caddy/Cloudflare.
 - A chave Gemini permanece somente no backend e deve ser exclusiva, restrita e rotacionada.
+
+## Cobrança InfinitePay
+
+- `GET /api/billing/catalog` continua disponível sem configuração do provedor. `INFINITEPAY_HANDLE` vazio desabilita apenas novos checkouts.
+- Essencial (R$ 29,90/30 dias) e Pro (R$ 249,00/365 dias) são pagamentos únicos, sem renovação automática.
+- Recompras estendem somente o mesmo tier. Se Essencial e Pro estiverem ativos ao mesmo tempo, Pro tem prioridade e apenas seus créditos são consumidos; vigência e saldo Essencial não são promovidos nem incorporados ao Pro.
+- O frontend envia somente `planId` e `Idempotency-Key`; preço, descrição, redirects e webhook são definidos pelo backend a partir de `PUBLIC_APP_URL`.
+- O webhook é apenas um gatilho. Entitlement só é concedido após `payment_check` server-to-server confirmar pagamento e valor, com pedido, transação e concessão idempotentes.
+- Eventos concorrentes são admitidos atomicamente, com no máximo cinco pendências por pedido. O reconciliador em memória coalesce gatilhos e leases no PostgreSQL limitam todas as réplicas a cinco eventos ativos, no máximo um por pedido. `paid=false` encerra aquele evento; replay idêntico permanece terminal e somente um sinal realmente novo cria outra tentativa.
+- A API nunca recebe nem armazena dados de cartão. Registros de pagamento guardam apenas IDs técnicos, valor, plano e estado necessários à conciliação.
 
 ## Projeto de prática
 
@@ -146,7 +162,7 @@ depois de migrations, atualização dos containers e health check bem-sucedidos.
 
 ## Limites do MVP
 
-- A quota exibida é a proteção interna do produto; ela não consulta o saldo remoto do Google em tempo real.
+- Os créditos exibidos são a proteção interna do produto; eles não consultam o saldo remoto do Google em tempo real.
 - PDFs sem texto selecionável são rejeitados; não há OCR.
 - O Projeto de prática não recebe, executa ou avalia uma solução.
 - Arquivos brutos ficam em volume local; produção deve usar object storage.
