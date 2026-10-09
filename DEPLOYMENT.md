@@ -62,12 +62,19 @@ Crie, por exemplo, `api.seudominio.com` apontando para a VM. Exemplo Caddy:
 
 ```caddyfile
 api.seudominio.com {
+  request_body {
+    max_size 9MB
+  }
   reverse_proxy 127.0.0.1:3333
 }
 ```
 
 O Caddy mantém streaming por padrão. Em Nginx, desative buffering no endpoint SSE (`proxy_buffering off`). Libere somente `80/tcp` e `443/tcp` publicamente; a porta 3333 fica ligada ao loopback.
 Configure também rate limiting no proxy para `/api`, especialmente em uploads e conexões SSE. Os limites em memória da aplicação protegem a instância atual, mas não substituem uma barreira distribuída caso a API seja escalada horizontalmente.
+O teto de corpo no proxy é obrigatório: ele interrompe multipart abusivo antes
+de o payload alcançar o processo Bun. Mantenha-o pouco acima dos 8 MiB aceitos
+pela API apenas para comportar os headers e campos do formulário. Configure
+também timeout de leitura no proxy para impedir uploads lentos indefinidos.
 
 ## 5. Primeiro lançamento
 

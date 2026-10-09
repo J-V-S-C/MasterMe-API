@@ -11,6 +11,7 @@ import {
 } from '../schemas/http.schema';
 import { getValidated } from '../middleware/validate-request';
 import type { IngestionService } from '../services/ingestion.service';
+import { AppError } from '../services/errors';
 
 export class MasterMeController {
   public constructor(private readonly service: MasterMeService, private readonly aiDailyLimit: number, private readonly activity?: IngestionService) {}
@@ -135,7 +136,7 @@ export class MasterMeController {
 export class IngestionController {
   public constructor(private readonly ingestion: IngestionService) {}
   public readonly upload: RequestHandler = async (req, res) => {
-    if (!req.file) throw new Error('Arquivo ausente.');
+    if (!req.file) throw new AppError(400, 'INVALID_UPLOAD', 'Envie um arquivo PDF, Markdown ou TXT.');
     const body = getValidated(res, 'body', UploadMaterialBodySchema)
     res.status(202).json({
       data: await this.ingestion.upload(
