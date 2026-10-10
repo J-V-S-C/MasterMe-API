@@ -7,6 +7,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "validate": "bun run typecheck && bun test",
+    "validate:dependencies": "bun audit --production",
+    "validate:guardrails": "bun test scripts/quality-guardrails.test.ts",
     "migrate": "bun migrate.ts"
   },
   "dependencies": {
