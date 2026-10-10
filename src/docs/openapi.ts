@@ -9,6 +9,20 @@ export const openApiDocument = {
         responses: { '200': { description: 'API ativa' } },
       },
     },
+    '/ready': {
+      get: {
+        summary: 'Readiness do banco com timeout curto',
+        responses: { '200': { description: 'API pronta' }, '503': { description: 'Dependência indisponível' } },
+      },
+    },
+    '/metrics': {
+      get: {
+        summary: 'Métricas Prometheus operacionais',
+        description: 'Somente rede privada/loopback. Responde 404 quando o token operacional não está configurado.',
+        security: [{ metricsBearer: [] }],
+        responses: { '200': { description: 'Prometheus text format' }, '401': { description: 'Bearer operacional inválido' }, '404': { description: 'Coleta desabilitada' } },
+      },
+    },
     '/api/materials': {
       post: {
         summary: 'Cria material',
@@ -268,6 +282,7 @@ export const openApiDocument = {
   components: {
     securitySchemes: {
       bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+      metricsBearer: { type: 'http', scheme: 'bearer', bearerFormat: 'opaque operational token' },
     },
   },
 } as const;

@@ -12,6 +12,7 @@ import {
 import type { InfinitePayWebhook } from '../schemas/billing.schema'
 import { AppError, NotFoundError } from './errors'
 import type { InfinitePayClient } from './infinitepay.client'
+import type { MetricsRegistry } from '../middleware/observability'
 
 type BillingConfiguration = {
   publicAppUrl: string
@@ -31,6 +32,7 @@ export class BillingService {
     private readonly repository: BillingRepository,
     private readonly provider: InfinitePayClient | undefined,
     private readonly configuration: BillingConfiguration,
+    private readonly metrics?: Pick<MetricsRegistry, 'recordCredit' | 'recordBilling'>,
   ) {}
 
   public catalog(): ReturnType<typeof publicCatalog> {
@@ -113,10 +115,12 @@ export class BillingService {
       try {
         await this.reconcileOrderById(event.orderId, { transactionNsu: event.transactionNsu, slug: event.invoiceSlug })
         await this.repository.finishWebhook(event.id, event.leaseToken, null, false)
+        this.metrics?.recordBilling('confirmed')
       } catch (error) {
         const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'RECONCILIATION_FAILED'
         const permanent = code === 'PAYMENT_NOT_CONFIRMED' || code === 'PAYMENT_AMOUNT_MISMATCH' || code === 'PAYMENT_ALREADY_USED' || code === 'NOT_FOUND'
         await this.repository.finishWebhook(event.id, event.leaseToken, code, !permanent && event.attempts < 12)
+        this.metrics?.recordBilling(code === 'PAYMENT_NOT_CONFIRMED' ? 'pending' : permanent ? 'rejected' : event.attempts < 12 ? 'retry' : 'failed')
         console.warn(JSON.stringify({ level: 'warn', operation: 'payment-reconciliation', code }))
       }
     }
@@ -124,7 +128,13 @@ export class BillingService {
   }
 
   public async reserveCredits(ownerId: string, operation: AiOperation): Promise<void> {
-    await this.repository.reserveCredits(ownerId, operation, this.configuration.creditPolicy ?? { enabled: true, globalDailyLimit: 20_000 })
+    try {
+      await this.repository.reserveCredits(ownerId, operation, this.configuration.creditPolicy ?? { enabled: true, globalDailyLimit: 20_000 })
+      this.metrics?.recordCredit(operation, 'reserved')
+    } catch (error) {
+      this.metrics?.recordCredit(operation, 'blocked')
+      throw error
+    }
   }
 
   public async getMe(ownerId: string) {

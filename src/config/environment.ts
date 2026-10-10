@@ -24,6 +24,8 @@ const EnvironmentSchema = z.object({
   PUBLIC_APP_URL: z.string().url().default('http://localhost:3000').transform((value) => value.replace(/\/$/, '')),
   INFINITEPAY_HANDLE: z.string().trim().regex(/^[A-Za-z0-9._-]{2,64}$/).optional().or(z.literal('').transform(() => undefined)),
   INFINITEPAY_TIMEOUT_MS: z.coerce.number().int().min(500).max(15_000).default(5_000),
+  METRICS_BEARER_TOKEN: z.string().min(32).max(256).optional().or(z.literal('').transform(() => undefined)),
+  OBSERVABILITY_DB_TIMEOUT_MS: z.coerce.number().int().min(100).max(5_000).default(1_000),
 }).superRefine((environment, context) => {
   const appUrl = new URL(environment.PUBLIC_APP_URL)
   if (appUrl.pathname !== '/' || appUrl.search || appUrl.hash) {

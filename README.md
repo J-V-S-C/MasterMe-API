@@ -83,6 +83,14 @@ usar Teste de caso-limite e Projeto de prática.
 Swagger UI local: `http://localhost:3333/docs`. Documento bruto: `/openapi.json`.
 Ambos ficam desativados quando `NODE_ENV=production`.
 
+## Observabilidade
+
+`/health` é liveness sem dependências; `/ready` testa o banco com timeout e é o
+gate de deploy. `/metrics` expõe RED, IA, créditos, fila e billing em Prometheus
+somente com bearer operacional e fica desabilitado (`404`) sem configuração.
+Labels usam enums e templates de rota, nunca IDs ou conteúdo. SLOs, alertas e
+runbooks estão em [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
+
 ## Segurança, entitlement e créditos de IA
 
 - O plano gratuito recebe 10 créditos/dia e 120 por mês-calendário. Essencial recebe 120/dia e 1.500 por vigência de 30 dias; Pro recebe 180/dia e 15.000 por vigência de 365 dias.

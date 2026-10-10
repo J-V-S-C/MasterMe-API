@@ -2,6 +2,7 @@ import type { ErrorRequestHandler } from 'express'
 import { z } from 'zod'
 import { AppError } from '../services/errors'
 import { MulterError } from 'multer'
+import { normalizedRoute } from './observability'
 
 export const errorHandler: ErrorRequestHandler = (error: unknown, req, res, _next) => {
   const requestId = res.locals.requestId ?? 'unknown'
@@ -30,6 +31,6 @@ export const errorHandler: ErrorRequestHandler = (error: unknown, req, res, _nex
     })
     return
   }
-  console.error(JSON.stringify({ level: 'error', requestId, method: req.method, path: req.path, error: String(error) }))
+  console.error(JSON.stringify({ level: 'error', requestId, method: req.method, route: res.locals.routeTemplate ?? normalizedRoute(req), code: 'INTERNAL_ERROR' }))
   res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Erro interno do servidor.', requestId })
 }
