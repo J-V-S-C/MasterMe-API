@@ -25,4 +25,10 @@ describe('configuração comercial', () => {
   test('handle vazio mantém billing desabilitado sem invalidar o boot', () => {
     expect(parseEnvironment({ ...required, INFINITEPAY_HANDLE: '' }).INFINITEPAY_HANDLE).toBeUndefined()
   })
+
+  test('token de métricas é opcional, mas exige entropia mínima quando configurado', () => {
+    expect(parseEnvironment({ ...required, METRICS_BEARER_TOKEN: '' }).METRICS_BEARER_TOKEN).toBeUndefined()
+    expect(() => parseEnvironment({ ...required, METRICS_BEARER_TOKEN: 'short' })).toThrow()
+    expect(parseEnvironment({ ...required, METRICS_BEARER_TOKEN: 'x'.repeat(32) }).METRICS_BEARER_TOKEN).toHaveLength(32)
+  })
 })

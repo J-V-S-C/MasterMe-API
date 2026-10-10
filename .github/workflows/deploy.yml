@@ -59,7 +59,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$OCI_KNOWN_HOSTS" > ~/.ssh/known_hosts
       - name: Upload deployment manifest
-        run: scp deploy/compose.yml "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}:/tmp/masterme-backend.compose.yml"
+        run: |
+          scp deploy/compose.yml "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}:/tmp/masterme-backend.compose.yml"
+          scp deploy/deploy-and-verify.sh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}:/tmp/masterme-deploy-and-verify.sh"
       - name: Deploy immutable image
         env:
           DEPLOY_IMAGE: ${{ steps.image.outputs.name }}:${{ github.sha }}
@@ -67,6 +69,5 @@ jobs:
           GHCR_DEPLOY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           printf '%s' "$GHCR_DEPLOY_TOKEN" | ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "docker login ghcr.io -u '$GHCR_DEPLOY_USER' --password-stdin"
-          ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "sudo install -d -m 750 /opt/masterme && sudo mv /tmp/masterme-backend.compose.yml /opt/masterme/compose.yml && sudo chown -R '${{ secrets.OCI_SSH_USER }}' /opt/masterme"
-          ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "cd /opt/masterme && MASTERME_IMAGE='$DEPLOY_IMAGE' docker compose --env-file .env -f compose.yml pull && MASTERME_IMAGE='$DEPLOY_IMAGE' docker compose --env-file .env -f compose.yml run --rm api bun run migrate && MASTERME_IMAGE='$DEPLOY_IMAGE' docker compose --env-file .env -f compose.yml up -d --remove-orphans"
-          ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "curl --fail --silent --show-error --retry 20 --retry-delay 3 --retry-all-errors --connect-timeout 5 --max-time 10 http://127.0.0.1:3333/health"
+          ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "sudo install -d -m 750 /opt/masterme && sudo mv /tmp/masterme-backend.compose.yml /opt/masterme/compose.yml && sudo mv /tmp/masterme-deploy-and-verify.sh /opt/masterme/deploy-and-verify.sh && sudo chown -R '${{ secrets.OCI_SSH_USER }}' /opt/masterme && chmod 750 /opt/masterme/deploy-and-verify.sh"
+          ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "/opt/masterme/deploy-and-verify.sh '$DEPLOY_IMAGE'"

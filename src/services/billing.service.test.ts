@@ -4,6 +4,7 @@ import { BILLING_PLANS, type BillingOrder, type BillingRepository, type CreditBa
 import { BillingService } from './billing.service'
 import { AppError } from './errors'
 import type { InfinitePayClient } from './infinitepay.client'
+import { MetricsRegistry } from '../middleware/observability'
 
 const ownerId = '11111111-1111-4111-8111-111111111111'
 const orderId = '22222222-2222-4222-8222-222222222222'
@@ -28,6 +29,7 @@ class FakeBillingRepository implements BillingRepository {
   public confirmed = 0
   public confirmationError: unknown
   public reservations: AiOperation[] = []
+  public reservationError: Error | undefined
   public webhookCalls: unknown[] = []
   public pendingWebhooks: Array<{ id: number; orderId: string; transactionNsu: string; invoiceSlug: string; attempts: number; leaseToken: string }> = []
   public finishedWebhooks: unknown[] = []
@@ -52,7 +54,7 @@ class FakeBillingRepository implements BillingRepository {
     this.storedOrder = order({ ...(this.storedOrder ?? {}), status: 'PAID' })
     return this.storedOrder
   }
-  public async reserveCredits(_ownerId: string, operation: AiOperation): Promise<void> { this.reservations.push(operation) }
+  public async reserveCredits(_ownerId: string, operation: AiOperation): Promise<void> { if (this.reservationError) throw this.reservationError; this.reservations.push(operation) }
   public async getCreditBalance(): Promise<CreditBalance> {
     return { planId: 'FREE', dailyLimit: 10, dailyUsed: 2, dailyRemaining: 8, dailyResetsAt: '2026-10-10T00:00:00.000Z', periodLimit: 120, periodUsed: 20, periodRemaining: 100, periodStartsAt: '2026-10-01T00:00:00.000Z', periodEndsAt: '2026-11-01T00:00:00.000Z', validUntil: null }
   }
@@ -190,5 +192,17 @@ describe('BillingService', () => {
     const summary = await service.getMe(ownerId)
     expect(summary.estimates.INITIAL_EVALUATION).toBe(2)
     expect(summary.estimates.EXTRACTION).toBe(0)
+  })
+
+  test('registra reservas e bloqueios de crédito sem labels controladas pelo usuário', async () => {
+    const repository = new FakeBillingRepository()
+    const metrics = new MetricsRegistry()
+    const service = new BillingService(repository, undefined, { publicAppUrl: 'https://masterme.app', maxProviderAttempts: 2 }, metrics)
+    await service.reserveCredits(ownerId, 'EXTRACTION')
+    repository.reservationError = new Error('blocked')
+    await expect(service.reserveCredits(ownerId, 'EXTRACTION')).rejects.toThrow('blocked')
+    const output = metrics.render()
+    expect(output).toContain('masterme_ai_credit_reservations_total{operation="EXTRACTION",outcome="reserved"} 1')
+    expect(output).toContain('masterme_ai_credit_reservations_total{operation="EXTRACTION",outcome="blocked"} 1')
   })
 })

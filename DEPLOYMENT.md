@@ -40,6 +40,9 @@ Configure `PUBLIC_APP_URL` com a origem HTTPS canônica do frontend, sem path,
 query ou fragmento. Defina `AI_GLOBAL_DAILY_CREDIT_LIMIT` conforme o orçamento
 diário e mantenha `AI_CREDITS_ENABLED=true`; alterar para `false` é o kill
 switch imediato de novas tentativas no provedor.
+Configure também `METRICS_BEARER_TOKEN` com um valor aleatório de no mínimo 32
+caracteres e mantenha `/metrics` acessível somente por loopback ou rede privada.
+`OBSERVABILITY_DB_TIMEOUT_MS=1000` limita as sondagens de readiness/coleta.
 
 Para habilitar cobrança, ative o Checkout Integrado no painel InfinitePay e
 configure `INFINITEPAY_HANDLE` com a InfiniteTag sem `$`. Sem essa variável,
@@ -74,6 +77,8 @@ Crie, por exemplo, `api.seudominio.com` apontando para a VM. Exemplo Caddy:
 
 ```caddyfile
 api.seudominio.com {
+  @operational path /metrics /metrics/*
+  respond @operational 404
   request_body {
     max_size 9MB
   }
@@ -101,7 +106,8 @@ e somente um webhook com sinal novo cria outra tentativa.
 ## 5. Primeiro lançamento
 
 1. Na branch `main`, execute manualmente o workflow `Deploy backend to OCI`.
-2. Confirme `https://api.seudominio.com/health` retornando `{ "status": "ok" }`.
+2. Confirme `/health` pelo domínio público e `/ready` via loopback na VM. O
+   deploy usa readiness como gate; o healthcheck Docker permanece em liveness.
 3. Execute `Deploy frontend to Cloudflare`.
 4. No Cloudflare, associe o domínio do frontend ao Worker `masterme-frontend`.
 5. Faça upload de um PDF pequeno, acompanhe o SSE, cancele uma extração e rode uma extração completa.
@@ -136,6 +142,15 @@ O rollback da aplicação preserva pedidos, eventos, concessões e entitlements
 da migração `014`; não remova essas tabelas. Em incidente de custo, use primeiro
 `AI_CREDITS_ENABLED=false`. Em incidente isolado no checkout, remova
 `INFINITEPAY_HANDLE`; isso não revoga entitlements já confirmados.
+
+O workflow captura a imagem atualmente executada antes da troca em
+`/opt/masterme/.previous-image`. Se a nova API não passar em `/ready`,
+`deploy/deploy-and-verify.sh` restaura automaticamente essa imagem na API e no
+worker. O workflow continua falhando com o código original da readiness mesmo
+se o rollback também falhar, para não mascarar o incidente. Falhas anteriores
+ao gate (pull, migração ou `compose up`) interrompem o script sem declarar um
+rollback bem-sucedido; use o procedimento manual acima após diagnosticar o
+estado, lembrando que migrações são aditivas e não são revertidas pelo script.
 
 ## Alternativa se a OCI estiver sem capacidade
 
