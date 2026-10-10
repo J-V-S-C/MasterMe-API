@@ -126,6 +126,19 @@ um baseline seguro até `012`; schema parcial ou migração já aplicada que mud
 O workflow de CI sobe PostgreSQL descartável e define
 `MIGRATION_TEST_REQUIRED=true`; remover a URL de teste faz a suíte falhar em vez
 de ignorar os invariantes de tiers, repetição, concorrência e webhook.
+Além disso, o CI audita apenas as dependências de produção, constrói a imagem
+Linux/amd64 somente com essas dependências e sobe o artefato com filesystem
+somente leitura, capabilities
+removidas e PostgreSQL descartável. As migrações já validadas pela integração
+PostgreSQL são reutilizadas pelo smoke, que inicia o mesmo artefato com o comando
+da API (sem tentar apontar o runner de produção para o banco local), exige
+`/health` e `/ready` verdes, confirma `401` sem bearer e valida a exposição
+Prometheus somente com o token de teste. O deploy repete a suíte com
+outro PostgreSQL descartável, a auditoria, o Compose e o mesmo smoke em uma
+imagem amd64 antes de autenticar no registry ou publicar. Assim um push em
+`main` não depende da ordem entre workflows paralelos: o próprio CD possui o
+gate completo. Builds multi-arquitetura permanecem exclusivos da
+promoção para não duplicar custo em cada pull request.
 
 ## Rollback
 

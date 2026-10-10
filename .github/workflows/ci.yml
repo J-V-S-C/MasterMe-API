@@ -38,8 +38,8 @@ jobs:
         with:
           bun-version: 1.3.6
       - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: bun test
+      - run: bun run validate
+      - run: bun run validate:dependencies
       - name: Validate production Compose
         env:
           DATABASE_URL: postgresql://postgres.project:password@pooler.example.com:5432/postgres?sslmode=require
@@ -53,6 +53,12 @@ jobs:
         with:
           context: .
           push: false
+          load: true
+          platforms: linux/amd64
           tags: masterme-backend:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Smoke test production image
+        env:
+          MIGRATION_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/masterme_test
+        run: ./scripts/smoke-production-image.sh masterme-backend:ci
