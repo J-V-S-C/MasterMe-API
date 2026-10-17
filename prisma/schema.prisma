@@ -1,0 +1,572 @@
+generator client {
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  previewFeatures = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["auth", "public"]
+}
+
+model users {
+  id                         String                       @id @db.Uuid
+  activity_events            activity_events[]
+  ai_credit_daily_usage      ai_credit_daily_usage[]
+  ai_credit_monthly_usage    ai_credit_monthly_usage[]
+  ai_credit_usage_events     ai_credit_usage_events[]
+  ai_daily_quotas            ai_daily_quotas[]
+  ai_usage_events            ai_usage_events[]
+  billing_entitlement_grants billing_entitlement_grants[]
+  billing_entitlements       billing_entitlements[]
+  billing_orders             billing_orders[]
+  study_materials            study_materials[]
+  shelves                    shelves[]
+  concept_cards              concept_cards[]
+  learning_goals             learning_goals[]
+  study_plans                study_plans[]
+  study_tasks                study_tasks[]
+  study_availability         study_availability[]
+  learning_evidence          learning_evidence[]
+  study_suggestions          study_suggestions[]
+  evidence_contestations     evidence_contestations[]
+  activity_requests          activity_requests[]
+
+  @@schema("auth")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model activity_events {
+  id         BigInt   @id @default(autoincrement())
+  type       String   @db.VarChar(64)
+  payload    Json
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  owner_id   String   @db.Uuid
+  users      users    @relation(fields: [owner_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([created_at], map: "activity_events_created_idx")
+  @@index([owner_id, id], map: "activity_events_owner_id_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model ai_credit_daily_usage {
+  owner_id   String   @db.Uuid
+  usage_date DateTime @default(dbgenerated("CURRENT_DATE")) @db.Date
+  credits    Int      @default(0)
+  users      users    @relation(fields: [owner_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([owner_id, usage_date])
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model ai_credit_global_daily_usage {
+  usage_date DateTime @id @default(dbgenerated("CURRENT_DATE")) @db.Date
+  credits    BigInt   @default(0)
+
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model ai_credit_monthly_usage {
+  owner_id    String   @db.Uuid
+  month_start DateTime @db.Date
+  credits     Int      @default(0)
+  users       users    @relation(fields: [owner_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([owner_id, month_start])
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model ai_credit_usage_events {
+  id         BigInt   @id @default(autoincrement())
+  owner_id   String   @db.Uuid
+  operation  String
+  plan_id    String
+  credits    Int
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users      users    @relation(fields: [owner_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([owner_id, created_at(sort: Desc)], map: "ai_credit_usage_events_owner_created_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model ai_daily_quotas {
+  owner_id   String   @db.Uuid
+  usage_date DateTime @default(dbgenerated("CURRENT_DATE")) @db.Date
+  requests   Int      @default(0)
+  users      users    @relation(fields: [owner_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([owner_id, usage_date])
+  @@schema("public")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model ai_evaluation_cache {
+  request_hash String   @id
+  evaluation   Json
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@schema("public")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model ai_usage_events {
+  id            BigInt   @id @default(autoincrement())
+  operation     String   @db.VarChar(40)
+  model         String   @db.VarChar(120)
+  success       Boolean
+  input_tokens  Int?
+  output_tokens Int?
+  error_code    String?  @db.VarChar(40)
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+  owner_id      String?  @db.Uuid
+  users         users?   @relation(fields: [owner_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([created_at])
+  @@index([owner_id, created_at(sort: Desc)], map: "ai_usage_events_owner_created_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model billing_entitlement_grants {
+  order_id       String         @id @db.Uuid
+  owner_id       String         @db.Uuid
+  plan_id        String
+  credit_amount  Int
+  duration_days  Int
+  created_at     DateTime       @default(now()) @db.Timestamptz(6)
+  billing_orders billing_orders @relation(fields: [order_id], references: [id], onUpdate: NoAction)
+  users          users          @relation(fields: [owner_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model billing_entitlements {
+  owner_id     String   @db.Uuid
+  plan_id      String
+  valid_from   DateTime @db.Timestamptz(6)
+  valid_until  DateTime @db.Timestamptz(6)
+  credit_limit Int
+  credits_used Int      @default(0)
+  updated_at   DateTime @default(now()) @db.Timestamptz(6)
+  users        users    @relation(fields: [owner_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([owner_id, plan_id])
+  @@index([valid_until])
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model billing_orders {
+  id                         String                      @id @db.Uuid
+  owner_id                   String                      @db.Uuid
+  plan_id                    String
+  amount_in_cents            Int
+  idempotency_key_hash       String
+  status                     String                      @default("PENDING")
+  checkout_url               String?
+  transaction_nsu            String?
+  invoice_slug               String?
+  paid_at                    DateTime?                   @db.Timestamptz(6)
+  created_at                 DateTime                    @default(now()) @db.Timestamptz(6)
+  updated_at                 DateTime                    @default(now()) @db.Timestamptz(6)
+  billing_entitlement_grants billing_entitlement_grants?
+  users                      users                       @relation(fields: [owner_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  billing_payment_events     billing_payment_events[]
+
+  @@unique([owner_id, idempotency_key_hash])
+  @@index([owner_id, created_at(sort: Desc)], map: "billing_orders_owner_created_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model billing_payment_events {
+  id               BigInt         @id @default(autoincrement())
+  order_id         String         @db.Uuid
+  event_type       String
+  event_key        String         @unique
+  transaction_nsu  String         @unique(map: "billing_payment_confirmed_transaction_idx", where: raw("(event_type = 'PAYMENT_CONFIRMED'::text)"))
+  invoice_slug     String
+  amount_in_cents  Int
+  capture_method   String?
+  attempts         Int            @default(0)
+  next_attempt_at  DateTime       @default(now()) @db.Timestamptz(6)
+  lease_token      String?        @db.Uuid
+  lease_expires_at DateTime?      @db.Timestamptz(6)
+  processed_at     DateTime?      @db.Timestamptz(6)
+  last_error_code  String?
+  created_at       DateTime       @default(now()) @db.Timestamptz(6)
+  billing_orders   billing_orders @relation(fields: [order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([order_id, created_at(sort: Desc)], map: "billing_payment_events_order_created_idx")
+  @@index([next_attempt_at, lease_expires_at, id], map: "billing_payment_events_pending_idx", where: raw("((event_type = 'WEBHOOK_RECEIVED'::text) AND (processed_at IS NULL))"))
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model concept_confidences {
+  concept_id String   @id @db.Uuid
+  value      Int      @db.SmallInt
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  concepts   concepts @relation(fields: [concept_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model concepts {
+  id                   String               @id @db.Uuid
+  material_id          String               @db.Uuid
+  name                 String               @db.VarChar(160)
+  description          String
+  kind                 String               @db.VarChar(16)
+  source_excerpt       String
+  fundamental_premises Json
+  edge_cases           Json
+  prerequisite_ids     Json
+  next_ids             Json
+  study_question       Json?
+  edge_case_question   String?
+  generated_locale     String               @default("und") @db.VarChar(10)
+  concept_confidences  concept_confidences?
+  study_materials      study_materials      @relation(fields: [material_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  study_sessions       study_sessions[]
+  relation_sources     concept_relations[] @relation("RelationSource")
+  relation_targets     concept_relations[] @relation("RelationTarget")
+  concept_cards        concept_cards[]
+  study_tasks          study_tasks[]
+  learning_evidence    learning_evidence[]
+  study_suggestions    study_suggestions[]
+
+  @@index([material_id])
+  @@unique([id, material_id], map: "concepts_id_material_id_key")
+  @@schema("public")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model generated_artifacts {
+  id              BigInt          @id @default(autoincrement())
+  material_id     String          @db.Uuid
+  kind            String          @db.VarChar(40)
+  input_hash      String
+  payload         Json
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  study_materials study_materials @relation(fields: [material_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([kind, input_hash])
+  @@schema("public")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model practice_projects {
+  id              String          @id @db.Uuid
+  material_id     String          @db.Uuid
+  input_hash      String          @unique
+  focus_mode      String          @db.VarChar(24)
+  payload         Json
+  created_at      DateTime        @db.Timestamptz(6)
+  study_materials study_materials @relation(fields: [material_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([material_id, created_at(sort: Desc)], map: "practice_projects_material_created_idx")
+  @@schema("public")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model processing_jobs {
+  id               String          @id @db.Uuid
+  material_id      String          @db.Uuid
+  type             String          @db.VarChar(32)
+  status           String          @default("PENDING") @db.VarChar(16)
+  attempts         Int             @default(0)
+  run_after        DateTime        @default(now()) @db.Timestamptz(6)
+  locked_at        DateTime?       @db.Timestamptz(6)
+  last_error       String?
+  created_at       DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime        @default(now()) @db.Timestamptz(6)
+  stage            String          @default("QUEUED") @db.VarChar(16)
+  total_chunks     Int             @default(0)
+  completed_chunks Int             @default(0)
+  progress_percent Int             @default(0)
+  started_at       DateTime?       @db.Timestamptz(6)
+  finished_at      DateTime?       @db.Timestamptz(6)
+  phase_durations  Json            @default("{}")
+  study_materials  study_materials @relation(fields: [material_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([material_id, type], map: "processing_jobs_active_material_type", where: raw("((status)::text = ANY ((ARRAY['PENDING'::character varying, 'PROCESSING'::character varying])::text[]))"))
+  @@index([status, created_at], map: "processing_jobs_status_created_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model study_materials {
+  id                  String                @id @db.Uuid
+  title               String                @db.VarChar(160)
+  content             String
+  created_at          DateTime              @db.Timestamptz(6)
+  source_type         String                @default("TEXT") @db.VarChar(16)
+  original_filename   String?
+  mime_type           String?
+  storage_key         String?
+  processing_status   String                @default("READY") @db.VarChar(16)
+  processing_error    String?
+  processed_at        DateTime?             @db.Timestamptz(6)
+  owner_id            String                @db.Uuid
+  locale              String                @default("pt-BR") @db.VarChar(10)
+  concepts            concepts[]
+  generated_artifacts generated_artifacts[]
+  practice_projects   practice_projects[]
+  processing_jobs     processing_jobs[]
+  users               users                 @relation(fields: [owner_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  material_units      material_units[]
+  concept_relations   concept_relations[]
+  shelf_materials     shelf_materials[]
+  study_tasks         study_tasks[]
+  learning_evidence   learning_evidence[]
+
+  @@index([owner_id, created_at(sort: Desc)], map: "study_materials_owner_created_idx")
+  @@unique([id, owner_id], map: "study_materials_id_owner_id_key")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model study_sessions {
+  id                           String    @id @db.Uuid
+  concept_id                   String    @db.Uuid
+  state                        String    @db.VarChar(32)
+  question                     Json
+  stress_test                  Json?
+  attempts                     Json
+  created_at                   DateTime  @db.Timestamptz(6)
+  updated_at                   DateTime  @db.Timestamptz(6)
+  edge_case_status             String    @default("NOT_REQUESTED") @db.VarChar(24)
+  edge_case_challenge          Json?
+  version                      Int       @default(1)
+  pending_operation_hash       String?
+  pending_operation_token      String?   @db.Uuid
+  pending_operation_started_at DateTime? @db.Timestamptz(6)
+  concepts                     concepts  @relation(fields: [concept_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([concept_id])
+  @@index([concept_id, updated_at(sort: Desc)], map: "study_sessions_concept_updated_idx")
+  @@schema("public")
+}
+
+model material_units {
+  id String @id @db.Uuid
+  material_id String @db.Uuid
+  ordinal Int
+  title String?
+  level Int @db.SmallInt
+  start_offset Int
+  end_offset Int
+  provenance String
+  page_number Int?
+  study_materials study_materials @relation(fields: [material_id], references: [id], onDelete: Cascade)
+  study_tasks study_tasks[]
+  @@unique([material_id, ordinal])
+  @@schema("public")
+}
+
+model concept_relations {
+  id String @id @db.Uuid
+  material_id String @db.Uuid
+  from_concept_id String @db.Uuid
+  to_concept_id String @db.Uuid
+  relation_type String
+  statement String
+  justification String
+  source_excerpt String
+  provenance String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  study_materials study_materials @relation(fields: [material_id], references: [id], onDelete: Cascade)
+  source concepts @relation("RelationSource", fields: [from_concept_id, material_id], references: [id, material_id], onDelete: Cascade, map: "concept_relations_source_material_fkey")
+  target concepts @relation("RelationTarget", fields: [to_concept_id, material_id], references: [id, material_id], onDelete: Cascade, map: "concept_relations_target_material_fkey")
+  learning_evidence learning_evidence[]
+  @@index([material_id], map: "concept_relations_material_idx")
+  @@unique([material_id, from_concept_id, to_concept_id, relation_type], map: "concept_relations_unique_idx")
+  @@schema("public")
+}
+
+model shelves {
+  id String @id @db.Uuid
+  owner_id String @db.Uuid
+  name String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+  shelf_materials shelf_materials[]
+  @@unique([owner_id, name])
+  @@schema("public")
+}
+
+model shelf_materials {
+  shelf_id String @db.Uuid
+  material_id String @db.Uuid
+  shelves shelves @relation(fields: [shelf_id], references: [id], onDelete: Cascade)
+  study_materials study_materials @relation(fields: [material_id], references: [id], onDelete: Cascade)
+  @@id([shelf_id, material_id])
+  @@schema("public")
+}
+
+model concept_cards {
+  owner_id String @db.Uuid
+  concept_id String @db.Uuid
+  note String @default("")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+  concepts concepts @relation(fields: [concept_id], references: [id], onDelete: Cascade)
+  @@id([owner_id, concept_id])
+  @@schema("public")
+}
+
+model learning_goals {
+  id String @id @db.Uuid
+  owner_id String @db.Uuid
+  title String
+  description String @default("")
+  deadline DateTime? @db.Date
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+  study_plans study_plans[]
+  @@schema("public")
+}
+
+model study_plans {
+  id String @id @db.Uuid
+  owner_id String @db.Uuid
+  goal_id String? @db.Uuid
+  title String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+  learning_goals learning_goals? @relation(fields: [goal_id], references: [id], onDelete: SetNull)
+  study_tasks study_tasks[]
+  @@schema("public")
+}
+
+model study_tasks {
+  id String @id @db.Uuid
+  owner_id String @db.Uuid
+  plan_id String? @db.Uuid
+  material_id String? @db.Uuid
+  concept_id String? @db.Uuid
+  unit_id String? @db.Uuid
+  title String
+  activity_type String
+  duration_minutes Int?
+  scheduled_at DateTime? @db.Timestamptz(6)
+  status String @default("PENDING")
+  reason String @default("")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+  study_plans study_plans? @relation(fields: [plan_id], references: [id], onDelete: SetNull)
+  study_materials study_materials? @relation(fields: [material_id, owner_id], references: [id, owner_id], onDelete: Cascade, onUpdate: NoAction, map: "study_tasks_material_owner_fkey")
+  concepts concepts? @relation(fields: [concept_id], references: [id], onDelete: SetNull)
+  material_units material_units? @relation(fields: [unit_id], references: [id], onDelete: SetNull)
+  learning_evidence learning_evidence[]
+  study_suggestions study_suggestions[]
+  @@index([owner_id, scheduled_at], map: "study_tasks_owner_schedule_idx")
+  @@schema("public")
+}
+
+model study_availability {
+  owner_id String @db.Uuid
+  weekday Int @db.SmallInt
+  minutes Int
+  timezone String
+  users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+  @@id([owner_id, weekday])
+  @@schema("public")
+}
+
+model learning_evidence {
+  id String @id @db.Uuid
+  owner_id String @db.Uuid
+  material_id String @db.Uuid
+  concept_id String? @db.Uuid
+  relation_id String? @db.Uuid
+  task_id String? @db.Uuid
+  activity_type String
+  prompt String
+  answer String
+  status String
+  assisted Boolean @default(false)
+  diagnosis String @default("")
+  source_excerpt String
+  request_id String? @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+  study_materials study_materials @relation(fields: [material_id, owner_id], references: [id, owner_id], onDelete: Cascade, onUpdate: NoAction, map: "learning_evidence_material_owner_fkey")
+  concepts concepts? @relation(fields: [concept_id], references: [id], onDelete: SetNull)
+  concept_relations concept_relations? @relation(fields: [relation_id], references: [id], onDelete: SetNull)
+  study_tasks study_tasks? @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  study_suggestions study_suggestions[]
+  evidence_contestations evidence_contestations[]
+  activity_requests activity_requests[]
+  @@unique([owner_id, request_id], map: "learning_evidence_request_idx")
+  @@index([owner_id, created_at(sort: Desc)], map: "learning_evidence_owner_created_idx")
+  @@schema("public")
+}
+
+model study_suggestions {
+  id String @id @db.Uuid
+  owner_id String @db.Uuid
+  evidence_id String @db.Uuid
+  concept_id String? @db.Uuid
+  title String
+  reason String
+  status String @default("PENDING")
+  task_id String? @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+  learning_evidence learning_evidence @relation(fields: [evidence_id], references: [id], onDelete: Cascade)
+  concepts concepts? @relation(fields: [concept_id], references: [id], onDelete: SetNull)
+  study_tasks study_tasks? @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  @@unique([owner_id, evidence_id])
+  @@schema("public")
+}
+
+model evidence_contestations {
+  id String @id @db.Uuid
+  owner_id String @db.Uuid
+  evidence_id String @db.Uuid
+  reason String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+  learning_evidence learning_evidence @relation(fields: [evidence_id], references: [id], onDelete: Cascade)
+  @@index([evidence_id], map: "evidence_contestations_evidence_idx")
+  @@schema("public")
+}
+
+model activity_requests {
+  owner_id String @db.Uuid
+  request_id String @db.Uuid
+  input_hash String
+  status String
+  lease_token String @db.Uuid
+  lease_expires_at DateTime @db.Timestamptz(6)
+  evidence_id String? @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+  learning_evidence learning_evidence? @relation(fields: [evidence_id], references: [id], onDelete: SetNull)
+  @@id([owner_id, request_id])
+  @@schema("public")
+}

@@ -7,10 +7,10 @@ import {
   FragmentKindSchema,
   IsomorphicProblemSchema,
   QuestionSchema,
-} from '../domain/masterme'
+} from './masterme.schema'
 
-// A ausência de salto lógico é representada por string vazia no transporte e
-// convertida novamente para null pelo gateway.
+// The transport uses an empty string when there is no logical break;
+// the gateway converts it back to null.
 export const GeminiEvaluationResponseSchema = z.object({
   status: EvaluationStatusSchema,
   missingPremises: z.array(z.string()),
@@ -36,6 +36,12 @@ export const ExtractedFragmentSchema = z.object({
 
 export const ExtractedKnowledgeSchema = z.object({
   fragments: z.array(ExtractedFragmentSchema).min(1).max(30),
+  relations: z.array(z.object({
+    fromName: z.string().min(1), toName: z.string().min(1),
+    relationType: z.enum(['REQUIRES', 'ENABLES', 'CONTRASTS', 'APPLIES_TO', 'PART_OF']),
+    statement: z.string().min(5).max(500), justification: z.string().min(5).max(1000),
+    sourceExcerpt: z.string().min(1),
+  })).max(60).optional(),
 })
 export type ExtractedKnowledge = z.infer<typeof ExtractedKnowledgeSchema>
 
@@ -65,6 +71,7 @@ export const SinglePassKnowledgeResponseSchema = z.object({
   fragments: z.array(ExtractedFragmentResponseSchema.extend({
     prerequisiteNames: z.array(z.string()),
   })),
+  relations: z.array(z.object({ fromName: z.string(), toName: z.string(), relationType: z.enum(['REQUIRES', 'ENABLES', 'CONTRASTS', 'APPLIES_TO', 'PART_OF']), statement: z.string(), justification: z.string(), sourceParagraphId: z.string() })),
 })
 export type SinglePassKnowledgeResponse = z.infer<typeof SinglePassKnowledgeResponseSchema>
 

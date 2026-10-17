@@ -1,91 +1,14 @@
-import dotenv from 'dotenv'
-import express, { type Express } from 'express'
-import { Pool } from 'pg'
-import swaggerUi from 'swagger-ui-express'
-import { getEnvironment, type Environment } from './src/config/environment'
-import { GeminiStructuredClient } from './src/config/llm'
-import { errorHandler } from './src/middleware/error-handler'
-import { requestLogger } from './src/middleware/observability'
-import { globalRateLimit } from './src/middleware/rate-limit'
-import { openApiDocument } from './src/docs/openapi'
-import { PostgresMasterMeRepository } from './src/repositories/postgres-masterme.repository'
-import { createMasterMeRouter } from './src/routes/masterme.routes'
-import { GeminiMasterMeGateway } from './src/services/gemini.gateway'
-import { MasterMeService } from './src/services/masterme.service'
-import { IngestionService, LocalMaterialStorage, ProcessingWorker } from './src/services/ingestion.service'
+import dotenv from 'dotenv';
+import { getEnvironment } from './src/config/environment';
+import { startApi } from './src/main/api';
+import { startWorker } from './src/main/worker';
 
-dotenv.config()
+// Compatibility export for existing component tests; new code imports infra/http/app directly.
+export { createApp } from './src/infra/http/app';
 
-export const createApp = (service: MasterMeService, ingestion?: IngestionService, pool?: Pool, aiDailyLimit = 100): Express => {
-  const app = express()
-  app.disable('x-powered-by')
-  app.set('etag', 'strong')
-  if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1)
-  app.use((_req, res, next) => {
-    res.set({
-      'x-content-type-options': 'nosniff',
-      'x-frame-options': 'DENY',
-      'referrer-policy': 'no-referrer',
-      'permissions-policy': 'camera=(), microphone=(), geolocation=()',
-      'cross-origin-resource-policy': 'same-site',
-      ...(process.env.NODE_ENV === 'production' ? { 'strict-transport-security': 'max-age=31536000; includeSubDomains' } : {}),
-    })
-    next()
-  })
-  app.use(globalRateLimit)
-  app.use(express.json({ limit: '110kb' }))
-  app.use(requestLogger)
-  app.get('/health', (_req, res) => res.json({ status: 'ok' }))
-  if (process.env.NODE_ENV !== 'production') {
-    app.get('/openapi.json', (_req, res) => res.json(openApiDocument))
-    app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument))
-  }
-  app.use('/api', (req, res, next) => {
-    const volatile = req.path === '/events' || req.path === '/ai-usage/today' || req.path === '/processing/overview' || req.path.endsWith('/status')
-    if ((req.method === 'GET' || req.method === 'HEAD') && !volatile) {
-      res.set('cache-control', 'private, max-age=0, must-revalidate')
-      res.vary('authorization')
-    } else res.set('cache-control', 'no-store')
-    next()
-  })
-  app.use('/api', createMasterMeRouter(service, ingestion, pool, aiDailyLimit))
-  app.use(errorHandler)
-  return app
+if (import.meta.main || process.argv[1]?.endsWith('server.ts') === true) {
+  dotenv.config();
+  const environment = getEnvironment();
+  if (process.argv.includes('--worker')) startWorker(environment);
+  else startApi(environment);
 }
-
-const startServer = (environment: Environment): void => {
-  const pool = new Pool({ connectionString: environment.DATABASE_URL, max: environment.DATABASE_POOL_MAX }); const repository = new PostgresMasterMeRepository(pool)
-  const gateway = new GeminiMasterMeGateway(
-    new GeminiStructuredClient(
-      environment,
-      (event, ownerId) => repository.recordAiUsage(event, ownerId),
-      undefined,
-      (ownerId) => repository.consumeAiRequest(ownerId, environment.AI_DAILY_REQUEST_LIMIT),
-    ),
-    environment.EXTRACTION_MAX_CONCEPTS,
-  )
-  const study = new MasterMeService(repository, gateway); const ingestion = new IngestionService(pool, new LocalMaterialStorage(environment.MATERIAL_STORAGE_PATH))
-  const worker = new ProcessingWorker(pool, study, ingestion)
-  if (process.argv.includes('--worker')) {
-    let active = 0
-    setInterval(() => {
-      while (active < environment.EXTRACTION_CONCURRENCY) {
-        active += 1
-        void worker.processOnce()
-          .catch((error) => console.error(JSON.stringify({ level: 'error', operation: 'processing-loop', error: String(error) })))
-          .finally(() => { active -= 1 })
-        // Cada execução reivindica no máximo um job. O limite acima impede que
-        // o setInterval crie promessas ilimitadas enquanto o provedor demora.
-        if (active >= environment.EXTRACTION_CONCURRENCY) break
-      }
-    }, 1_000)
-    return
-  }
-  const app = createApp(study, ingestion, pool, environment.AI_DAILY_REQUEST_LIMIT)
-  app.listen(environment.PORT, () => {
-    console.info(`MasterMe Backend rodando na porta ${environment.PORT}`)
-  })
-}
-
-const isDirectExecution = import.meta.main || process.argv[1]?.endsWith('server.ts') === true
-if (isDirectExecution) startServer(getEnvironment())
