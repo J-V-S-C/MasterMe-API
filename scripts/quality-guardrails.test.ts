@@ -4,6 +4,12 @@ import { readFile } from 'node:fs/promises'
 const read = (path: string) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 
 describe('backend release guardrails', () => {
+  test('production Compose cannot activate deferred payments or metrics from a stale VM environment', async () => {
+    const compose = await read('deploy/compose.yml')
+    expect(compose).toContain('INFINITEPAY_HANDLE: ""')
+    expect(compose).toContain('METRICS_BEARER_TOKEN: ""')
+  })
+
   test('CI validates dependencies, Compose, image and smoke test with required PostgreSQL', async () => {
     const workflow = await read('.github/workflows/ci.yml')
     expect(workflow).toContain("MIGRATION_TEST_REQUIRED: 'true'")
