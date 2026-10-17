@@ -3,6 +3,26 @@ export const openApiDocument = {
   info: { title: 'MasterMe API', version: '0.1.0' },
   externalDocs: { description: 'Contrato oficial do Checkout Integrado InfinitePay', url: 'https://ajuda.infinitepay.io/pt-BR/articles/10766888-como-usar-o-checkout-integrado-da-infinitepay' },
   paths: {
+    '/api/learning/materials/{materialId}/outline': { get: { summary: 'Índice editorial ordenado, com proveniência e página quando disponíveis', security: [{ bearerAuth: [] }], parameters: [{ name: 'materialId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Unidades editoriais do material; uma unidade integral se a estrutura não for confiável' }, '404': { description: 'Material não pertence ao usuário' } } } },
+    '/api/learning/materials/{materialId}/relations': { get: { summary: 'Relações tipadas e ancoradas de um material', security: [{ bearerAuth: [] }], parameters: [{ name: 'materialId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Relações do material' }, '404': { description: 'Material não pertence ao usuário' } } } },
+    '/api/learning/relations': { post: { summary: 'Cria relação justificada pelo estudante entre dois conceitos do mesmo material', security: [{ bearerAuth: [] }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['materialId','fromConceptId','toConceptId','relationType','statement','justification','sourceExcerpt'], properties: { materialId: { type: 'string', format: 'uuid' }, fromConceptId: { type: 'string', format: 'uuid' }, toConceptId: { type: 'string', format: 'uuid' }, relationType: { type: 'string', enum: ['REQUIRES','ENABLES','CONTRASTS','APPLIES_TO','PART_OF'] }, statement: { type: 'string' }, justification: { type: 'string' }, sourceExcerpt: { type: 'string' } } } } } }, responses: { '201': { description: 'Relação criada' }, '400': { description: 'Payload inválido' }, '404': { description: 'Recurso de outro usuário' }, '409': { description: 'Trecho sem fonte ou conceitos inválidos' } } } },
+    '/api/learning/shelves': { get: { summary: 'Lista prateleiras e materiais associados', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Prateleiras privadas' } } }, post: { summary: 'Cria ou recupera prateleira pelo nome', security: [{ bearerAuth: [] }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['name'], properties: { name: { type: 'string', maxLength: 80 } } } } } }, responses: { '201': { description: 'Prateleira persistida' } } } },
+    '/api/learning/shelves/{id}': { delete: { summary: 'Remove prateleira sem apagar materiais', security: [{ bearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '204': { description: 'Prateleira removida' }, '404': { description: 'Prateleira não encontrada' } } } },
+    '/api/learning/shelves/{id}/materials/{materialId}': { put: { summary: 'Coloca material próprio na prateleira de forma idempotente', security: [{ bearerAuth: [] }], responses: { '204': { description: 'Associação salva' }, '404': { description: 'Prateleira ou material não encontrado' } } }, delete: { summary: 'Retira material da prateleira sem apagar o material', security: [{ bearerAuth: [] }], responses: { '204': { description: 'Associação removida' } } } },
+    '/api/learning/cards': { get: { summary: 'Lista fichas privadas que referenciam conceitos', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Fichas e fontes' } } } },
+    '/api/learning/cards/{conceptId}': { put: { summary: 'Guarda ou atualiza uma ficha sem duplicar o conceito', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Ficha salva' }, '404': { description: 'Conceito não pertence ao usuário' } } }, delete: { summary: 'Remove ficha sem apagar o conceito', security: [{ bearerAuth: [] }], responses: { '204': { description: 'Ficha removida' } } } },
+    '/api/learning/goals': { get: { summary: 'Lista objetivos pessoais', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Objetivos' } } }, post: { summary: 'Cria objetivo pessoal com prazo opcional', security: [{ bearerAuth: [] }], responses: { '201': { description: 'Objetivo criado' } } } },
+    '/api/learning/plans': { get: { summary: 'Lista roteiros editáveis', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Roteiros' } } }, post: { summary: 'Cria roteiro com objetivo próprio opcional', security: [{ bearerAuth: [] }], responses: { '201': { description: 'Roteiro criado' }, '404': { description: 'Objetivo não pertence ao usuário' } } } },
+    '/api/learning/tasks': { get: { summary: 'Lista tarefas e estados sem inferir aprendizagem de conclusão', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Tarefas privadas' } } }, post: { summary: 'Cria tarefa vinculável a roteiro, material, unidade ou conceito', security: [{ bearerAuth: [] }], responses: { '201': { description: 'Tarefa criada' }, '404': { description: 'Referência não pertence ao usuário' } } } },
+    '/api/learning/tasks/{id}': { patch: { summary: 'Edita tarefa, agenda ou estado', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Tarefa atualizada' }, '404': { description: 'Tarefa não encontrada' } } } },
+    '/api/learning/availability': { get: { summary: 'Lista disponibilidade semanal do estudante', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Minutos por dia da semana e timezone' } } }, put: { summary: 'Salva disponibilidade de um dia da semana', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Disponibilidade salva' } } } },
+    '/api/learning/desk': { get: { summary: 'Mesa do Dia com tarefas e carga em timezone explícito', security: [{ bearerAuth: [] }], parameters: [{ name: 'date', in: 'query', required: true, schema: { type: 'string', format: 'date' } }, { name: 'timezone', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Tarefas, minutos disponíveis e excesso sem reagendamento automático' } } } },
+    '/api/learning/materials/{materialId}/evidence': { get: { summary: 'Histórico de evidências distintas por atividade', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Tentativas e diagnósticos do material' } } } },
+    '/api/learning/evidence': { post: { summary: 'Registra apenas evidência declarada ou contestação; cliente não aprova avaliação', security: [{ bearerAuth: [] }], responses: { '201': { description: 'Evidência registrada' }, '400': { description: 'Status de avaliação reservado ao servidor' } } } },
+    '/api/learning/evidence/{id}/contestations': { post: { summary: 'Contesta diagnóstico sem sobrescrever a avaliação original', security: [{ bearerAuth: [] }], responses: { '201': { description: 'Contestação registrada' }, '404': { description: 'Evidência de outra conta ou inexistente' } } } },
+    '/api/learning/activities/answers': { post: { summary: 'Avalia relação, aplicação ou retomada com IA e fonte do material', security: [{ bearerAuth: [] }], responses: { '201': { description: 'Evidência e sugestão eventual registradas' }, '400': { description: 'Resposta inválida' }, '429': { description: 'Limite de IA excedido' } } } },
+    '/api/learning/suggestions': { get: { summary: 'Lista recomendações com motivo, fonte e evidência', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Sugestões privadas' } } } },
+    '/api/learning/suggestions/{id}/decision': { post: { summary: 'Aceita ou ignora sugestão; aceite cria tarefa uma única vez', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Decisão persistida idempotentemente' }, '404': { description: 'Sugestão não pertence ao usuário' } } } },
     '/health': {
       get: {
         summary: 'Health check',
@@ -221,14 +241,14 @@ export const openApiDocument = {
     '/api/billing/catalog': {
       get: {
         summary: 'Catálogo público de planos e pesos de créditos',
-        description: 'Expõe preços definidos pelo servidor. Essencial e Pro são pagamentos únicos, sem renovação automática.',
+        description: 'Sem INFINITEPAY_HANDLE, retorna somente FREE. Com pagamentos ativos, expõe preços definidos pelo servidor; Essencial e Pro são pagamentos únicos.',
         responses: { '200': { description: 'Catálogo público cacheável' } },
       },
     },
     '/api/billing/checkouts': {
       post: {
         summary: 'Cria ou recupera checkout InfinitePay idempotente',
-        description: 'O servidor determina preço, descrição, redirect e webhook. O cliente envia somente um planId conhecido.',
+        description: 'Disponível somente com INFINITEPAY_HANDLE. O servidor determina preço, descrição, redirect e webhook. O cliente envia somente um planId conhecido.',
         security: [{ bearerAuth: [] }],
         parameters: [{ name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string', minLength: 8, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' } }],
         requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, required: ['planId'], properties: { planId: { type: 'string', enum: ['ESSENTIAL', 'PRO'] } } } } } },
@@ -238,6 +258,7 @@ export const openApiDocument = {
           '400': { description: 'Plano ou chave de idempotência inválidos' },
           '409': { description: 'Chave reutilizada para outro plano ou checkout ainda em criação' },
           '429': { description: 'Limite de criação/reconciliação de checkout' },
+          '404': { description: 'Pagamentos desativados' },
           '503': { description: 'InfinitePay não configurada ou estado do pedido indisponível' },
         },
       },
@@ -245,7 +266,7 @@ export const openApiDocument = {
     '/api/billing/webhooks/infinitepay': {
       post: {
         summary: 'Recebe sinal público de pagamento da InfinitePay',
-        description: 'Payload limitado a 16 KiB. Nunca concede entitlement diretamente; agenda payment_check server-to-server. Replay idêntico é idempotente e não reabre evento terminal.',
+        description: 'Disponível somente com INFINITEPAY_HANDLE. Payload limitado a 16 KiB. Nunca concede entitlement diretamente; agenda payment_check server-to-server. Replay idêntico é idempotente e não reabre evento terminal.',
         requestBody: { required: true, content: { 'application/json': { schema: {
           type: 'object',
           required: ['invoice_slug', 'amount', 'transaction_nsu', 'order_nsu'],
@@ -257,17 +278,17 @@ export const openApiDocument = {
             order_nsu: { type: 'string', format: 'uuid' },
           },
         } } } },
-        responses: { '200': { description: 'Evento novo persistido ou replay idempotente aceito; reconciliação sinalizada' }, '400': { description: 'Payload inválido ou pedido inexistente' }, '413': { description: 'Payload acima de 16 KiB' }, '429': { description: 'Limite por IP ou cinco eventos pendentes para o pedido' } },
+        responses: { '200': { description: 'Evento novo persistido ou replay idempotente aceito; reconciliação sinalizada' }, '400': { description: 'Payload inválido ou pedido inexistente' }, '404': { description: 'Pagamentos desativados' }, '413': { description: 'Payload acima de 16 KiB' }, '429': { description: 'Limite por IP ou cinco eventos pendentes para o pedido' } },
       },
     },
     '/api/billing/orders/{id}/reconcile': {
       post: {
         summary: 'Reconcilia pagamento de pedido do usuário',
-        description: 'Confirma status e valor com payment_check antes de conceder entitlement. Repetições não duplicam vigência ou créditos.',
+        description: 'Disponível somente com INFINITEPAY_HANDLE. Confirma status e valor com payment_check antes de conceder entitlement. Repetições não duplicam vigência ou créditos.',
         security: [{ bearerAuth: [] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
         requestBody: { required: false, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, properties: { transactionNsu: { type: 'string', maxLength: 160 }, slug: { type: 'string', maxLength: 160 } } } } } },
-        responses: { '200': { description: 'Estado autoritativo do pedido' }, '400': { description: 'Referência ausente ou inválida' }, '404': { description: 'Pedido não encontrado para este usuário' }, '409': { description: 'Pagamento pendente, valor divergente ou transação já usada' }, '429': { description: 'Limite de reconciliações' }, '503': { description: 'InfinitePay não configurada' } },
+        responses: { '200': { description: 'Estado autoritativo do pedido' }, '400': { description: 'Referência ausente ou inválida' }, '404': { description: 'Pedido não encontrado, ou pagamentos desativados' }, '409': { description: 'Pagamento pendente, valor divergente ou transação já usada' }, '429': { description: 'Limite de reconciliações' }, '503': { description: 'InfinitePay não configurada' } },
       },
     },
     '/api/billing/me': {

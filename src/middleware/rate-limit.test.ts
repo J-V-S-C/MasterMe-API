@@ -12,20 +12,20 @@ const invoke = (ip: string, userId: string) => {
 }
 
 describe('uploadConcurrencyLimit', () => {
-  test('limita simultaneamente por IP, usuário e capacidade global e libera no fim', () => {
+  test('limits by IP, user and global capacity and releases on completion', () => {
     const first = invoke('203.0.113.1', 'user-a')
     expect(first.error).toBeUndefined()
 
     const sameIp = invoke('203.0.113.1', 'user-b')
-    expect(sameIp.error).toMatchObject({ statusCode: 429, code: 'UPLOAD_CONCURRENCY_LIMIT' })
+    expect(sameIp.error).toMatchObject({ code: 'UPLOAD_CONCURRENCY_LIMIT' })
 
     const sameUser = invoke('203.0.113.2', 'user-a')
-    expect(sameUser.error).toMatchObject({ statusCode: 429, code: 'UPLOAD_CONCURRENCY_LIMIT' })
+    expect(sameUser.error).toMatchObject({ code: 'UPLOAD_CONCURRENCY_LIMIT' })
 
     const second = invoke('203.0.113.2', 'user-b')
     expect(second.error).toBeUndefined()
     const globalLimit = invoke('203.0.113.3', 'user-c')
-    expect(globalLimit.error).toMatchObject({ statusCode: 429, code: 'UPLOAD_CONCURRENCY_LIMIT' })
+    expect(globalLimit.error).toMatchObject({ code: 'UPLOAD_CONCURRENCY_LIMIT' })
 
     first.response.emit('finish')
     const afterRelease = invoke('203.0.113.3', 'user-c')

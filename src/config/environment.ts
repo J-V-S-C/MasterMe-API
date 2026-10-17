@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 const EnvironmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  GEMINI_API_KEY: z.string().min(1, 'GEMINI_API_KEY é obrigatória.'),
+  GEMINI_API_KEY: z.string().min(1, 'GEMINI_API_KEY is required.'),
   MODEL_NAME: z.string().min(1).default('gemini-3.5-flash-lite'),
   GEMINI_MODEL_FALLBACKS: z
     .string()
@@ -20,7 +20,7 @@ const EnvironmentSchema = z.object({
     (value) => value === undefined ? true : value === true || value === 'true' || value === '1',
     z.boolean(),
   ),
-  AI_GLOBAL_DAILY_CREDIT_LIMIT: z.coerce.number().int().min(1).max(100_000_000).default(20_000),
+  AI_GLOBAL_DAILY_CREDIT_LIMIT: z.coerce.number().int().min(1).max(100_000_000).default(240),
   PUBLIC_APP_URL: z.string().url().default('http://localhost:3000').transform((value) => value.replace(/\/$/, '')),
   INFINITEPAY_HANDLE: z.string().trim().regex(/^[A-Za-z0-9._-]{2,64}$/).optional().or(z.literal('').transform(() => undefined)),
   INFINITEPAY_TIMEOUT_MS: z.coerce.number().int().min(500).max(15_000).default(5_000),
@@ -32,7 +32,10 @@ const EnvironmentSchema = z.object({
     context.addIssue({ code: 'custom', path: ['PUBLIC_APP_URL'], message: 'PUBLIC_APP_URL deve conter somente a origem, sem path, query ou fragmento.' })
   }
   if (environment.NODE_ENV === 'production' && appUrl.protocol !== 'https:') {
-    context.addIssue({ code: 'custom', path: ['PUBLIC_APP_URL'], message: 'PUBLIC_APP_URL deve usar HTTPS em produção.' })
+    context.addIssue({ code: 'custom', path: ['PUBLIC_APP_URL'], message: 'PUBLIC_APP_URL must use HTTPS in production.' })
+  }
+  if (environment.NODE_ENV === 'production' && new URL(environment.SUPABASE_URL).protocol !== 'https:') {
+    context.addIssue({ code: 'custom', path: ['SUPABASE_URL'], message: 'SUPABASE_URL must use HTTPS in production.' })
   }
 })
 
