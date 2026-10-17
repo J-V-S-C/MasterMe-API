@@ -230,6 +230,9 @@ completas); ajuste esse teto ao orçamento e à demanda antes da promoção.
 Deixe `INFINITEPAY_HANDLE` e `METRICS_BEARER_TOKEN` vazios no lançamento gratuito:
 pagamentos e `/metrics` ficam desativados. Um token de métricas de pelo menos
 32 caracteres só deve ser configurado quando houver coleta privada operacional.
+O manifesto `deploy/compose.yml` fixa ambos como vazios nesta release, mesmo
+se uma `.env` antiga ainda tiver valores; ativá-los exige uma mudança de código
+revisada junto do frontend e da operação.
 `OBSERVABILITY_DB_TIMEOUT_MS=1000` limita sondagens. Chaves ficam apenas na
 VM, nunca no GitHub, no frontend ou em logs. O environment `production` do
 GitHub requer `OCI_HOST`, `OCI_SSH_USER`, `OCI_SSH_KEY` e `OCI_KNOWN_HOSTS`.
