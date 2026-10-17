@@ -21,6 +21,18 @@ export const CURRENT_BASELINE_FILENAMES = [
   '012_realtime_performance.sql',
 ] as const
 
+const LEGACY_BASELINE_FILENAMES = CURRENT_BASELINE_FILENAMES.slice(0, 10)
+const LEGACY_SCHEMA_MISSING = new Set([
+  'column:concepts.generated_locale',
+  'column:study_materials.locale',
+  'not-null:concepts.generated_locale',
+  'not-null:study_materials.locale',
+  'index:activity_events.activity_events_created_idx',
+  'index:study_sessions.study_sessions_concept_updated_idx',
+  'constraint:concepts.concepts_generated_locale_check',
+  'constraint:study_materials.study_materials_locale_check',
+])
+
 export const CURRENT_SCHEMA_MANIFEST = {
   tables: [
     'activity_events', 'ai_daily_quotas', 'ai_evaluation_cache', 'ai_usage_events',
@@ -139,13 +151,18 @@ const inspectCurrentSchema = async (client: MigrationClient): Promise<{ hasSchem
 const baselineExistingSchema = async (
   client: MigrationClient,
   migrations: Migration[],
-  baselineFilenames: readonly string[],
+  requestedBaselineFilenames: readonly string[] | undefined,
 ): Promise<number> => {
   const state = await inspectCurrentSchema(client)
   if (!state.hasSchema) return 0
-  if (state.missing.length > 0) {
+  const isLegacySchema = requestedBaselineFilenames === undefined
+    && state.missing.length === LEGACY_SCHEMA_MISSING.size
+    && state.missing.every((artifact) => LEGACY_SCHEMA_MISSING.has(artifact))
+  if (state.missing.length > 0 && !isLegacySchema) {
     throw new Error(`The database already has a schema, but it does not match the safe baseline (${state.missing.join(', ')}). Automatic migration is blocked; reconcile manually.`)
   }
+  const baselineFilenames = requestedBaselineFilenames
+    ?? (isLegacySchema ? LEGACY_BASELINE_FILENAMES : CURRENT_BASELINE_FILENAMES)
   if (baselineFilenames.length === 0) {
     throw new Error('An existing schema cannot receive an empty baseline.')
   }
@@ -189,7 +206,7 @@ export const runMigrations = async (
     )`)
     let applied = await appliedMigrations(client)
     const baselined = applied.size === 0
-      ? await baselineExistingSchema(client, migrations, options.baselineFilenames ?? CURRENT_BASELINE_FILENAMES)
+      ? await baselineExistingSchema(client, migrations, options.baselineFilenames)
       : 0
     if (baselined) applied = await appliedMigrations(client)
 
