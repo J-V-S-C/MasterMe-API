@@ -18,6 +18,23 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: masterme_test
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d masterme_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MIGRATION_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/masterme_test
+      MIGRATION_TEST_REQUIRED: 'true'
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
@@ -26,13 +43,33 @@ jobs:
       - name: Install and validate backend
         run: |
           bun install --frozen-lockfile
-          bun run typecheck
-          bun test
+          bun run validate
+          bun run validate:dependencies
+      - name: Validate production Compose
+        env:
+          DATABASE_URL: postgresql://postgres.project:password@pooler.example.com:5432/postgres?sslmode=require
+          GEMINI_API_KEY: ci-placeholder
+          MASTERME_IMAGE: ghcr.io/example/masterme:ci
+          PUBLIC_APP_URL: https://app.example.com
+          SUPABASE_URL: https://example.supabase.co
+        run: docker compose -f deploy/compose.yml config --quiet
       - id: image
         name: Normalize image name
         run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/masterme-backend" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
+      - name: Build pre-deploy image for smoke
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: masterme-backend:predeploy
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test pre-deploy image
+        run: ./scripts/smoke-production-image.sh masterme-backend:predeploy
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -59,7 +96,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$OCI_KNOWN_HOSTS" > ~/.ssh/known_hosts
       - name: Upload deployment manifest
-        run: scp deploy/compose.yml "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}:/tmp/masterme-backend.compose.yml"
+        run: |
+          scp deploy/compose.yml "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}:/tmp/masterme-backend.compose.yml"
+          scp deploy/deploy-and-verify.sh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}:/tmp/masterme-deploy-and-verify.sh"
       - name: Deploy immutable image
         env:
           DEPLOY_IMAGE: ${{ steps.image.outputs.name }}:${{ github.sha }}
@@ -67,6 +106,5 @@ jobs:
           GHCR_DEPLOY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           printf '%s' "$GHCR_DEPLOY_TOKEN" | ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "docker login ghcr.io -u '$GHCR_DEPLOY_USER' --password-stdin"
-          ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "sudo install -d -m 750 /opt/masterme && sudo mv /tmp/masterme-backend.compose.yml /opt/masterme/compose.yml && sudo chown -R '${{ secrets.OCI_SSH_USER }}' /opt/masterme"
-          ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "cd /opt/masterme && MASTERME_IMAGE='$DEPLOY_IMAGE' docker compose --env-file .env -f compose.yml pull && MASTERME_IMAGE='$DEPLOY_IMAGE' docker compose --env-file .env -f compose.yml run --rm api bun run migrate && MASTERME_IMAGE='$DEPLOY_IMAGE' docker compose --env-file .env -f compose.yml up -d --remove-orphans"
-          ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "curl --fail --silent --show-error --retry 20 --retry-delay 3 --retry-all-errors --connect-timeout 5 --max-time 10 http://127.0.0.1:3333/health"
+          ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "sudo install -d -m 750 /opt/masterme && sudo mv /tmp/masterme-backend.compose.yml /opt/masterme/compose.yml && sudo mv /tmp/masterme-deploy-and-verify.sh /opt/masterme/deploy-and-verify.sh && sudo chown -R '${{ secrets.OCI_SSH_USER }}' /opt/masterme && chmod 750 /opt/masterme/deploy-and-verify.sh"
+          ssh "${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }}" "/opt/masterme/deploy-and-verify.sh '$DEPLOY_IMAGE'"

@@ -1,0 +1,2 @@
+# Historical SQL is preserved byte-for-byte to retain RLS, checks and locking.
+provider = "postgresql"
