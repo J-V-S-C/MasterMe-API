@@ -827,6 +827,36 @@ integrationTest(
       await resetDatabase(client);
       expect(
         (
+          await runMigrations(client, migrations.slice(0, 10), {
+            baselineFilenames: [],
+          })
+        ).applied,
+      ).toHaveLength(10);
+      await client.query(
+        "INSERT INTO auth.users (id) VALUES ('11111111-1111-4111-8111-111111111111')",
+      );
+      await client.query(`INSERT INTO public.study_materials (id, title, content, created_at, owner_id)
+      VALUES ('22222222-2222-4222-8222-222222222222', 'legacy sentinel', 'preserve', now(), '11111111-1111-4111-8111-111111111111')`);
+      await client.query('DROP TABLE public.schema_migrations');
+      expect(await runMigrations(client, migrations)).toEqual({
+        baselined: 10,
+        applied: migrations.slice(10).map(({ name }) => name),
+      });
+      expect((await client.query(
+        "SELECT content, locale FROM public.study_materials WHERE title = 'legacy sentinel'",
+      )).rows).toEqual([{ content: 'preserve', locale: 'pt-BR' }]);
+
+      await resetDatabase(client);
+      await runMigrations(client, migrations.slice(0, 10), { baselineFilenames: [] });
+      await client.query('DROP INDEX public.concepts_material_id_idx');
+      await client.query('DROP TABLE public.schema_migrations');
+      await expect(runMigrations(client, migrations)).rejects.toThrow('index:concepts.concepts_material_id_idx');
+      expect((await client.query('SELECT COUNT(*)::int AS count FROM public.schema_migrations')).rows)
+        .toEqual([{ count: 0 }]);
+
+      await resetDatabase(client);
+      expect(
+        (
           await runMigrations(client, migrations.slice(0, 8), {
             baselineFilenames: [],
           })
