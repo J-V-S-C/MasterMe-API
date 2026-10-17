@@ -33,10 +33,15 @@ readiness_status=$?
 set -e
 
 if [ "$readiness_status" -eq 0 ]; then
-  exit 0
+  worker_container=$(MASTERME_IMAGE=$deploy_image docker compose --env-file "$environment_file" -f "$compose_file" ps -q worker 2>/dev/null || true)
+  if [ -n "$worker_container" ] && [ "$(docker inspect --format '{{.State.Running}}' "$worker_container" 2>/dev/null || true)" = 'true' ]; then
+    exit 0
+  fi
+  echo 'worker is not running after API readiness' >&2
+  readiness_status=1
 fi
 
-echo "readiness failed with status $readiness_status; attempting automatic rollback" >&2
+echo "deployment gate failed with status $readiness_status; attempting automatic rollback" >&2
 rollback_status=1
 if [ -n "$previous_image" ]; then
   set +e

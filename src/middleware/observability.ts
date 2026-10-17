@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Request, RequestHandler } from 'express'
-import type { AiOperation, AiUsageEvent } from '../config/llm'
+import type { AiOperation } from '../application/domain/billing'
+import type { AiUsageEvent } from '../application/ports/llm.gateway'
 
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/
 const HTTP_BUCKETS = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10] as const

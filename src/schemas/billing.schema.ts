@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+export const BillingPlanIdSchema = z.enum(['FREE', 'ESSENTIAL', 'PRO'])
+
 export const CreateCheckoutBodySchema = z.object({
   planId: z.enum(['ESSENTIAL', 'PRO']),
 }).strict()

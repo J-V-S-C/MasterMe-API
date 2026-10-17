@@ -3,8 +3,8 @@ import { readFile } from 'node:fs/promises'
 
 const read = (path: string) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 
-describe('guardrails da release backend', () => {
-  test('CI valida dependências, Compose, imagem e smoke com PostgreSQL obrigatório', async () => {
+describe('backend release guardrails', () => {
+  test('CI validates dependencies, Compose, image and smoke test with required PostgreSQL', async () => {
     const workflow = await read('.github/workflows/ci.yml')
     expect(workflow).toContain("MIGRATION_TEST_REQUIRED: 'true'")
     expect(workflow).toContain('bun run validate')
@@ -14,7 +14,7 @@ describe('guardrails da release backend', () => {
     expect(workflow).toContain('./scripts/smoke-production-image.sh masterme-backend:ci')
   })
 
-  test('deploy continua exclusivo de main, sem cancelamento e repete validações', async () => {
+  test('deployment remains exclusive to main, is never cancelled and repeats validations', async () => {
     const workflow = await read('.github/workflows/deploy.yml')
     expect(workflow).toContain('branches: [main]')
     expect(workflow).toContain("if: github.ref == 'refs/heads/main'")
@@ -27,7 +27,7 @@ describe('guardrails da release backend', () => {
     expect(workflow).not.toContain('pull_request:')
   })
 
-  test('imagem é non-root e contexto exclui ambientes e metadados Git', async () => {
+  test('image runs as non-root and build context excludes environments and Git metadata', async () => {
     const [dockerfile, dockerignore] = await Promise.all([read('Dockerfile'), read('.dockerignore')])
     expect(dockerfile).toContain('bun install --frozen-lockfile --production')
     expect(dockerfile.indexOf('USER bun')).toBeGreaterThan(-1)
