@@ -223,8 +223,10 @@ reaplicada silenciosamente. Migrações são aditivas e não são revertidas pel
 rollback da imagem.
 
 Na VM, copie `deploy/.env.example` para `/opt/masterme/.env` com modo `600`.
-Defina `DATABASE_URL`, `SUPABASE_URL` HTTPS, `GEMINI_API_KEY`, `PUBLIC_APP_URL`
-HTTPS canônica, `AI_GLOBAL_DAILY_CREDIT_LIMIT` e `AI_CREDITS_ENABLED`.
+Defina `DATABASE_URL`, `SUPABASE_URL` HTTPS, `GEMINI_API_KEY`,
+`AI_GLOBAL_DAILY_CREDIT_LIMIT` e `AI_CREDITS_ENABLED`. `PUBLIC_APP_URL` usa
+por padrão a URL pública do frontend indicada em `deploy/.env.example`; defina-a
+na VM somente se a origem HTTPS canônica mudar.
 O exemplo limita o consumo global a 240 créditos/dia (até dez cotas gratuitas
 completas); ajuste esse teto ao orçamento e à demanda antes da promoção.
 Deixe `INFINITEPAY_HANDLE` e `METRICS_BEARER_TOKEN` vazios no lançamento gratuito:
