@@ -8,6 +8,7 @@ describe('backend release guardrails', () => {
     const compose = await read('deploy/compose.yml')
     expect(compose).toContain('INFINITEPAY_HANDLE: ""')
     expect(compose).toContain('METRICS_BEARER_TOKEN: ""')
+    expect(compose).toContain('PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://masterme-frontend.joaovictorcortabitart.workers.dev}')
   })
 
   test('CI validates dependencies, Compose, image and smoke test with required PostgreSQL', async () => {
