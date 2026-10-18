@@ -95,6 +95,9 @@ describe('learning workspace routes', () => {
       expect(calls).toHaveLength(0);
       expect((await fetch(path, json('PUT', { taskIds: [requestId, suggestionId] }))).status).toBe(200);
       expect(calls).toEqual([[ownerId, materialId, [requestId, suggestionId]]]);
+      const many = Array.from({ length: 101 }, (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`);
+      expect((await fetch(path, json('PUT', { taskIds: many }))).status).toBe(200);
+      expect(calls[1]).toEqual([ownerId, materialId, many]);
     });
   });
 

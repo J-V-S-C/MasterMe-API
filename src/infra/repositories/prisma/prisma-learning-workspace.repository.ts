@@ -297,14 +297,17 @@ export class PrismaLearningWorkspaceRepository {
 
   public async reorderPlanTasks(ownerId: string, planId: string, taskIds: string[]) {
     return this.db.$transaction(async (tx) => {
-      const plan = await tx.study_plans.findFirst({ where: { id: planId, owner_id: ownerId }, select: { id: true } });
-      if (!plan) throw new NotFoundError('Roteiro');
+      const owned = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM study_plans WHERE id=${planId}::uuid AND owner_id=${ownerId}::uuid FOR UPDATE
+      `;
+      if (!owned.length) throw new NotFoundError('Roteiro');
       const current = await tx.study_tasks.findMany({
         where: { owner_id: ownerId, plan_id: planId, status: { not: 'REMOVED' } },
         select: { id: true },
       });
-      if (new Set(taskIds).size !== taskIds.length || current.length !== taskIds.length ||
-        current.some(({ id }) => !taskIds.includes(id)))
+      const requestedIds = new Set(taskIds);
+      if (requestedIds.size !== taskIds.length || current.length !== taskIds.length ||
+        current.some(({ id }) => !requestedIds.has(id)))
         throw new ConflictError('A ordem deve incluir todas as tarefas ativas do roteiro.');
       for (const [sortOrder, id] of taskIds.entries()) {
         const changed = await tx.study_tasks.updateMany({
@@ -317,7 +320,7 @@ export class PrismaLearningWorkspaceRepository {
         where: { owner_id: ownerId, plan_id: planId, status: { not: 'REMOVED' } },
         orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }],
       });
-    });
+    }, { timeout: 30_000 });
   }
 
   private async assertOwnedPlanMaterials(ownerId: string, ids: string[]) {
@@ -345,13 +348,6 @@ export class PrismaLearningWorkspaceRepository {
       reason?: string;
     },
   ) {
-    if (
-      input.planId &&
-      !(await this.db.study_plans.findFirst({
-        where: { id: input.planId, owner_id: ownerId },
-      }))
-    )
-      throw new NotFoundError('Roteiro');
     if (input.materialId) await this.ownedMaterial(ownerId, input.materialId);
     let effectiveMaterialId = input.materialId;
     if (input.conceptId) {
@@ -376,20 +372,26 @@ export class PrismaLearningWorkspaceRepository {
         throw new NotFoundError('Unidade');
       effectiveMaterialId = unit.material_id;
     }
-    return this.db.study_tasks.create({
-      data: {
-        id: randomUUID(),
-        owner_id: ownerId,
-        title: input.title,
-        activity_type: input.activityType,
-        plan_id: input.planId ?? null,
-        material_id: effectiveMaterialId ?? null,
-        concept_id: input.conceptId ?? null,
-        unit_id: input.unitId ?? null,
-        duration_minutes: input.durationMinutes ?? null,
-        scheduled_at: input.scheduledAt ?? null,
-        reason: input.reason ?? '',
-      },
+    const data = {
+      id: randomUUID(),
+      owner_id: ownerId,
+      title: input.title,
+      activity_type: input.activityType,
+      plan_id: input.planId ?? null,
+      material_id: effectiveMaterialId ?? null,
+      concept_id: input.conceptId ?? null,
+      unit_id: input.unitId ?? null,
+      duration_minutes: input.durationMinutes ?? null,
+      scheduled_at: input.scheduledAt ?? null,
+      reason: input.reason ?? '',
+    };
+    if (!input.planId) return this.db.study_tasks.create({ data });
+    return this.db.$transaction(async (tx) => {
+      const owned = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM study_plans WHERE id=${input.planId}::uuid AND owner_id=${ownerId}::uuid FOR UPDATE
+      `;
+      if (!owned.length) throw new NotFoundError('Roteiro');
+      return tx.study_tasks.create({ data });
     });
   }
   public async updateTask(
