@@ -330,6 +330,7 @@ model study_materials {
   processed_at        DateTime?             @db.Timestamptz(6)
   owner_id            String                @db.Uuid
   locale              String                @default("pt-BR") @db.VarChar(10)
+  reading_offset      Int                   @default(0)
   concepts            concepts[]
   generated_artifacts generated_artifacts[]
   practice_projects   practice_projects[]
@@ -340,6 +341,7 @@ model study_materials {
   shelf_materials     shelf_materials[]
   study_tasks         study_tasks[]
   learning_evidence   learning_evidence[]
+  study_plan_materials study_plan_materials[]
 
   @@index([owner_id, created_at(sort: Desc)], map: "study_materials_owner_created_idx")
   @@unique([id, owner_id], map: "study_materials_id_owner_id_key")
@@ -458,6 +460,21 @@ model study_plans {
   users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
   learning_goals learning_goals? @relation(fields: [goal_id], references: [id], onDelete: SetNull)
   study_tasks study_tasks[]
+  study_plan_materials study_plan_materials[]
+  @@unique([id, owner_id], map: "study_plans_id_owner_id_key")
+  @@schema("public")
+}
+
+model study_plan_materials {
+  plan_id String @db.Uuid
+  owner_id String @db.Uuid
+  material_id String @db.Uuid
+  ordinal Int
+  study_plans study_plans @relation(fields: [plan_id, owner_id], references: [id, owner_id], onDelete: Cascade, onUpdate: NoAction, map: "study_plan_materials_plan_owner_fkey")
+  study_materials study_materials @relation(fields: [material_id, owner_id], references: [id, owner_id], onDelete: Cascade, onUpdate: NoAction, map: "study_plan_materials_material_owner_fkey")
+  @@id([plan_id, material_id])
+  @@unique([plan_id, ordinal])
+  @@index([owner_id], map: "study_plan_materials_owner_idx")
   @@schema("public")
 }
 
@@ -568,5 +585,15 @@ model activity_requests {
   users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
   learning_evidence learning_evidence? @relation(fields: [evidence_id], references: [id], onDelete: SetNull)
   @@id([owner_id, request_id])
+  @@schema("public")
+}
+
+model material_file_deletions {
+  material_id String @id @db.Uuid
+  storage_key String
+  attempts Int @default(0)
+  run_after DateTime @default(now()) @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
   @@schema("public")
 }

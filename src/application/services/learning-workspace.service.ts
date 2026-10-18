@@ -1,5 +1,5 @@
 import type { LearningWorkspaceRepository } from '../repositories/learning-workspace.repository';
-import type { ActivityInput, EvidenceInput, GoalInput, PlanInput, RelationInput, SuggestionDecision, TaskInput, TaskUpdate } from '../contracts/learning-workspace.service';
+import type { ActivityInput, EvidenceInput, GoalInput, PlanInput, PlanUpdate, RelationInput, SuggestionDecision, TaskInput, TaskUpdate } from '../contracts/learning-workspace.service';
 import type { ActivityAssessmentGateway } from '../ports/activity-assessment.gateway';
 import { ConflictError } from '../errors';
 import { createHash } from 'node:crypto';
@@ -13,6 +13,8 @@ export class LearningWorkspaceService {
   ) {}
 
   public outline(ownerId: string, materialId: string) { return this.repository.outline(ownerId, materialId); }
+  public readingPosition(ownerId: string, materialId: string) { return this.repository.readingPosition(ownerId, materialId); }
+  public setReadingPosition(ownerId: string, materialId: string, offset: number) { return this.repository.setReadingPosition(ownerId, materialId, offset); }
   public relations(ownerId: string, materialId: string) { return this.repository.relations(ownerId, materialId); }
   public createRelation(ownerId: string, input: RelationInput) { return this.repository.createRelation(ownerId, input); }
   public shelves(ownerId: string) { return this.repository.shelves(ownerId); }
@@ -26,6 +28,7 @@ export class LearningWorkspaceService {
   public createGoal(ownerId: string, input: GoalInput) { return this.repository.createGoal(ownerId, input); }
   public plans(ownerId: string) { return this.repository.plans(ownerId); }
   public createPlan(ownerId: string, input: PlanInput) { return this.repository.createPlan(ownerId, input); }
+  public updatePlan(ownerId: string, id: string, input: PlanUpdate) { return this.repository.updatePlan(ownerId, id, input); }
   public tasks(ownerId: string) { return this.repository.tasks(ownerId); }
   public createTask(ownerId: string, input: TaskInput) { return this.repository.createTask(ownerId, input); }
   public updateTask(ownerId: string, id: string, input: TaskUpdate) { return this.repository.updateTask(ownerId, id, input); }

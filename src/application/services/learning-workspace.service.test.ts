@@ -27,10 +27,12 @@ const outcome: ActivityOutcome = { event: { id: 'event-1', request_id: input.req
 function repository(overrides: Partial<LearningWorkspaceRepository>): LearningWorkspaceRepository {
   const unused = async () => undefined;
   return {
-    outline: unused, relations: unused, createRelation: unused,
+    outline: unused, readingPosition: async () => ({ offset: 0 }),
+    setReadingPosition: async (_ownerId, _materialId, offset) => ({ offset }),
+    relations: unused, createRelation: unused,
     shelves: unused, createShelf: unused, deleteShelf: unused, setShelfMaterial: unused,
     cards: unused, saveCard: unused, deleteCard: unused, goals: unused, createGoal: unused,
-    plans: unused, createPlan: unused, tasks: unused, createTask: unused, updateTask: unused,
+    plans: unused, createPlan: unused, updatePlan: unused, tasks: unused, createTask: unused, updateTask: unused,
     availability: unused, setAvailability: unused, desk: unused, evidence: unused,
     contestEvidence: unused, suggestions: unused, decideSuggestion: unused,
     evidenceConceptName: async () => context.conceptName,

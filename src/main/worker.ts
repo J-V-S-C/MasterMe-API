@@ -13,6 +13,9 @@ export const startWorker = (environment: Environment): void => {
   const ingestion = makeIngestionService(pool, environment);
   const study = makeMasterMeService(pool, environment, metrics, billing);
   const worker = new ProcessingWorker(pool, study.service, ingestion);
+  setInterval(() => {
+    void ingestion.cleanupDeletedFileOnce().catch(() => console.error(JSON.stringify({ level: 'error', operation: 'material-file-cleanup', code: 'FILE_CLEANUP_FAILED' })));
+  }, 5_000);
   let active = 0;
   setInterval(() => {
     while (active < environment.EXTRACTION_CONCURRENCY) {

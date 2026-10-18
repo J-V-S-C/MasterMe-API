@@ -191,6 +191,12 @@ O PostgreSQL de produção fica no Supabase. Apenas os arquivos enviados ficam n
 volume Docker `material_uploads` da VPS; por isso esse volume deve ser incluído
 na estratégia de backup enquanto não houver object storage.
 
+Ao excluir um material, o banco apaga seu histórico vinculado e grava a chave
+do arquivo original em `material_file_deletions` na mesma transação. O worker
+remove o arquivo do volume e apaga a pendência; se o volume falhar, a pendência
+permanece para nova tentativa. Mantenha o worker ativo e monitore pendências
+antigas nessa tabela antes de descartar o volume.
+
 ## Limites do MVP
 
 - Os créditos exibidos são a proteção interna do produto; eles não consultam o saldo remoto do Google em tempo real.

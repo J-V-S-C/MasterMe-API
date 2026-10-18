@@ -1,6 +1,6 @@
 import type { suggestNextAction } from '../domain/learning-cycle';
 import type { SupportedLocale } from '../domain/material';
-import type { ActivityInput, EvidenceInput, GoalInput, PlanInput, RelationInput, SuggestionDecision, TaskInput, TaskUpdate } from '../contracts/learning-workspace.service';
+import type { ActivityInput, EvidenceInput, GoalInput, PlanInput, PlanUpdate, RelationInput, SuggestionDecision, TaskInput, TaskUpdate } from '../contracts/learning-workspace.service';
 
 export interface ActivityOutcome {
   event: { id: string; request_id: string | null };
@@ -26,6 +26,8 @@ export type ActivityClaim =
 
 export interface LearningWorkspaceRepository {
   outline(ownerId: string, materialId: string): Promise<unknown>;
+  readingPosition(ownerId: string, materialId: string): Promise<{ offset: number }>;
+  setReadingPosition(ownerId: string, materialId: string, offset: number): Promise<{ offset: number }>;
   relations(ownerId: string, materialId: string): Promise<unknown>;
   createRelation(ownerId: string, input: RelationInput): Promise<unknown>;
   shelves(ownerId: string): Promise<unknown>;
@@ -39,6 +41,7 @@ export interface LearningWorkspaceRepository {
   createGoal(ownerId: string, input: GoalInput): Promise<unknown>;
   plans(ownerId: string): Promise<unknown>;
   createPlan(ownerId: string, input: PlanInput): Promise<unknown>;
+  updatePlan(ownerId: string, id: string, input: PlanUpdate): Promise<unknown>;
   tasks(ownerId: string): Promise<unknown>;
   createTask(ownerId: string, input: TaskInput): Promise<unknown>;
   updateTask(ownerId: string, id: string, input: TaskUpdate): Promise<unknown>;

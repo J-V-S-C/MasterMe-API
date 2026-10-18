@@ -38,6 +38,13 @@ export interface GoalInput {
 export interface PlanInput {
   title: string;
   goalId?: string;
+  materialIds?: string[];
+}
+
+export interface PlanUpdate {
+  title?: string;
+  goalId?: string | null;
+  materialIds?: string[];
 }
 
 export type SuggestionDecision = 'ACCEPTED' | 'IGNORED';

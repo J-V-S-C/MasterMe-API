@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const Id = z.object({ id: z.uuid() });
 export const MaterialId = z.object({ materialId: z.uuid() });
+export const ReadingPosition = z.object({ offset: z.number().int().min(0) });
 export const ShelfMaterial = z.object({ id: z.uuid(), materialId: z.uuid() });
 export const ConceptId = z.object({ conceptId: z.uuid() });
 export const Name = z.object({ name: z.string().trim().min(1).max(80) });
@@ -14,7 +15,10 @@ export const Goal = z.object({
 export const Plan = z.object({
   title: z.string().trim().min(1).max(160),
   goalId: z.uuid().optional(),
+  materialIds: z.array(z.uuid()).max(30).refine((ids) => new Set(ids).size === ids.length).optional(),
 });
+export const PlanPatch = Plan.partial().extend({ goalId: z.uuid().nullable().optional() })
+  .refine((value) => Object.keys(value).length > 0);
 export const Activity = z.enum([
   'READ',
   'EXPLAIN',

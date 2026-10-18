@@ -1,7 +1,7 @@
 import type { RequestHandler } from 'express';
 import { z } from 'zod';
 import { getValidated } from '../../middleware/validate-request';
-import { Id, MaterialId, ShelfMaterial, ConceptId, Name, Card, Goal, Plan, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../schemas/learning-workspace.schema';
+import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, Plan, PlanPatch, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../schemas/learning-workspace.schema';
 import type { LearningWorkspaceService } from '../../application/services/learning-workspace.service';
 
 const owner = (value: unknown): string => z.uuid().parse(value);
@@ -16,6 +16,16 @@ export class LearningWorkspaceController {
         ),
       });
     };
+  public readonly readingPosition: RequestHandler = async (_req, res) => {
+    res.json({ data: await this.service.readingPosition(owner(res.locals.userId), getValidated(res, 'params', MaterialId).materialId) });
+  };
+  public readonly setReadingPosition: RequestHandler = async (_req, res) => {
+    res.json({ data: await this.service.setReadingPosition(
+      owner(res.locals.userId),
+      getValidated(res, 'params', MaterialId).materialId,
+      getValidated(res, 'body', ReadingPosition).offset,
+    ) });
+  };
   public readonly relations: RequestHandler = async (_req, res) => {
       res.json({
         data: await this.service.relations(
@@ -123,6 +133,13 @@ export class LearningWorkspaceController {
           ),
         });
     };
+  public readonly updatePlan: RequestHandler = async (_req, res) => {
+    res.json({ data: await this.service.updatePlan(
+      owner(res.locals.userId),
+      getValidated(res, 'params', Id).id,
+      getValidated(res, 'body', PlanPatch),
+    ) });
+  };
   public readonly tasks: RequestHandler = async (_req, res) => {
       res.json({ data: await this.service.tasks(owner(res.locals.userId)) });
     };

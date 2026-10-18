@@ -68,6 +68,22 @@ export class PrismaLearningWorkspaceRepository {
     }));
   }
 
+  public async readingPosition(ownerId: string, materialId: string) {
+    const material = await this.ownedMaterial(ownerId, materialId);
+    return { offset: Math.min(material.reading_offset, material.content.length) };
+  }
+
+  public async setReadingPosition(ownerId: string, materialId: string, offset: number) {
+    const material = await this.ownedMaterial(ownerId, materialId);
+    if (offset > material.content.length)
+      throw new ConflictError('A posição de leitura está fora do material.');
+    await this.db.study_materials.update({
+      where: { id: materialId },
+      data: { reading_offset: offset },
+    });
+    return { offset };
+  }
+
   public async relations(ownerId: string, materialId: string) {
     await this.ownedMaterial(ownerId, materialId);
     return this.db.concept_relations.findMany({
@@ -225,12 +241,13 @@ export class PrismaLearningWorkspaceRepository {
   public plans(ownerId: string) {
     return this.db.study_plans.findMany({
       where: { owner_id: ownerId },
+      include: { study_plan_materials: { orderBy: { ordinal: 'asc' }, select: { material_id: true, ordinal: true } } },
       orderBy: { created_at: 'desc' },
     });
   }
   public async createPlan(
     ownerId: string,
-    input: { title: string; goalId?: string },
+    input: { title: string; goalId?: string; materialIds?: string[] },
   ) {
     if (
       input.goalId &&
@@ -239,14 +256,49 @@ export class PrismaLearningWorkspaceRepository {
       }))
     )
       throw new NotFoundError('Objetivo');
-    return this.db.study_plans.create({
-      data: {
-        id: randomUUID(),
-        owner_id: ownerId,
-        title: input.title,
-        goal_id: input.goalId ?? null,
-      },
+    await this.assertOwnedPlanMaterials(ownerId, input.materialIds ?? []);
+    return this.db.$transaction(async (tx) => {
+      const plan = await tx.study_plans.create({
+        data: { id: randomUUID(), owner_id: ownerId, title: input.title, goal_id: input.goalId ?? null },
+      });
+      if (input.materialIds?.length) await tx.study_plan_materials.createMany({
+        data: input.materialIds.map((materialId, ordinal) => ({ plan_id: plan.id, owner_id: ownerId, material_id: materialId, ordinal })),
+      });
+      return tx.study_plans.findUniqueOrThrow({
+        where: { id: plan.id },
+        include: { study_plan_materials: { orderBy: { ordinal: 'asc' }, select: { material_id: true, ordinal: true } } },
+      });
     });
+  }
+  public async updatePlan(ownerId: string, id: string, input: { title?: string; goalId?: string | null; materialIds?: string[] }) {
+    if (!(await this.db.study_plans.findFirst({ where: { id, owner_id: ownerId } })))
+      throw new NotFoundError('Roteiro');
+    if (input.goalId && !(await this.db.learning_goals.findFirst({ where: { id: input.goalId, owner_id: ownerId } })))
+      throw new NotFoundError('Objetivo');
+    if (input.materialIds) await this.assertOwnedPlanMaterials(ownerId, input.materialIds);
+    return this.db.$transaction(async (tx) => {
+      const changed = await tx.study_plans.updateMany({
+        where: { id, owner_id: ownerId },
+        data: { ...(input.title !== undefined ? { title: input.title } : {}), ...(input.goalId !== undefined ? { goal_id: input.goalId } : {}) },
+      });
+      if (!changed.count) throw new NotFoundError('Roteiro');
+      if (input.materialIds) {
+        await tx.study_plan_materials.deleteMany({ where: { plan_id: id, owner_id: ownerId } });
+        if (input.materialIds.length) await tx.study_plan_materials.createMany({
+          data: input.materialIds.map((materialId, ordinal) => ({ plan_id: id, owner_id: ownerId, material_id: materialId, ordinal })),
+        });
+      }
+      return tx.study_plans.findFirstOrThrow({
+        where: { id, owner_id: ownerId },
+        include: { study_plan_materials: { orderBy: { ordinal: 'asc' }, select: { material_id: true, ordinal: true } } },
+      });
+    });
+  }
+
+  private async assertOwnedPlanMaterials(ownerId: string, ids: string[]) {
+    if (!ids.length) return;
+    const count = await this.db.study_materials.count({ where: { id: { in: ids }, owner_id: ownerId } });
+    if (count !== ids.length) throw new NotFoundError('Material');
   }
   public tasks(ownerId: string) {
     return this.db.study_tasks.findMany({

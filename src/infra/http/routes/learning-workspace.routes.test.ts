@@ -49,6 +49,42 @@ const json = (method: string, body: object): RequestInit => ({
 });
 
 describe('learning workspace routes', () => {
+  test('validates reading positions before updating an owned material', async () => {
+    const calls: unknown[][] = [];
+    await withServer({
+      readingPosition: async () => ({ offset: 24 }),
+      setReadingPosition: async (owner, material, offset) => {
+        calls.push([owner, material, offset]);
+        return { offset };
+      },
+    }, async (baseUrl) => {
+      expect((await fetch(`${baseUrl}/materials/${materialId}/reading-position`)).status).toBe(200);
+      expect((await fetch(`${baseUrl}/materials/${materialId}/reading-position`, json('PUT', { offset: -1 }))).status).toBe(400);
+      const saved = await fetch(`${baseUrl}/materials/${materialId}/reading-position`, json('PUT', { offset: 12 }));
+      expect(saved.status).toBe(200);
+      expect(await saved.json()).toEqual({ data: { offset: 12 } });
+      expect(calls).toEqual([[ownerId, materialId, 12]]);
+    });
+  });
+
+  test('validates ordered plan materials and supports editing the collection', async () => {
+    const calls: unknown[][] = [];
+    await withServer({
+      createPlan: async (owner, input) => { calls.push([owner, input]); return { id: 'plan-1' }; },
+      updatePlan: async (owner, id, input) => { calls.push([owner, id, input]); return { id }; },
+    }, async (baseUrl) => {
+      const invalid = await fetch(`${baseUrl}/plans`, json('POST', { title: 'Reading', materialIds: [materialId, materialId] }));
+      expect(invalid.status).toBe(400);
+      expect(calls).toHaveLength(0);
+      expect((await fetch(`${baseUrl}/plans`, json('POST', { title: 'Reading', materialIds: [materialId] }))).status).toBe(201);
+      expect((await fetch(`${baseUrl}/plans/${materialId}`, json('PATCH', { materialIds: [] }))).status).toBe(200);
+      expect(calls).toEqual([
+        [ownerId, { title: 'Reading', materialIds: [materialId] }],
+        [ownerId, materialId, { materialIds: [] }],
+      ]);
+    });
+  });
+
   test('requires authentication before calling the service', async () => {
     let calls = 0;
     await withServer({ shelves: async () => { calls += 1; return []; } }, async (baseUrl) => {

@@ -4,7 +4,7 @@ import { basename, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { Pool, PoolClient } from 'pg';
 import type { MasterMeService } from '../../application/services/masterme.service';
-import { AppError, NotFoundError } from '../../application/errors';
+import { AppError, ConflictError, NotFoundError } from '../../application/errors';
 import { withAiUsageOwner } from '../context/ai-usage-context';
 import { MAX_MATERIAL_LENGTH } from '../../application/material-limits';
 import type { SupportedLocale } from '../../application/domain/material';
@@ -376,6 +376,73 @@ export class IngestionService {
       client?.release();
     }
   }
+  public async deleteMaterial(materialId: string, ownerId: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const owned = await client.query<{ storage_key: string | null }>(
+        'SELECT storage_key FROM study_materials WHERE id=$1 AND owner_id=$2 FOR UPDATE',
+        [materialId, ownerId],
+      );
+      if (!owned.rows[0]) throw new NotFoundError('Material');
+      const active = await client.query(
+        "SELECT 1 FROM processing_jobs WHERE material_id=$1 AND status IN ('PENDING','PROCESSING') LIMIT 1",
+        [materialId],
+      );
+      if (active.rows[0]) throw new ConflictError('Cancele a extração antes de apagar o material.');
+      const storageKey = owned.rows[0].storage_key;
+      if (storageKey) await client.query(
+        'INSERT INTO material_file_deletions (material_id,storage_key) VALUES ($1,$2)',
+        [materialId, storageKey],
+      );
+      await client.query('DELETE FROM study_materials WHERE id=$1 AND owner_id=$2', [materialId, ownerId]);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    try {
+      await this.event('material.deleted', { materialId }, ownerId);
+    } catch {
+      console.error(JSON.stringify({ level: 'error', operation: 'publish-material-deleted', code: 'ACTIVITY_PUBLISH_FAILED' }));
+    }
+  }
+
+  public async cleanupDeletedFileOnce(): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const pending = await client.query<{ material_id: string; storage_key: string }>(
+        'SELECT material_id,storage_key FROM material_file_deletions WHERE run_after<=now() ORDER BY run_after,created_at FOR UPDATE SKIP LOCKED LIMIT 1',
+      );
+      const file = pending.rows[0];
+      if (!file) {
+        await client.query('COMMIT');
+        return false;
+      }
+      try {
+        await this.storage.remove(file.storage_key);
+      } catch {
+        await client.query(
+          "UPDATE material_file_deletions SET attempts=attempts+1,run_after=now()+least(3600,power(2,least(attempts,10))*5)::int*interval '1 second' WHERE material_id=$1",
+          [file.material_id],
+        );
+        await client.query('COMMIT');
+        return false;
+      }
+      await client.query('DELETE FROM material_file_deletions WHERE material_id=$1', [file.material_id]);
+      await client.query('COMMIT');
+      return true;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   public async enqueue(materialId: string, ownerId: string): Promise<object> {
     await this.status(materialId);
     const active = await this.pool.query(

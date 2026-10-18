@@ -1,5 +1,7 @@
-import { afterAll, expect, test } from 'bun:test';
-import { readFile, readdir } from 'node:fs/promises';
+import { afterAll, expect, spyOn, test } from 'bun:test';
+import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Pool, type PoolClient } from 'pg';
 import {
   checksumMigration,
@@ -12,6 +14,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../../generated/prisma/client';
 import { PrismaLearningWorkspaceRepository } from '../repositories/prisma/prisma-learning-workspace.repository';
 import { LearningWorkspaceService } from '../../application/services/learning-workspace.service';
+import { IngestionService, LocalMaterialStorage } from '../ingestion/ingestion.service';
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 if (process.env.MIGRATION_TEST_REQUIRED === 'true' && !databaseUrl) {
@@ -66,6 +69,22 @@ integrationTest(
       VALUES ($1,'Livro','Capítulo\nA causa produz o efeito.',now(),$2,'MARKDOWN')`,
         [materialA, ownerA],
       );
+      expect(await repository.readingPosition(ownerA, materialA)).toEqual({ offset: 0 });
+      expect(await repository.setReadingPosition(ownerA, materialA, 8)).toEqual({ offset: 8 });
+      expect(await repository.readingPosition(ownerA, materialA)).toEqual({ offset: 8 });
+      await expect(repository.readingPosition(ownerB, materialA)).rejects.toThrow('Material');
+      await expect(repository.setReadingPosition(ownerA, materialA, 1000)).rejects.toThrow('posição de leitura');
+      const materialB = '99999999-9999-4999-8999-999999999999';
+      await client.query(
+        `INSERT INTO public.study_materials (id,title,content,created_at,owner_id,source_type)
+        VALUES ($1,'Artigo','Índices e consultas.',now(),$2,'TEXT')`, [materialB, ownerA],
+      );
+      const plan = await repository.createPlan(ownerA, { title: 'Concorrência', materialIds: [materialA, materialB] });
+      expect(plan.study_plan_materials.map((item) => item.material_id)).toEqual([materialA, materialB]);
+      const reordered = await repository.updatePlan(ownerA, plan.id, { materialIds: [materialB, materialA] });
+      expect(reordered.study_plan_materials.map((item) => item.material_id)).toEqual([materialB, materialA]);
+      await expect(repository.createPlan(ownerB, { title: 'Outra conta', materialIds: [materialA] })).rejects.toThrow('Material');
+      await expect(repository.updatePlan(ownerB, plan.id, { title: 'Roubado' })).rejects.toThrow('Roteiro');
       await client.query(
         `INSERT INTO public.concepts
       (id,material_id,name,description,kind,source_excerpt,fundamental_premises,edge_cases,prerequisite_ids,next_ids)
@@ -231,6 +250,58 @@ integrationTest(
     }
   },
 );
+
+integrationTest('deleting an owned material cascades data and durably cleans its original file', async () => {
+  if (!pool) throw new Error('Integration pool is unavailable');
+  const client = await pool.connect();
+  const directory = await mkdtemp(join(tmpdir(), 'masterme-delete-'));
+  const storage = new LocalMaterialStorage(directory);
+  const service = new IngestionService(pool, storage);
+  const owner = '11111111-1111-4111-8111-111111111111';
+  const other = '77777777-7777-4777-8777-777777777777';
+  const material = '22222222-2222-4222-8222-222222222222';
+  try {
+    await resetDatabase(client);
+    await runMigrations(client, await projectMigrations());
+    await client.query('INSERT INTO auth.users (id) VALUES ($1),($2)', [owner, other]);
+    const key = await storage.save(material, 'original.txt', Buffer.from('Original source'));
+    await client.query(
+      "INSERT INTO study_materials (id,title,content,created_at,owner_id,storage_key,source_type) VALUES ($1,'Book','Original source',now(),$2,$3,'TEXT')",
+      [material, owner, key],
+    );
+    await expect(service.deleteMaterial(material, other)).rejects.toThrow('Material');
+    await client.query("INSERT INTO processing_jobs (id,material_id,type,stage,status) VALUES ($1,$2,'EXTRACT','QUEUED','PENDING')", ['33333333-3333-4333-8333-333333333333', material]);
+    await expect(service.deleteMaterial(material, owner)).rejects.toThrow('Cancele a extração');
+    await client.query("UPDATE processing_jobs SET status='CANCELLED' WHERE material_id=$1", [material]);
+    await service.deleteMaterial(material, owner);
+    expect((await client.query('SELECT id FROM study_materials WHERE id=$1', [material])).rows).toHaveLength(0);
+    expect((await client.query('SELECT storage_key FROM material_file_deletions WHERE material_id=$1', [material])).rows).toHaveLength(1);
+    await access(join(directory, key));
+    const nextMaterial = '44444444-4444-4444-8444-444444444444';
+    const nextKey = await storage.save(nextMaterial, 'next.txt', Buffer.from('Another source'));
+    await client.query(
+      "INSERT INTO study_materials (id,title,content,created_at,owner_id,storage_key,source_type) VALUES ($1,'Next','Another source',now(),$2,$3,'TEXT')",
+      [nextMaterial, owner, nextKey],
+    );
+    await service.deleteMaterial(nextMaterial, owner);
+    const remove = spyOn(storage, 'remove').mockImplementation(async (fileKey) => {
+      if (fileKey === key) throw new Error('Volume unavailable');
+      return LocalMaterialStorage.prototype.remove.call(storage, fileKey);
+    });
+    expect(await service.cleanupDeletedFileOnce()).toBe(false);
+    expect((await client.query('SELECT attempts FROM material_file_deletions WHERE material_id=$1', [material])).rows[0].attempts).toBe(1);
+    expect(await service.cleanupDeletedFileOnce()).toBe(true);
+    await expect(access(join(directory, nextKey))).rejects.toThrow();
+    remove.mockRestore();
+    await client.query('UPDATE material_file_deletions SET run_after=now() WHERE material_id=$1', [material]);
+    expect(await service.cleanupDeletedFileOnce()).toBe(true);
+    expect((await client.query('SELECT 1 FROM material_file_deletions WHERE material_id=$1', [material])).rows).toHaveLength(0);
+    await expect(access(join(directory, key))).rejects.toThrow();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    client.release();
+  }
+});
 
 const resetDatabase = async (client: PoolClient): Promise<void> => {
   await client.query('DROP SCHEMA IF EXISTS public CASCADE');
@@ -943,4 +1014,5 @@ integrationTest(
       second.release();
     }
   },
+  15_000,
 );
