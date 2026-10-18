@@ -85,6 +85,19 @@ describe('learning workspace routes', () => {
     });
   });
 
+  test('validates a complete ordered task list before calling the service', async () => {
+    const calls: unknown[][] = [];
+    await withServer({
+      reorderPlanTasks: async (owner, planId, taskIds) => { calls.push([owner, planId, taskIds]); return []; },
+    }, async (baseUrl) => {
+      const path = `${baseUrl}/plans/${materialId}/tasks/order`;
+      expect((await fetch(path, json('PUT', { taskIds: [requestId, requestId] }))).status).toBe(400);
+      expect(calls).toHaveLength(0);
+      expect((await fetch(path, json('PUT', { taskIds: [requestId, suggestionId] }))).status).toBe(200);
+      expect(calls).toEqual([[ownerId, materialId, [requestId, suggestionId]]]);
+    });
+  });
+
   test('requires authentication before calling the service', async () => {
     let calls = 0;
     await withServer({ shelves: async () => { calls += 1; return []; } }, async (baseUrl) => {

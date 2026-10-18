@@ -17,6 +17,7 @@ export const Plan = z.object({
   goalId: z.uuid().optional(),
   materialIds: z.array(z.uuid()).max(30).refine((ids) => new Set(ids).size === ids.length).optional(),
 });
+export const PlanTaskOrder = z.object({ taskIds: z.array(z.uuid()).max(100).refine((ids) => new Set(ids).size === ids.length) });
 export const PlanPatch = Plan.partial().extend({ goalId: z.uuid().nullable().optional() })
   .refine((value) => Object.keys(value).length > 0);
 export const Activity = z.enum([

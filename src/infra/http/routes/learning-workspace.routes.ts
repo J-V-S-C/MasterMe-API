@@ -1,5 +1,5 @@
 import { Router, type RequestHandler } from 'express';
-import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, Plan, PlanPatch, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../../schemas/learning-workspace.schema';
+import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, Plan, PlanPatch, PlanTaskOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../../schemas/learning-workspace.schema';
 import { authenticate } from '../../../middleware/authenticate';
 import { bindAiUsageOwner } from '../../../middleware/ai-usage-context';
 import { aiBurstRateLimit } from '../../../middleware/rate-limit';
@@ -93,6 +93,7 @@ export function createLearningWorkspaceRouter(
     asyncRoute(controller.createPlan),
   );
   router.patch('/plans/:id', validateRequest({ params: Id, body: PlanPatch }), asyncRoute(controller.updatePlan));
+  router.put('/plans/:id/tasks/order', validateRequest({ params: Id, body: PlanTaskOrder }), asyncRoute(controller.reorderPlanTasks));
   router.get(
     '/tasks',
     asyncRoute(controller.tasks),

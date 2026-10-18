@@ -29,6 +29,7 @@ export class LearningWorkspaceService {
   public plans(ownerId: string) { return this.repository.plans(ownerId); }
   public createPlan(ownerId: string, input: PlanInput) { return this.repository.createPlan(ownerId, input); }
   public updatePlan(ownerId: string, id: string, input: PlanUpdate) { return this.repository.updatePlan(ownerId, id, input); }
+  public reorderPlanTasks(ownerId: string, planId: string, taskIds: string[]) { return this.repository.reorderPlanTasks(ownerId, planId, taskIds); }
   public tasks(ownerId: string) { return this.repository.tasks(ownerId); }
   public createTask(ownerId: string, input: TaskInput) { return this.repository.createTask(ownerId, input); }
   public updateTask(ownerId: string, id: string, input: TaskUpdate) { return this.repository.updateTask(ownerId, id, input); }

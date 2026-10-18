@@ -32,7 +32,7 @@ function repository(overrides: Partial<LearningWorkspaceRepository>): LearningWo
     relations: unused, createRelation: unused,
     shelves: unused, createShelf: unused, deleteShelf: unused, setShelfMaterial: unused,
     cards: unused, saveCard: unused, deleteCard: unused, goals: unused, createGoal: unused,
-    plans: unused, createPlan: unused, updatePlan: unused, tasks: unused, createTask: unused, updateTask: unused,
+    plans: unused, createPlan: unused, updatePlan: unused, reorderPlanTasks: unused, tasks: unused, createTask: unused, updateTask: unused,
     availability: unused, setAvailability: unused, desk: unused, evidence: unused,
     contestEvidence: unused, suggestions: unused, decideSuggestion: unused,
     evidenceConceptName: async () => context.conceptName,

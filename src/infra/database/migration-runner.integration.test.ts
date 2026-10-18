@@ -85,6 +85,12 @@ integrationTest(
       expect(reordered.study_plan_materials.map((item) => item.material_id)).toEqual([materialB, materialA]);
       await expect(repository.createPlan(ownerB, { title: 'Outra conta', materialIds: [materialA] })).rejects.toThrow('Material');
       await expect(repository.updatePlan(ownerB, plan.id, { title: 'Roubado' })).rejects.toThrow('Roteiro');
+      const firstTask = await repository.createTask(ownerA, { title: 'Read chapter', activityType: 'READ', planId: plan.id, materialId: materialA });
+      const secondTask = await repository.createTask(ownerA, { title: 'Explain article', activityType: 'EXPLAIN', planId: plan.id, materialId: materialB });
+      const reorderedTasks = await repository.reorderPlanTasks(ownerA, plan.id, [secondTask.id, firstTask.id]);
+      expect(reorderedTasks.map((task) => task.id)).toEqual([secondTask.id, firstTask.id]);
+      await expect(repository.reorderPlanTasks(ownerB, plan.id, [firstTask.id, secondTask.id])).rejects.toThrow('Roteiro');
+      await expect(repository.reorderPlanTasks(ownerA, plan.id, [firstTask.id])).rejects.toThrow('ordem');
       await client.query(
         `INSERT INTO public.concepts
       (id,material_id,name,description,kind,source_excerpt,fundamental_premises,edge_cases,prerequisite_ids,next_ids)
@@ -194,7 +200,7 @@ integrationTest(
       expect(
         decisions.filter((result) => result.status === 'fulfilled').length,
       ).toBeGreaterThan(0);
-      expect(await repository.tasks(ownerA)).toHaveLength(1);
+      expect(await repository.tasks(ownerA)).toHaveLength(3);
       await expect(
         repository.decideSuggestion(ownerB, suggestions[0]!.id, 'ACCEPTED'),
       ).rejects.toThrow('Sugestão');

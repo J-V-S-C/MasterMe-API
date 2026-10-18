@@ -295,6 +295,31 @@ export class PrismaLearningWorkspaceRepository {
     });
   }
 
+  public async reorderPlanTasks(ownerId: string, planId: string, taskIds: string[]) {
+    return this.db.$transaction(async (tx) => {
+      const plan = await tx.study_plans.findFirst({ where: { id: planId, owner_id: ownerId }, select: { id: true } });
+      if (!plan) throw new NotFoundError('Roteiro');
+      const current = await tx.study_tasks.findMany({
+        where: { owner_id: ownerId, plan_id: planId, status: { not: 'REMOVED' } },
+        select: { id: true },
+      });
+      if (new Set(taskIds).size !== taskIds.length || current.length !== taskIds.length ||
+        current.some(({ id }) => !taskIds.includes(id)))
+        throw new ConflictError('A ordem deve incluir todas as tarefas ativas do roteiro.');
+      for (const [sortOrder, id] of taskIds.entries()) {
+        const changed = await tx.study_tasks.updateMany({
+          where: { id, owner_id: ownerId, plan_id: planId, status: { not: 'REMOVED' } },
+          data: { sort_order: sortOrder, updated_at: new Date() },
+        });
+        if (!changed.count) throw new ConflictError('As tarefas do roteiro mudaram. Recarregue e tente novamente.');
+      }
+      return tx.study_tasks.findMany({
+        where: { owner_id: ownerId, plan_id: planId, status: { not: 'REMOVED' } },
+        orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }],
+      });
+    });
+  }
+
   private async assertOwnedPlanMaterials(ownerId: string, ids: string[]) {
     if (!ids.length) return;
     const count = await this.db.study_materials.count({ where: { id: { in: ids }, owner_id: ownerId } });

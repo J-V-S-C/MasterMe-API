@@ -42,6 +42,7 @@ export interface LearningWorkspaceRepository {
   plans(ownerId: string): Promise<unknown>;
   createPlan(ownerId: string, input: PlanInput): Promise<unknown>;
   updatePlan(ownerId: string, id: string, input: PlanUpdate): Promise<unknown>;
+  reorderPlanTasks(ownerId: string, planId: string, taskIds: string[]): Promise<unknown>;
   tasks(ownerId: string): Promise<unknown>;
   createTask(ownerId: string, input: TaskInput): Promise<unknown>;
   updateTask(ownerId: string, id: string, input: TaskUpdate): Promise<unknown>;
