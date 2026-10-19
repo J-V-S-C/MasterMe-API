@@ -22,21 +22,26 @@ import type { ActivityAssessmentGateway } from '../../application/ports/activity
 
 const asJson = (value: unknown): string => JSON.stringify(value);
 const EXTRACTION_CHUNK_SIZE = 12_000;
+const MAX_EXTRACTION_PROMPT_CHARS = 100_000;
 const localeName = (locale: SupportedLocale): string =>
   locale === 'pt-BR' ? 'português do Brasil' : 'English (United States)';
 export const indexMaterialParagraphs = (
   content: string,
+  maxParagraphSize = EXTRACTION_CHUNK_SIZE,
 ): Array<{ id: string; text: string; offset: number }> => {
   const paragraphs: Array<{ id: string; text: string; offset: number }> = [];
   let start = 0;
   const add = (end: number) => {
     const raw = content.slice(start, end);
     const text = raw.trim();
-    if (text) paragraphs.push({
-      id: `P${String(paragraphs.length + 1).padStart(4, '0')}`,
-      text,
-      offset: start + raw.indexOf(text),
-    });
+    if (text) for (let index = 0; index < text.length; index += maxParagraphSize) {
+      const part = text.slice(index, index + maxParagraphSize);
+      paragraphs.push({
+        id: `P${String(paragraphs.length + 1).padStart(4, '0')}`,
+        text: part,
+        offset: start + raw.indexOf(text) + index,
+      });
+    }
   };
   for (const separator of content.matchAll(/\n\s*\n+/g)) {
     add(separator.index);
@@ -44,6 +49,27 @@ export const indexMaterialParagraphs = (
   }
   add(content.length);
   return paragraphs;
+};
+
+export const batchIndexedParagraphs = <T extends { id: string; text: string }>(
+  paragraphs: T[],
+  maxChars = MAX_EXTRACTION_PROMPT_CHARS,
+): T[][] => {
+  const batches: T[][] = [];
+  let current: T[] = [];
+  let size = 0;
+  for (const paragraph of paragraphs) {
+    const length = paragraph.id.length + paragraph.text.length + 4;
+    if (current.length && size + length > maxChars) {
+      batches.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(paragraph);
+    size += length;
+  }
+  if (current.length) batches.push(current);
+  return batches;
 };
 
 export const splitMaterialForExtraction = (
@@ -107,35 +133,47 @@ export class GeminiMasterMeGateway
     material: StudyMaterial,
     onProgress?: (progress: ExtractionProgress) => Promise<void>,
   ): Promise<ExtractedKnowledge> {
+    const paragraphs = indexMaterialParagraphs(material.content);
+    const batches = batchIndexedParagraphs(paragraphs);
     await onProgress?.({
       stage: 'PREPARING',
-      totalChunks: 1,
+      totalChunks: batches.length,
       completedChunks: 0,
     });
-    const paragraphs = indexMaterialParagraphs(material.content);
-    // The provider call takes most of the extraction time. Report its start
-    // before awaiting it so the UI does not appear stuck at 1%.
-    await onProgress?.({
-      stage: 'EXTRACTING',
-      totalChunks: 1,
-      completedChunks: 0,
-    });
-    const response = await this.extractMaterial(paragraphs, material.locale);
+    const responses: Array<Awaited<ReturnType<GeminiMasterMeGateway['extractMaterial']>>> = [];
+    for (const [index, batch] of batches.entries()) {
+      await onProgress?.({
+        stage: 'EXTRACTING',
+        totalChunks: batches.length,
+        completedChunks: index,
+      });
+      responses.push(await this.extractMaterial(
+        batch,
+        material.locale,
+        batches.length === 1 ? this.maxConcepts : Math.max(1, Math.ceil(this.maxConcepts / batches.length)),
+        batches.length > 1,
+      ));
+    }
     await onProgress?.({
       stage: 'REDUCING',
-      totalChunks: 1,
-      completedChunks: 1,
+      totalChunks: batches.length,
+      completedChunks: batches.length,
     });
 
     const paragraphById = new Map(paragraphs.map((paragraph) => [paragraph.id, paragraph]));
-    const fragments = this.uniqueFragments(response.fragments)
+    const candidates = responses.flatMap((response) => response.fragments);
+    const validCandidates = this.uniqueFragments(candidates)
       .flatMap((fragment) => {
         const source = paragraphById.get(
           fragment.sourceParagraphId.trim().toUpperCase(),
         );
         return source ? [{ ...fragment, sourceExcerpt: source.text, sourceOffset: source.offset }] : [];
       })
-      .slice(0, this.maxConcepts)
+    const selected = validCandidates.length <= this.maxConcepts
+      ? validCandidates
+      : Array.from({ length: this.maxConcepts }, (_, index) =>
+          validCandidates[Math.floor(index * validCandidates.length / this.maxConcepts)]!);
+    const fragments = selected
       .map(
         ({
           sourceParagraphId: _sourceParagraphId,
@@ -170,7 +208,7 @@ export class GeminiMasterMeGateway
       fragments.map((fragment) => fragment.name.trim().toLocaleLowerCase()),
     );
     const seenRelations = new Set<string>();
-    const relations = response.relations.flatMap((relation) => {
+    const relations = responses.flatMap((response) => response.relations).flatMap((relation) => {
       const fromName = relation.fromName.trim().toLocaleLowerCase();
       const toName = relation.toName.trim().toLocaleLowerCase();
       const source = paragraphById.get(
@@ -217,13 +255,15 @@ export class GeminiMasterMeGateway
   private extractMaterial(
     paragraphs: Array<{ id: string; text: string }>,
     locale: SupportedLocale,
+    conceptLimit: number,
+    isPartOfBook: boolean,
   ) {
     const indexedMaterial = paragraphs
       .map(({ id, text }) => `[${id}]\n${text}`)
       .join('\n\n');
     return this.client.generateStructured(
       SinglePassKnowledgeResponseSchema,
-      `Você analisa um material técnico de engenharia de software. Produza TODOS os campos gerados em ${localeName(locale)}, mesmo quando o material estiver em outro idioma; preserve termos técnicos no idioma original entre parênteses quando isso ajudar. Extraia no máximo ${this.maxConcepts} conceitos centrais que estejam EXPLICITAMENTE no material inteiro. Priorize os conceitos que desbloqueiam a compreensão dos demais e descarte detalhes repetidos. Para cada conceito, retorne nome curto e único, descrição de no máximo duas frases, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, premissas fundamentais, casos de borda e prerequisiteNames contendo somente nomes de outros conceitos retornados. Retorne uma questionText que exija explicar mecanismo, causalidade ou aplicação e que possa ser respondida somente com o trecho de origem; não atribua benefícios, riscos ou condições ausentes desse trecho. Nunca pergunte apenas definição, tradução ou valor de retorno. Retorne targetPremise, expectedReasoningSteps com 2 a 4 passos, learningObjective em uma frase, requiredIdeas com 2 a 4 critérios essenciais e commonMisconceptions. edgeCaseQuestion deve exigir raciocínio sobre uma condição-limite, não mera lembrança. Em relations, inclua apenas ligações cuja proposição e justificativa sejam sustentadas diretamente por um único sourceParagraphId do material indexado que mencione os dois conceitos; use fromName e toName exatamente como em fragments, relationType REQUIRES/ENABLES/CONTRASTS/APPLIES_TO/PART_OF, statement e justification. Se o texto não sustentar uma ligação, retorne relations vazio. Não invente IDs, conteúdo ou relações.\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
+      `Você analisa ${isPartOfBook ? 'uma parte de um material técnico maior' : 'um material técnico'} de engenharia de software. Produza TODOS os campos gerados em ${localeName(locale)}, mesmo quando o material estiver em outro idioma; preserve termos técnicos no idioma original entre parênteses quando isso ajudar. Extraia no máximo ${conceptLimit} conceitos centrais que estejam EXPLICITAMENTE nesta parte. Priorize os conceitos que desbloqueiam a compreensão dos demais e descarte detalhes repetidos. Para cada conceito, retorne nome curto e único, descrição de no máximo duas frases, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, premissas fundamentais, casos de borda e prerequisiteNames contendo somente nomes de outros conceitos retornados. Retorne uma questionText que exija explicar mecanismo, causalidade ou aplicação e que possa ser respondida somente com o trecho de origem; não atribua benefícios, riscos ou condições ausentes desse trecho. Nunca pergunte apenas definição, tradução ou valor de retorno. Retorne targetPremise, expectedReasoningSteps com 2 a 4 passos, learningObjective em uma frase, requiredIdeas com 2 a 4 critérios essenciais e commonMisconceptions. edgeCaseQuestion deve exigir raciocínio sobre uma condição-limite, não mera lembrança. Em relations, inclua apenas ligações cuja proposição e justificativa sejam sustentadas diretamente por um único sourceParagraphId do material indexado que mencione os dois conceitos; use fromName e toName exatamente como em fragments, relationType REQUIRES/ENABLES/CONTRASTS/APPLIES_TO/PART_OF, statement e justification. Se o texto não sustentar uma ligação, retorne relations vazio. Não invente IDs, conteúdo ou relações.\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
       { operation: 'EXTRACTION', maxOutputTokens: 6000 },
     );
   }

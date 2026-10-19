@@ -22,20 +22,20 @@ export type BillingPlan = {
 }
 
 export const BILLING_PLANS = Object.freeze({
-  FREE: Object.freeze({ id: 'FREE', name: 'Gratuito', priceInCents: 0, durationDays: null, dailyCreditLimit: 24, periodCreditLimit: 120, checkoutDescription: null }),
+  FREE: Object.freeze({ id: 'FREE', name: 'Gratuito', priceInCents: 0, durationDays: null, dailyCreditLimit: 100, periodCreditLimit: 100, checkoutDescription: null }),
   ESSENTIAL: Object.freeze({ id: 'ESSENTIAL', name: 'Essencial', priceInCents: 2_990, durationDays: 30, dailyCreditLimit: 120, periodCreditLimit: 1_500, checkoutDescription: 'MasterMe Essencial — 30 dias' }),
   PRO: Object.freeze({ id: 'PRO', name: 'Pro', priceInCents: 24_900, durationDays: 365, dailyCreditLimit: 180, periodCreditLimit: 15_000, checkoutDescription: 'MasterMe Pro — 365 dias' }),
 } satisfies Record<BillingPlanId, BillingPlan>)
 
 export const AI_CREDIT_WEIGHTS = Object.freeze({
-  INITIAL_EVALUATION: 2,
-  STRESS_EVALUATION: 2,
-  EDGE_CASE_GENERATION: 4,
-  EDGE_CASE_EVALUATION: 4,
-  ISOMORPHIC_PROBLEM: 4,
-  LOCALIZATION: 6,
-  PRACTICE_PROJECT: 8,
-  EXTRACTION: 12,
+  INITIAL_EVALUATION: 1,
+  STRESS_EVALUATION: 1,
+  EDGE_CASE_GENERATION: 1,
+  EDGE_CASE_EVALUATION: 1,
+  ISOMORPHIC_PROBLEM: 1,
+  LOCALIZATION: 1,
+  PRACTICE_PROJECT: 1,
+  EXTRACTION: 1,
 } satisfies Record<AiOperation, number>)
 
 export type BillingOrderStatus = 'PENDING' | 'CHECKOUT_READY' | 'CHECKOUT_FAILED' | 'PAID'
@@ -76,5 +76,5 @@ export const publicCatalog = () => ({
   billingType: 'ONE_TIME' as const,
   plans: Object.values(BILLING_PLANS).map(({ checkoutDescription: _checkoutDescription, ...plan }) => plan),
   creditWeights: { ...AI_CREDIT_WEIGHTS },
-  fallbackPolicy: 'Cada tentativa real no provedor, inclusive fallback, reserva novamente o peso da operação.' as const,
+  fallbackPolicy: 'Cada tentativa real no provedor, inclusive fallback, reserva um crédito.' as const,
 })

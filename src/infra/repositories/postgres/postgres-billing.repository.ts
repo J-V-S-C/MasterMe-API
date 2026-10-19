@@ -428,9 +428,9 @@ export class PostgresBillingRepository implements BillingRepository {
   public async getCreditBalance(ownerId: string): Promise<CreditBalance> {
     const result = await this.pool.query(
       `SELECT e.plan_id,e.valid_from,e.valid_until,e.credit_limit,e.credits_used,
-        coalesce(d.credits,0)::int AS daily_used,coalesce(m.credits,0)::int AS monthly_used,
+        coalesce(d.credits,0)::int AS daily_used,
         (date_trunc('day',now() AT TIME ZONE 'UTC')+interval '1 day') AT TIME ZONE 'UTC' AS daily_resets_at,
-        date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS month_start
+        date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day_start
        FROM (SELECT $1::uuid AS owner_id) owner
        LEFT JOIN LATERAL (
          SELECT plan_id,valid_from,valid_until,credit_limit,credits_used
@@ -439,8 +439,7 @@ export class PostgresBillingRepository implements BillingRepository {
          ORDER BY CASE plan_id WHEN 'PRO' THEN 2 ELSE 1 END DESC,valid_until DESC
          LIMIT 1
        ) e ON true
-       LEFT JOIN ai_credit_daily_usage d ON d.owner_id=owner.owner_id AND d.usage_date=(now() AT TIME ZONE 'UTC')::date
-       LEFT JOIN ai_credit_monthly_usage m ON m.owner_id=owner.owner_id AND m.month_start=date_trunc('month',now() AT TIME ZONE 'UTC')::date`,
+       LEFT JOIN ai_credit_daily_usage d ON d.owner_id=owner.owner_id AND d.usage_date=(now() AT TIME ZONE 'UTC')::date`,
       [ownerId],
     );
     const row = z
@@ -451,32 +450,25 @@ export class PostgresBillingRepository implements BillingRepository {
         credit_limit: z.coerce.number().int().nullable(),
         credits_used: z.coerce.number().int().nullable(),
         daily_used: z.coerce.number().int(),
-        monthly_used: z.coerce.number().int(),
         daily_resets_at: z.unknown(),
-        month_start: z.unknown(),
+        day_start: z.unknown(),
       })
       .parse(result.rows[0]);
     const planId = row.plan_id ?? 'FREE';
     const plan = BILLING_PLANS[planId];
     const dailyUsed = row.daily_used;
     const periodUsed =
-      planId === 'FREE' ? row.monthly_used : (row.credits_used ?? 0);
+      planId === 'FREE' ? dailyUsed : (row.credits_used ?? 0);
     const periodLimit =
       planId === 'FREE'
         ? plan.periodCreditLimit
         : (row.credit_limit ?? plan.periodCreditLimit);
-    const monthStart = DatabaseDateSchema.parse(row.month_start);
+    const dayStart = DatabaseDateSchema.parse(row.day_start);
     const periodStartsAt =
-      planId === 'FREE' ? monthStart : DatabaseDateSchema.parse(row.valid_from);
+      planId === 'FREE' ? dayStart : DatabaseDateSchema.parse(row.valid_from);
     const periodEndsAt =
       planId === 'FREE'
-        ? new Date(
-            Date.UTC(
-              monthStart.getUTCFullYear(),
-              monthStart.getUTCMonth() + 1,
-              1,
-            ),
-          )
+        ? DatabaseDateSchema.parse(row.daily_resets_at)
         : DatabaseDateSchema.parse(row.valid_until);
     return {
       planId,

@@ -5,7 +5,6 @@ import type { Pool, PoolClient } from 'pg';
 import type { MasterMeService } from '../../application/services/masterme.service';
 import { AppError, ConflictError, NotFoundError } from '../../application/errors';
 import { withAiUsageOwner } from '../context/ai-usage-context';
-import { MAX_MATERIAL_LENGTH } from '../../application/material-limits';
 import type { SupportedLocale } from '../../application/domain/material';
 import { ActivityEventHub } from '../events/activity-event-hub';
 import {
@@ -130,10 +129,6 @@ const textFromFile = async (
   data: Buffer,
 ): Promise<{ text: string; units: EditorialUnit[] }> => {
   if (mime !== 'application/pdf') {
-    if (data.byteLength > MAX_MATERIAL_LENGTH * 4)
-      throw new AppError('MATERIAL_TOO_LARGE',
-        'O arquivo de texto excede o limite seguro.',
-      );
     const text = new TextDecoder('utf-8', { fatal: true }).decode(data).trim();
     return {
       text,
@@ -182,10 +177,6 @@ export class IngestionService {
     if (content.length < 20)
       throw new AppError('INVALID_FILE',
         'O arquivo não possui texto legível suficiente. Envie um PDF com camada de texto.',
-      );
-    if (content.length > MAX_MATERIAL_LENGTH)
-      throw new AppError('MATERIAL_TOO_LARGE',
-        `O texto extraído excede ${MAX_MATERIAL_LENGTH.toLocaleString('pt-BR')} caracteres. Divida o material antes de enviar.`,
       );
     const id = randomUUID();
     const storageKey = await this.storage.save(

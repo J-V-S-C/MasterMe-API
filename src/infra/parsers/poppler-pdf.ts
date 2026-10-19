@@ -5,14 +5,13 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { SaxesParser } from 'saxes';
 import { AppError } from '../../application/errors';
-import { MAX_MATERIAL_LENGTH } from '../../application/material-limits';
 import { derivePdfOutlineUnits, type EditorialUnit } from './editorial-structure';
 
 const execFileAsync = promisify(execFile);
-const PDF_PARSE_TIMEOUT_MS = 15_000;
-const MAX_XML_BYTES = 16 * 1024 * 1024;
+const PDF_PARSE_TIMEOUT_MS = 60_000;
+const MAX_XML_BYTES = 32 * 1024 * 1024;
 const MAX_PROCESS_ADDRESS_SPACE_BYTES = 192 * 1024 * 1024;
-export const MAX_PDF_PAGES = 120;
+export const MAX_PDF_PAGES = 800;
 
 const parsePopplerXml = (xml: string): { text: string; units: EditorialUnit[] } => {
   const pages: string[] = [];
@@ -21,7 +20,6 @@ const parsePopplerXml = (xml: string): { text: string; units: EditorialUnit[] } 
   let pageLines: string[] | null = null;
   let line: string | null = null;
   let inOutline = false;
-  let characters = 0;
   const parser = new SaxesParser();
   parser.on('opentag', (tag) => {
     if (tag.name === 'page') pageLines = [];
@@ -40,9 +38,6 @@ const parsePopplerXml = (xml: string): { text: string; units: EditorialUnit[] } 
     if (tag.name === 'text' && line !== null && pageLines) {
       const content = line.trim();
       if (content) {
-        characters += content.length + 1;
-        if (characters > MAX_MATERIAL_LENGTH)
-          throw new AppError('MATERIAL_TOO_LARGE', `O texto extraído excede ${MAX_MATERIAL_LENGTH.toLocaleString('pt-BR')} caracteres. Divida o material antes de enviar.`);
         pageLines.push(content);
       }
       line = null;

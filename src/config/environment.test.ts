@@ -9,7 +9,7 @@ const required = {
 
 describe('billing configuration', () => {
   test('defaults to the conservative global credit cap', () => {
-    expect(parseEnvironment({ ...required, NODE_ENV: 'production', PUBLIC_APP_URL: 'https://masterme.example' }).AI_GLOBAL_DAILY_CREDIT_LIMIT).toBe(240)
+    expect(parseEnvironment({ ...required, NODE_ENV: 'production', PUBLIC_APP_URL: 'https://masterme.example' }).AI_GLOBAL_DAILY_CREDIT_LIMIT).toBe(500)
   })
 
   test('parses false for the kill switch without unsafe string coercion', () => {
