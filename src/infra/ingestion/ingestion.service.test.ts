@@ -223,6 +223,11 @@ describe('upload guardrails', () => {
     expect(text.length).toBeGreaterThan(MAX_MATERIAL_LENGTH);
   }, 90_000);
 
+  test('PDF at the page limit remains readable within the parser bounds', async () => {
+    const text = await extractPdfText(makePdf(Array.from({ length: MAX_PDF_PAGES }, () => ({ lines: ['Plain PDF text for testing'] })), false));
+    expect(text).toContain('Plain PDF text for testing');
+  }, 15_000);
+
   test('database rollback removes the file and does not commit a partial event', async () => {
     const statements: string[] = [];
     const client = {
