@@ -19,6 +19,7 @@ import type {
   AiUsageSummary,
   MasterMeRepository,
 } from '../../../application/repositories/masterme.repository';
+import { ConflictError } from '../../../application/errors';
 
 const DatabaseDateSchema = z.coerce.date();
 
@@ -76,13 +77,22 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
   public async saveConcepts(
     concepts: Concept[],
     relations: ConceptRelation[] = [],
+    processingJobId?: string,
   ): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      if (processingJobId) {
+        const job = await client.query<{ material_id: string; status: string }>(
+          'SELECT material_id,status FROM processing_jobs WHERE id=$1 FOR UPDATE',
+          [processingJobId],
+        );
+        if (job.rows[0]?.status !== 'PROCESSING' || job.rows[0].material_id !== concepts[0]?.materialId)
+          throw new ConflictError('A extração foi cancelada.');
+      }
       for (const concept of concepts) {
         await client.query(
-          'INSERT INTO concepts (id, material_id, name, description, kind, source_excerpt, fundamental_premises, edge_cases, study_question, edge_case_question, generated_locale, prerequisite_ids, next_ids) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+          'INSERT INTO concepts (id, material_id, name, description, kind, source_excerpt, fundamental_premises, edge_cases, study_question, edge_case_question, generated_locale, prerequisite_ids, next_ids, extraction_job_id, source_offset) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)',
           [
             concept.id,
             concept.materialId,
@@ -97,12 +107,14 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
             concept.generatedLocale,
             JSON.stringify(concept.prerequisiteIds),
             JSON.stringify(concept.nextIds),
+            processingJobId ?? null,
+            concept.sourceOffset ?? null,
           ],
         );
       }
       for (const relation of relations) {
         await client.query(
-          'INSERT INTO concept_relations (id,material_id,from_concept_id,to_concept_id,relation_type,statement,justification,source_excerpt,provenance) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          'INSERT INTO concept_relations (id,material_id,from_concept_id,to_concept_id,relation_type,statement,justification,source_excerpt,provenance,extraction_job_id,source_offset) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
           [
             relation.id,
             relation.materialId,
@@ -113,7 +125,19 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
             relation.justification,
             relation.sourceExcerpt,
             relation.provenance,
+            processingJobId ?? null,
+            relation.sourceOffset ?? null,
           ],
+        );
+      }
+      if (processingJobId) {
+        await client.query(
+          "UPDATE processing_jobs SET status='DONE',stage='READY',progress_percent=100,finished_at=now(),updated_at=now() WHERE id=$1",
+          [processingJobId],
+        );
+        await client.query(
+          "UPDATE study_materials SET active_extraction_job_id=$2,processing_status='READY',processed_at=now(),processing_error=NULL WHERE id=$1",
+          [concepts[0]!.materialId, processingJobId],
         );
       }
       await client.query('COMMIT');
@@ -170,7 +194,7 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
   }
   public async findConceptsByMaterial(materialId: string): Promise<Concept[]> {
     const result = await this.pool.query(
-      'SELECT * FROM concepts WHERE material_id=$1',
+      'SELECT c.* FROM concepts c JOIN study_materials m ON m.id=c.material_id WHERE c.material_id=$1 AND c.extraction_job_id IS NOT DISTINCT FROM m.active_extraction_job_id',
       [materialId],
     );
     return result.rows.flatMap((row) => {
@@ -509,6 +533,7 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
         description: z.string(),
         kind: z.string(),
         source_excerpt: z.string(),
+        source_offset: z.number().int().nonnegative().nullable().optional(),
         fundamental_premises: z.unknown(),
         edge_cases: z.unknown(),
         study_question: z.unknown().nullable().optional(),
@@ -525,6 +550,7 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
       description: value.description,
       kind: value.kind,
       sourceExcerpt: value.source_excerpt,
+      sourceOffset: value.source_offset ?? undefined,
       fundamentalPremises: value.fundamental_premises,
       edgeCases: value.edge_cases,
       studyQuestion: value.study_question ?? undefined,

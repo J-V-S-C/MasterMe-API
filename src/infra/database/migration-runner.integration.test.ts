@@ -1,17 +1,25 @@
-import { afterAll, expect, test } from 'bun:test';
-import { readFile, readdir } from 'node:fs/promises';
+import { afterAll, expect, spyOn, test } from 'bun:test';
+import { access, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Pool, type PoolClient } from 'pg';
 import {
   checksumMigration,
   runMigrations,
-  type Migration,
 } from './migration-runner';
+import { projectMigrations } from './migration-catalog';
 import { PostgresMasterMeRepository } from '../repositories/postgres/postgres-masterme.repository';
 import { PostgresBillingRepository } from '../repositories/postgres/postgres-billing.repository';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../../generated/prisma/client';
 import { PrismaLearningWorkspaceRepository } from '../repositories/prisma/prisma-learning-workspace.repository';
 import { LearningWorkspaceService } from '../../application/services/learning-workspace.service';
+import { IngestionService, LocalMaterialStorage } from '../ingestion/ingestion.service';
+import express from 'express';
+import { z } from 'zod';
+import { createLearningWorkspaceRouter } from '../http/routes/learning-workspace.routes';
+import { LearningWorkspaceController } from '../controllers/learning-workspace.controller';
+import { errorHandler } from '../../middleware/error-handler';
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 if (process.env.MIGRATION_TEST_REQUIRED === 'true' && !databaseUrl) {
@@ -66,6 +74,31 @@ integrationTest(
       VALUES ($1,'Livro','Capítulo\nA causa produz o efeito.',now(),$2,'MARKDOWN')`,
         [materialA, ownerA],
       );
+      expect(await repository.readingPosition(ownerA, materialA)).toEqual({ offset: 0 });
+      expect(await repository.setReadingPosition(ownerA, materialA, 8)).toEqual({ offset: 8 });
+      expect(await repository.readingPosition(ownerA, materialA)).toEqual({ offset: 8 });
+      await expect(repository.readingPosition(ownerB, materialA)).rejects.toThrow('Material');
+      await expect(repository.setReadingPosition(ownerA, materialA, 1000)).rejects.toThrow('posição de leitura');
+      const materialB = '99999999-9999-4999-8999-999999999999';
+      await client.query(
+        `INSERT INTO public.study_materials (id,title,content,created_at,owner_id,source_type)
+        VALUES ($1,'Artigo','Índices e consultas.',now(),$2,'TEXT')`, [materialB, ownerA],
+      );
+      const goal = await repository.createGoal(ownerA, { title: 'Learn indexes', description: 'Study queries' });
+      expect((await repository.updateGoal(ownerA, goal.id, { title: 'Understand indexes', deadline: new Date('2026-11-01T00:00:00Z') })).title).toBe('Understand indexes');
+      await expect(repository.updateGoal(ownerB, goal.id, { title: 'Stolen goal' })).rejects.toThrow('Objetivo');
+      const plan = await repository.createPlan(ownerA, { title: 'Concorrência', materialIds: [materialA, materialB] });
+      expect(plan.study_plan_materials.map((item) => item.material_id)).toEqual([materialA, materialB]);
+      const reordered = await repository.updatePlan(ownerA, plan.id, { materialIds: [materialB, materialA] });
+      expect(reordered.study_plan_materials.map((item) => item.material_id)).toEqual([materialB, materialA]);
+      await expect(repository.createPlan(ownerB, { title: 'Outra conta', materialIds: [materialA] })).rejects.toThrow('Material');
+      await expect(repository.updatePlan(ownerB, plan.id, { title: 'Roubado' })).rejects.toThrow('Roteiro');
+      const firstTask = await repository.createTask(ownerA, { title: 'Read chapter', activityType: 'READ', planId: plan.id, materialId: materialA });
+      const secondTask = await repository.createTask(ownerA, { title: 'Explain article', activityType: 'EXPLAIN', planId: plan.id, materialId: materialB });
+      const reorderedTasks = await repository.reorderPlanTasks(ownerA, plan.id, [secondTask.id, firstTask.id]);
+      expect(reorderedTasks.map((task) => task.id)).toEqual([secondTask.id, firstTask.id]);
+      await expect(repository.reorderPlanTasks(ownerB, plan.id, [firstTask.id, secondTask.id])).rejects.toThrow('Roteiro');
+      await expect(repository.reorderPlanTasks(ownerA, plan.id, [firstTask.id])).rejects.toThrow('ordem');
       await client.query(
         `INSERT INTO public.concepts
       (id,material_id,name,description,kind,source_excerpt,fundamental_premises,edge_cases,prerequisite_ids,next_ids)
@@ -154,6 +187,21 @@ integrationTest(
       ).rejects.toThrow('Identificador');
       expect(await repository.evidence(ownerA, materialA)).toHaveLength(1);
       expect(await repository.evidence(ownerB, materialA)).toHaveLength(0);
+      expect((await repository.evidence(ownerA, materialA))[0]).toMatchObject({
+        prompt_version: 'activity-v2',
+        criteria: ['Explique o mecanismo ou as condições essenciais do conceito com base no trecho.', 'Causa'],
+        hints_used: [],
+        previous_evidence_id: null,
+      });
+      const foreignMaterial = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+      await client.query(
+        "INSERT INTO study_materials(id,title,content,created_at,owner_id,source_type) VALUES ($1,'Foreign','Foreign source text.',now(),$2,'TEXT')",
+        [foreignMaterial, ownerB],
+      );
+      await expect(client.query(
+        "INSERT INTO learning_evidence(id,owner_id,material_id,activity_type,prompt,answer,status,source_excerpt,previous_evidence_id) VALUES ($1,$2,$3,'COMPREHENSION','Explain','Foreign answer','SELF_REPORTED','Foreign source text.',$4)",
+        ['dddddddd-dddd-4ddd-8ddd-dddddddddddd', ownerB, foreignMaterial, repeated.event.id],
+      )).rejects.toMatchObject({ code: '23503' });
       await expect(
         repository.contestEvidence(
           ownerB,
@@ -168,16 +216,41 @@ integrationTest(
       );
       const suggestions = await repository.suggestions(ownerA);
       expect(suggestions).toHaveLength(1);
+      await expect(repository.requestRevisit(ownerB, repeated.event.id)).rejects.toThrow('Evidência');
+      const requested = await Promise.all([
+        repository.requestRevisit(ownerA, repeated.event.id),
+        repository.requestRevisit(ownerA, repeated.event.id),
+      ]);
+      expect(requested[0]?.id).toBe(suggestions[0]!.id);
+      expect(requested[1]?.id).toBe(suggestions[0]!.id);
+      expect(await repository.suggestions(ownerA)).toHaveLength(1);
       const decisions = await Promise.allSettled([
-        repository.decideSuggestion(ownerA, suggestions[0]!.id, 'ACCEPTED'),
-        repository.decideSuggestion(ownerA, suggestions[0]!.id, 'ACCEPTED'),
+        repository.decideSuggestion(ownerA, suggestions[0]!.id, { decision: 'ACCEPTED', title: 'Review the cause', durationMinutes: 40 }),
+        repository.decideSuggestion(ownerA, suggestions[0]!.id, { decision: 'ACCEPTED', title: 'Review the cause', durationMinutes: 40 }),
       ]);
       expect(
         decisions.filter((result) => result.status === 'fulfilled').length,
       ).toBeGreaterThan(0);
-      expect(await repository.tasks(ownerA)).toHaveLength(1);
+      const tasksAfterDecision = await repository.tasks(ownerA);
+      expect(tasksAfterDecision).toHaveLength(3);
+      const revisit = tasksAfterDecision.find((task) => task.activity_type === 'REVISIT');
+      expect(revisit).toMatchObject({ title: 'Review the cause', duration_minutes: 40 });
+      expect(revisit?.study_suggestions[0]?.learning_evidence.id).toBe(repeated.event.id);
+      expect((await repository.requestRevisit(ownerA, repeated.event.id)).status).toBe('ACCEPTED');
+      const passedEvidenceId = 'aaaaaaaa-aaaa-4aaa-8aaa-eeeeeeeeeeee';
+      await client.query(
+        `INSERT INTO public.learning_evidence
+         (id,owner_id,material_id,concept_id,activity_type,prompt,answer,status,diagnosis,source_excerpt)
+         VALUES ($1,$2,$3,$4,'RETENTION','Explain the cause','The cause produces the effect','PASSED','Correct','A causa produz o efeito.')`,
+        [passedEvidenceId, ownerA, materialA, conceptA],
+      );
+      const voluntary = await repository.requestRevisit(ownerA, passedEvidenceId);
+      expect(voluntary).toMatchObject({ status: 'PENDING', evidence_id: passedEvidenceId });
+      await repository.decideSuggestion(ownerA, voluntary.id, { decision: 'IGNORED' });
+      expect((await repository.requestRevisit(ownerA, passedEvidenceId)).status).toBe('PENDING');
+      expect((await repository.suggestions(ownerA)).filter((item) => item.evidence_id === passedEvidenceId)).toHaveLength(1);
       await expect(
-        repository.decideSuggestion(ownerB, suggestions[0]!.id, 'ACCEPTED'),
+        repository.decideSuggestion(ownerB, suggestions[0]!.id, { decision: 'ACCEPTED' }),
       ).rejects.toThrow('Sugestão');
       await expect(client.query(
         `INSERT INTO public.study_tasks(id,owner_id,material_id,title,activity_type)
@@ -195,6 +268,23 @@ integrationTest(
          VALUES ($1,$2,$3,'COMPREHENSION','Prompt','Answer','SELF_REPORTED','A causa produz o efeito.')`,
         ['aaaaaaaa-aaaa-4aaa-8aaa-dddddddddddd', ownerB, materialA],
       )).rejects.toMatchObject({ code: '23503' });
+      const followup = await workspace.evaluateActivity(ownerA, {
+        ...answer,
+        requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc',
+        assisted: true,
+        hintsUsed: ['Releia o trecho sobre a causa.'],
+        previousEvidenceId: repeated.event.id,
+      });
+      expect((await repository.evidence(ownerA, materialA)).find((item) => item.id === followup.event.id)).toMatchObject({
+        assisted: true,
+        hints_used: ['Releia o trecho sobre a causa.'],
+        previous_evidence_id: repeated.event.id,
+      });
+      await expect(workspace.evaluateActivity(ownerA, {
+        ...answer,
+        requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbd',
+        previousEvidenceId: '77777777-7777-4777-8777-777777777777',
+      })).rejects.toThrow('Tentativa anterior');
       await client.query(
         `INSERT INTO public.study_tasks(id,owner_id,title,activity_type)
          VALUES ($1,$2,'Independent task','READ')`,
@@ -232,24 +322,225 @@ integrationTest(
   },
 );
 
+integrationTest('deleting an owned material cascades data and durably cleans its original file', async () => {
+  if (!pool) throw new Error('Integration pool is unavailable');
+  const client = await pool.connect();
+  const directory = await mkdtemp(join(tmpdir(), 'masterme-delete-'));
+  const storage = new LocalMaterialStorage(directory);
+  const service = new IngestionService(pool, storage);
+  const owner = '11111111-1111-4111-8111-111111111111';
+  const other = '77777777-7777-4777-8777-777777777777';
+  const material = '22222222-2222-4222-8222-222222222222';
+  try {
+    await resetDatabase(client);
+    await runMigrations(client, await projectMigrations());
+    await client.query('INSERT INTO auth.users (id) VALUES ($1),($2)', [owner, other]);
+    const key = await storage.save(material, 'original.txt', Buffer.from('Original source'));
+    await client.query(
+      "INSERT INTO study_materials (id,title,content,created_at,owner_id,storage_key,source_type) VALUES ($1,'Book','Original source',now(),$2,$3,'TEXT')",
+      [material, owner, key],
+    );
+    await expect(service.deleteMaterial(material, other)).rejects.toThrow('Material');
+    await client.query("INSERT INTO processing_jobs (id,material_id,type,stage,status) VALUES ($1,$2,'EXTRACT','QUEUED','PENDING')", ['33333333-3333-4333-8333-333333333333', material]);
+    await expect(service.deleteMaterial(material, owner)).rejects.toThrow('Cancele a extração');
+    await client.query("UPDATE processing_jobs SET status='CANCELLED' WHERE material_id=$1", [material]);
+    await service.deleteMaterial(material, owner);
+    expect((await client.query('SELECT id FROM study_materials WHERE id=$1', [material])).rows).toHaveLength(0);
+    expect((await client.query('SELECT storage_key FROM material_file_deletions WHERE material_id=$1', [material])).rows).toHaveLength(1);
+    await access(join(directory, key));
+    const nextMaterial = '44444444-4444-4444-8444-444444444444';
+    const nextKey = await storage.save(nextMaterial, 'next.txt', Buffer.from('Another source'));
+    await client.query(
+      "INSERT INTO study_materials (id,title,content,created_at,owner_id,storage_key,source_type) VALUES ($1,'Next','Another source',now(),$2,$3,'TEXT')",
+      [nextMaterial, owner, nextKey],
+    );
+    await service.deleteMaterial(nextMaterial, owner);
+    const remove = spyOn(storage, 'remove').mockImplementation(async (fileKey) => {
+      if (fileKey === key) throw new Error('Volume unavailable');
+      return LocalMaterialStorage.prototype.remove.call(storage, fileKey);
+    });
+    expect(await service.cleanupDeletedFileOnce()).toBe(false);
+    expect((await client.query('SELECT attempts FROM material_file_deletions WHERE material_id=$1', [material])).rows[0].attempts).toBe(1);
+    expect(await service.cleanupDeletedFileOnce()).toBe(true);
+    await expect(access(join(directory, nextKey))).rejects.toThrow();
+    remove.mockRestore();
+    await client.query('UPDATE material_file_deletions SET run_after=now() WHERE material_id=$1', [material]);
+    expect(await service.cleanupDeletedFileOnce()).toBe(true);
+    expect((await client.query('SELECT 1 FROM material_file_deletions WHERE material_id=$1', [material])).rows).toHaveLength(0);
+    await expect(access(join(directory, key))).rejects.toThrow();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    client.release();
+  }
+});
+
+integrationTest('a cancelled extraction cannot persist a late result', async () => {
+  if (!pool) throw new Error('Integration pool is unavailable');
+  const client = await pool.connect();
+  const owner = '11111111-1111-4111-8111-111111111111';
+  const materialId = '22222222-2222-4222-8222-222222222222';
+  const jobId = '33333333-3333-4333-8333-333333333333';
+  const repository = new PostgresMasterMeRepository(pool);
+  const concept = {
+    id: '44444444-4444-4444-8444-444444444444',
+    materialId,
+    name: 'Causa',
+    description: 'A causa produz o efeito.',
+    kind: 'NODE' as const,
+    sourceExcerpt: 'A causa produz o efeito.',
+    fundamentalPremises: ['A causa precede o efeito.'],
+    edgeCases: ['Sem a causa, o efeito não ocorre.'],
+    generatedLocale: 'pt-BR' as const,
+    prerequisiteIds: [],
+    nextIds: [],
+  };
+  try {
+    await resetDatabase(client);
+    await runMigrations(client, await projectMigrations());
+    await client.query('INSERT INTO auth.users (id) VALUES ($1)', [owner]);
+    await client.query(
+      "INSERT INTO study_materials (id,title,content,created_at,owner_id,source_type,processing_status) VALUES ($1,'Book','A causa produz o efeito.',now(),$2,'TEXT','PROCESSING')",
+      [materialId, owner],
+    );
+    await client.query(
+      "INSERT INTO processing_jobs (id,material_id,type,stage,status) VALUES ($1,$2,'EXTRACT','EXTRACTING','PROCESSING')",
+      [jobId, materialId],
+    );
+    await client.query("UPDATE processing_jobs SET status='CANCELLED' WHERE id=$1", [jobId]);
+    await expect(repository.saveConcepts([concept], [], jobId)).rejects.toThrow('cancelada');
+    expect((await client.query('SELECT id FROM concepts WHERE material_id=$1', [materialId])).rows).toHaveLength(0);
+    await client.query("UPDATE processing_jobs SET status='PROCESSING' WHERE id=$1", [jobId]);
+    await repository.saveConcepts([concept], [], jobId);
+    expect((await client.query('SELECT status FROM processing_jobs WHERE id=$1', [jobId])).rows[0].status).toBe('DONE');
+    expect((await client.query('SELECT processing_status FROM study_materials WHERE id=$1', [materialId])).rows[0].processing_status).toBe('READY');
+    expect((await client.query('SELECT id FROM concepts WHERE material_id=$1', [materialId])).rows).toHaveLength(1);
+    await client.query("UPDATE processing_jobs SET status='CANCELLED' WHERE id=$1 AND status='PROCESSING'", [jobId]);
+    expect((await client.query('SELECT status FROM processing_jobs WHERE id=$1', [jobId])).rows[0].status).toBe('DONE');
+    expect((await repository.findConceptsByMaterial(materialId)).map((item) => item.id)).toEqual([concept.id]);
+    const historicalSessionId = '77777777-7777-4777-8777-777777777777';
+    const historicalEvidenceId = '88888888-8888-4888-8888-888888888888';
+    await client.query(
+      "INSERT INTO study_sessions(id,concept_id,state,question,attempts,created_at,updated_at) VALUES ($1,$2,'QUESTION_READY','{}','[]',now(),now())",
+      [historicalSessionId, concept.id],
+    );
+    await client.query(
+      "INSERT INTO learning_evidence(id,owner_id,material_id,concept_id,activity_type,prompt,answer,status,source_excerpt) VALUES ($1,$2,$3,$4,'COMPREHENSION','Explain the cause','The cause precedes the effect','SELF_REPORTED','A causa produz o efeito.')",
+      [historicalEvidenceId, owner, materialId, concept.id],
+    );
+    const cancelledReextractId = '99999999-9999-4999-8999-999999999999';
+    await client.query(
+      "INSERT INTO processing_jobs (id,material_id,type,stage,status) VALUES ($1,$2,'EXTRACT','EXTRACTING','PROCESSING')",
+      [cancelledReextractId, materialId],
+    );
+    await client.query("UPDATE processing_jobs SET status='CANCELLED' WHERE id=$1", [cancelledReextractId]);
+    await expect(repository.saveConcepts([{ ...concept, id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }], [], cancelledReextractId)).rejects.toThrow('cancelada');
+    expect((await repository.findConceptsByMaterial(materialId)).map((item) => item.id)).toEqual([concept.id]);
+    const nextJobId = '55555555-5555-4555-8555-555555555555';
+    const nextConcept = { ...concept, id: '66666666-6666-4666-8666-666666666666', name: 'Efeito' };
+    await client.query(
+      "INSERT INTO processing_jobs (id,material_id,type,stage,status) VALUES ($1,$2,'EXTRACT','EXTRACTING','PROCESSING')",
+      [nextJobId, materialId],
+    );
+    await repository.saveConcepts([nextConcept], [], nextJobId);
+    expect((await repository.findConceptsByMaterial(materialId)).map((item) => item.id)).toEqual([nextConcept.id]);
+    expect((await repository.findConcept(concept.id))?.id).toBe(concept.id);
+    expect((await client.query('SELECT id FROM study_sessions WHERE id=$1', [historicalSessionId])).rows).toHaveLength(1);
+    expect((await client.query('SELECT id FROM learning_evidence WHERE id=$1', [historicalEvidenceId])).rows).toHaveLength(1);
+    expect((await client.query('SELECT active_extraction_job_id FROM study_materials WHERE id=$1', [materialId])).rows[0].active_extraction_job_id).toBe(nextJobId);
+  } finally {
+    client.release();
+  }
+});
+
+integrationTest('real HTTP and PostgreSQL complete a plan, diagnosis, suggestion and revisit across accounts', async () => {
+  if (!pool) throw new Error('Integration pool is unavailable');
+  const client = await pool.connect();
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
+  const ownerA = '11111111-1111-4111-8111-111111111111';
+  const ownerB = '77777777-7777-4777-8777-777777777777';
+  const materialId = '22222222-2222-4222-8222-222222222222';
+  const conceptId = '33333333-3333-4333-8333-333333333333';
+  const requestId = '44444444-4444-4444-8444-444444444444';
+  let evaluations = 0;
+  const repository = new PrismaLearningWorkspaceRepository(prisma);
+  const workspace = new LearningWorkspaceService(repository, {
+    evaluateActivity: async () => {
+      evaluations += 1;
+      return { status: 'INCOMPLETE', missingPremises: ['Cause'], logicalBreak: null, feedback: 'Explain the cause.' };
+    },
+  });
+  const app = express();
+  app.use(express.json());
+  app.use('/api/learning', createLearningWorkspaceRouter(new LearningWorkspaceController(workspace), (req, res, next) => {
+    const userId = req.header('x-test-user');
+    if (userId !== ownerA && userId !== ownerB) { res.status(401).end(); return; }
+    res.locals.userId = userId;
+    next();
+  }));
+  app.use(errorHandler);
+  let server: ReturnType<typeof app.listen> | undefined;
+  try {
+    await resetDatabase(client);
+    await runMigrations(client, await projectMigrations());
+    await client.query('INSERT INTO auth.users(id) VALUES ($1),($2)', [ownerA, ownerB]);
+    await client.query(
+      "INSERT INTO study_materials(id,title,content,created_at,owner_id,source_type) VALUES ($1,'Indexed queries','An index narrows candidate rows before filtering.',now(),$2,'TEXT')",
+      [materialId, ownerA],
+    );
+    await client.query(
+      "INSERT INTO concepts(id,material_id,name,description,kind,source_excerpt,fundamental_premises,edge_cases,prerequisite_ids,next_ids) VALUES ($1,$2,'Index','Narrows candidate rows','NODE','An index narrows candidate rows before filtering.','[\"The index narrows candidates.\"]','[\"A small table may use a scan.\"]','[]','[]')",
+      [conceptId, materialId],
+    );
+    server = app.listen(0);
+    await new Promise<void>((resolve) => server!.once('listening', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Port unavailable');
+    const base = `http://127.0.0.1:${address.port}/api/learning`;
+    const send = (owner: string, path: string, method = 'GET', body?: object) => fetch(`${base}${path}`, {
+      method,
+      headers: { 'x-test-user': owner, ...(body ? { 'content-type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const idResponse = z.object({ data: z.object({ id: z.uuid() }).passthrough() });
+    const goal = idResponse.parse(await (await send(ownerA, '/goals', 'POST', { title: 'Understand indexes', description: 'Study the source' })).json()).data;
+    const plan = idResponse.parse(await (await send(ownerA, '/plans', 'POST', { title: 'Index study', goalId: goal.id, materialIds: [materialId] })).json()).data;
+    expect((await send(ownerB, `/materials/${materialId}/outline`)).status).toBe(404);
+    expect((await send(ownerB, `/goals/${goal.id}`, 'PATCH', { title: 'Foreign' })).status).toBe(404);
+    const answer = { requestId, conceptId, activityType: 'APPLICATION', answer: 'I would use the index to narrow candidate rows before filtering.', assisted: false };
+    const evaluationResponse = await send(ownerA, '/activities/answers', 'POST', answer);
+    expect(evaluationResponse.status).toBe(201);
+    const evaluated = z.object({ data: z.object({ event: z.object({ id: z.uuid() }), suggestion: z.object({ id: z.uuid() }) }) }).parse(await evaluationResponse.json()).data;
+    expect(evaluations).toBe(1);
+    const visibleSuggestions = z.object({ data: z.array(z.object({ learning_evidence: z.object({ id: z.uuid(), diagnosis: z.string(), prompt: z.string(), source_excerpt: z.string() }) })) }).parse(await (await send(ownerA, '/suggestions')).json()).data;
+    expect(visibleSuggestions[0]?.learning_evidence.id).toBe(evaluated.event.id);
+    expect(visibleSuggestions[0]?.learning_evidence.diagnosis).toBe('Explain the cause.');
+    const accepted = await send(ownerA, `/suggestions/${evaluated.suggestion.id}/decision`, 'POST', { decision: 'ACCEPTED', title: 'Review index use', durationMinutes: 40, scheduledAt: '2026-10-19T10:00:00Z', planId: plan.id });
+    expect(accepted.status).toBe(200);
+    expect((await send(ownerB, `/suggestions/${evaluated.suggestion.id}/decision`, 'POST', { decision: 'ACCEPTED' })).status).toBe(404);
+    const replay = await send(ownerA, '/activities/answers', 'POST', answer);
+    expect(replay.status).toBe(201);
+    expect(evaluations).toBe(1);
+    const repeatedDecision = await send(ownerA, `/suggestions/${evaluated.suggestion.id}/decision`, 'POST', { decision: 'ACCEPTED' });
+    expect(repeatedDecision.status).toBe(200);
+    const tasks = z.object({ data: z.array(z.object({ id: z.uuid(), title: z.string() }).passthrough()) }).parse(await (await send(ownerA, '/tasks')).json()).data;
+    expect(tasks.filter((task) => task.title === 'Review index use')).toHaveLength(1);
+    const desk = z.object({ data: z.object({ tasks: z.array(z.object({ title: z.string() }).passthrough()) }).passthrough() }).parse(await (await send(ownerA, '/desk?date=2026-10-19&timezone=UTC')).json()).data;
+    expect(desk.tasks.some((task) => task.title === 'Review index use')).toBe(true);
+    const otherTasks = z.object({ data: z.array(z.unknown()) }).parse(await (await send(ownerB, '/tasks')).json()).data;
+    expect(otherTasks).toHaveLength(0);
+  } finally {
+    if (server) await new Promise<void>((resolve, reject) => server!.close((error) => error ? reject(error) : resolve()));
+    await prisma.$disconnect();
+    client.release();
+  }
+});
+
 const resetDatabase = async (client: PoolClient): Promise<void> => {
   await client.query('DROP SCHEMA IF EXISTS public CASCADE');
   await client.query('DROP SCHEMA IF EXISTS auth CASCADE');
   await client.query('CREATE SCHEMA public');
   await client.query('CREATE SCHEMA auth');
   await client.query('CREATE TABLE auth.users (id UUID PRIMARY KEY)');
-};
-
-const projectMigrations = async (): Promise<Migration[]> => {
-  const directory = new URL('../../../migrations/', import.meta.url);
-  const migrations: Migration[] = [];
-  for (const name of (await readdir(directory))
-    .filter((file) => file.endsWith('.sql'))
-    .sort()) {
-    const sql = await readFile(new URL(name, directory), 'utf8');
-    migrations.push({ name, sql, checksum: checksumMigration(sql) });
-  }
-  return migrations;
 };
 
 integrationTest('relation integrity migration fails safely for legacy cross-material rows', async () => {
@@ -943,4 +1234,5 @@ integrationTest(
       second.release();
     }
   },
+  15_000,
 );

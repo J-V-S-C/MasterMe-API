@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFile } from 'node:fs/promises'
 
-const migrationUrl = new URL('../../../migrations/014_infinitepay_billing.sql', import.meta.url)
+const migrationUrl = new URL('../../../prisma/migrations/014_infinitepay_billing/migration.sql', import.meta.url)
 
 describe('billing migration', () => {
   test('protects grants, transactions and idempotency with uniqueness', async () => {

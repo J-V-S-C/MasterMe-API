@@ -26,6 +26,7 @@ export const ConceptSchema = z.object({
   description: z.string().min(1),
   kind: FragmentKindSchema,
   sourceExcerpt: z.string().min(1),
+  sourceOffset: z.number().int().nonnegative().optional(),
   fundamentalPremises: z.array(z.string().min(1)).min(1),
   edgeCases: z.array(z.string().min(1)).min(1),
   edgeCaseQuestion: z.string().min(1).optional(),

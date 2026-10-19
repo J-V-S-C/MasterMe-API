@@ -26,16 +26,24 @@ const localeName = (locale: SupportedLocale): string =>
   locale === 'pt-BR' ? 'português do Brasil' : 'English (United States)';
 export const indexMaterialParagraphs = (
   content: string,
-): Array<{ id: string; text: string }> => {
-  const raw = content
-    .split(/\n\s*\n+/)
-    .map((text) => text.trim())
-    .filter(Boolean);
-  const paragraphs = raw.length ? raw : [content.trim()];
-  return paragraphs.map((text, index) => ({
-    id: `P${String(index + 1).padStart(4, '0')}`,
-    text,
-  }));
+): Array<{ id: string; text: string; offset: number }> => {
+  const paragraphs: Array<{ id: string; text: string; offset: number }> = [];
+  let start = 0;
+  const add = (end: number) => {
+    const raw = content.slice(start, end);
+    const text = raw.trim();
+    if (text) paragraphs.push({
+      id: `P${String(paragraphs.length + 1).padStart(4, '0')}`,
+      text,
+      offset: start + raw.indexOf(text),
+    });
+  };
+  for (const separator of content.matchAll(/\n\s*\n+/g)) {
+    add(separator.index);
+    start = separator.index + separator[0].length;
+  }
+  add(content.length);
+  return paragraphs;
 };
 
 export const splitMaterialForExtraction = (
@@ -62,6 +70,29 @@ export const splitMaterialForExtraction = (
   }
   push();
   return chunks;
+};
+
+const sourceWords = (value: string): string[] => value
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLocaleLowerCase()
+  .match(/[a-z0-9]+/g) ?? [];
+
+const termStem = (word: string): string => {
+  if (word.endsWith('ing') && word.length > 6) return word.slice(0, -3);
+  if (word.endsWith('ed') && word.length > 5) return word.slice(0, -2);
+  if (/(?:x|ch|sh|ss)es$/u.test(word)) return word.slice(0, -2);
+  if (word.endsWith('s') && word.length > 4) return word.slice(0, -1);
+  return word;
+};
+
+export const relationNamesInExcerpt = (fromName: string, toName: string, excerpt: string): boolean => {
+  const source = new Set(sourceWords(excerpt).map(termStem));
+  const namePresent = (name: string) => {
+    const term = sourceWords(name).filter((word) => word.length >= 4).at(-1);
+    return Boolean(term && source.has(termStem(term)));
+  };
+  return namePresent(fromName) && namePresent(toName);
 };
 
 export class GeminiMasterMeGateway
@@ -96,15 +127,13 @@ export class GeminiMasterMeGateway
       completedChunks: 1,
     });
 
-    const paragraphById = new Map(
-      paragraphs.map((paragraph) => [paragraph.id, paragraph.text]),
-    );
+    const paragraphById = new Map(paragraphs.map((paragraph) => [paragraph.id, paragraph]));
     const fragments = this.uniqueFragments(response.fragments)
       .flatMap((fragment) => {
-        const sourceExcerpt = paragraphById.get(
+        const source = paragraphById.get(
           fragment.sourceParagraphId.trim().toUpperCase(),
         );
-        return sourceExcerpt ? [{ ...fragment, sourceExcerpt }] : [];
+        return source ? [{ ...fragment, sourceExcerpt: source.text, sourceOffset: source.offset }] : [];
       })
       .slice(0, this.maxConcepts)
       .map(
@@ -144,7 +173,7 @@ export class GeminiMasterMeGateway
     const relations = response.relations.flatMap((relation) => {
       const fromName = relation.fromName.trim().toLocaleLowerCase();
       const toName = relation.toName.trim().toLocaleLowerCase();
-      const sourceExcerpt = paragraphById.get(
+      const source = paragraphById.get(
         relation.sourceParagraphId.trim().toUpperCase(),
       );
       const key = `${fromName}:${toName}:${relation.relationType}`;
@@ -152,7 +181,8 @@ export class GeminiMasterMeGateway
         !availableNames.has(fromName) ||
         !availableNames.has(toName) ||
         fromName === toName ||
-        !sourceExcerpt ||
+        !source ||
+        !relationNamesInExcerpt(relation.fromName, relation.toName, source.text) ||
         seenRelations.has(key)
       )
         return [];
@@ -164,7 +194,8 @@ export class GeminiMasterMeGateway
           relationType: relation.relationType,
           statement: relation.statement,
           justification: relation.justification,
-          sourceExcerpt,
+          sourceExcerpt: source.text,
+          sourceOffset: source.offset,
         },
       ];
     });
@@ -192,7 +223,7 @@ export class GeminiMasterMeGateway
       .join('\n\n');
     return this.client.generateStructured(
       SinglePassKnowledgeResponseSchema,
-      `Você analisa um material técnico de engenharia de software. Produza TODOS os campos gerados em ${localeName(locale)}, mesmo quando o material estiver em outro idioma; preserve termos técnicos no idioma original entre parênteses quando isso ajudar. Extraia no máximo ${this.maxConcepts} conceitos centrais que estejam EXPLICITAMENTE no material inteiro. Priorize os conceitos que desbloqueiam a compreensão dos demais e descarte detalhes repetidos. Para cada conceito, retorne nome curto e único, descrição de no máximo duas frases, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, premissas fundamentais, casos de borda e prerequisiteNames contendo somente nomes de outros conceitos retornados. Retorne uma questionText que exija explicar mecanismo, causalidade ou aplicação; nunca pergunte apenas definição, tradução ou valor de retorno. Retorne targetPremise, expectedReasoningSteps com 2 a 4 passos, learningObjective em uma frase, requiredIdeas com 2 a 4 critérios essenciais e commonMisconceptions. edgeCaseQuestion deve exigir raciocínio sobre uma condição-limite, não mera lembrança. Em relations, inclua apenas ligações cuja proposição e justificativa sejam sustentadas diretamente por um sourceParagraphId do material indexado; use fromName e toName exatamente como em fragments, relationType REQUIRES/ENABLES/CONTRASTS/APPLIES_TO/PART_OF, statement e justification. Se o texto não sustentar uma ligação, retorne relations vazio. Não invente IDs, conteúdo ou relações.\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
+      `Você analisa um material técnico de engenharia de software. Produza TODOS os campos gerados em ${localeName(locale)}, mesmo quando o material estiver em outro idioma; preserve termos técnicos no idioma original entre parênteses quando isso ajudar. Extraia no máximo ${this.maxConcepts} conceitos centrais que estejam EXPLICITAMENTE no material inteiro. Priorize os conceitos que desbloqueiam a compreensão dos demais e descarte detalhes repetidos. Para cada conceito, retorne nome curto e único, descrição de no máximo duas frases, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, premissas fundamentais, casos de borda e prerequisiteNames contendo somente nomes de outros conceitos retornados. Retorne uma questionText que exija explicar mecanismo, causalidade ou aplicação e que possa ser respondida somente com o trecho de origem; não atribua benefícios, riscos ou condições ausentes desse trecho. Nunca pergunte apenas definição, tradução ou valor de retorno. Retorne targetPremise, expectedReasoningSteps com 2 a 4 passos, learningObjective em uma frase, requiredIdeas com 2 a 4 critérios essenciais e commonMisconceptions. edgeCaseQuestion deve exigir raciocínio sobre uma condição-limite, não mera lembrança. Em relations, inclua apenas ligações cuja proposição e justificativa sejam sustentadas diretamente por um único sourceParagraphId do material indexado que mencione os dois conceitos; use fromName e toName exatamente como em fragments, relationType REQUIRES/ENABLES/CONTRASTS/APPLIES_TO/PART_OF, statement e justification. Se o texto não sustentar uma ligação, retorne relations vazio. Não invente IDs, conteúdo ou relações.\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
       { operation: 'EXTRACTION', maxOutputTokens: 6000 },
     );
   }
@@ -327,7 +358,7 @@ export class GeminiMasterMeGateway
   ): Promise<Evaluation> {
     const response = await this.client.generateStructured(
       GeminiEvaluationResponseSchema,
-      `Responda em ${localeName(input.locale)}. Avalie somente a resposta do estudante à atividade ${input.activityType}, usando o trecho fornecido. PASSED exige mecanismo causal e critérios essenciais; INCOMPLETE indica omissão relevante; LOGICAL_BREAK exige contradição explícita, nunca mera omissão. Aceite formulações equivalentes e não invente fatos além do trecho. Devolva feedback curto, um acerto, uma lacuna quando houver, e um próximo passo sem gabarito.\nCONCEITO: ${input.conceptName}\nEVIDÊNCIA: ${input.sourceExcerpt}\nCRITÉRIOS: ${asJson(input.criteria)}\nPERGUNTA: ${input.prompt}\nRESPOSTA: ${input.answer}`,
+      `Responda em ${localeName(input.locale)}. Avalie somente a resposta do estudante à atividade ${input.activityType}, usando o trecho fornecido. PASSED exige os critérios essenciais da atividade; INCOMPLETE indica omissão relevante; LOGICAL_BREAK exige contradição explícita, nunca mera omissão. Aceite formulações equivalentes e não invente fatos além do trecho. Devolva feedback curto, um acerto, uma lacuna quando houver, e um próximo passo sem gabarito.\nCONCEITO: ${input.conceptName}\nEVIDÊNCIA: ${input.sourceExcerpt}\nCRITÉRIOS: ${asJson(input.criteria)}\nPERGUNTA: ${input.prompt}\nRESPOSTA: ${input.answer}`,
       { operation: 'INITIAL_EVALUATION', maxOutputTokens: 400 },
     );
     return EvaluationSchema.parse({

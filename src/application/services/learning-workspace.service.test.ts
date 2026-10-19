@@ -27,12 +27,14 @@ const outcome: ActivityOutcome = { event: { id: 'event-1', request_id: input.req
 function repository(overrides: Partial<LearningWorkspaceRepository>): LearningWorkspaceRepository {
   const unused = async () => undefined;
   return {
-    outline: unused, relations: unused, createRelation: unused,
+    outline: unused, readingPosition: async () => ({ offset: 0 }),
+    setReadingPosition: async (_ownerId, _materialId, offset) => ({ offset }),
+    relations: unused, createRelation: unused,
     shelves: unused, createShelf: unused, deleteShelf: unused, setShelfMaterial: unused,
-    cards: unused, saveCard: unused, deleteCard: unused, goals: unused, createGoal: unused,
-    plans: unused, createPlan: unused, tasks: unused, createTask: unused, updateTask: unused,
+    cards: unused, saveCard: unused, deleteCard: unused, goals: unused, createGoal: unused, updateGoal: unused,
+    plans: unused, createPlan: unused, updatePlan: unused, reorderPlanTasks: unused, tasks: unused, createTask: unused, updateTask: unused,
     availability: unused, setAvailability: unused, desk: unused, evidence: unused,
-    contestEvidence: unused, suggestions: unused, decideSuggestion: unused,
+    contestEvidence: unused, suggestions: unused, requestRevisit: unused, decideSuggestion: unused,
     evidenceConceptName: async () => context.conceptName,
     loadActivityContext: async () => context,
     claimActivity: async () => ({ kind: 'CLAIMED', leaseToken: 'lease-1' }),
@@ -55,8 +57,9 @@ test('evaluates in the material locale and accepts the legacy en-US request hash
   expect(assess.mock.calls[0]?.[0]).toMatchObject({
     locale: 'en-US',
     prompt: 'Explain the mechanism of Dependency injection using the material.',
+    criteria: ['Explain the concept mechanism or essential conditions using the excerpt.', 'The caller chooses the implementation.'],
   });
-  expect(save.mock.calls[0]?.[1]).toMatchObject({ requestId: input.requestId, leaseToken: 'lease-1' });
+  expect(save.mock.calls[0]?.[1]).toMatchObject({ requestId: input.requestId, leaseToken: 'lease-1', promptVersion: 'activity-v2', criteria: ['Explain the concept mechanism or essential conditions using the excerpt.', 'The caller chooses the implementation.'] });
 });
 
 test('releases the owned lease when assessment fails', async () => {

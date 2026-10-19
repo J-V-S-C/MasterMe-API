@@ -6,3 +6,6 @@ coverage
 dist
 src/generated
 *.log
+dev
+deploy
+test-fixtures

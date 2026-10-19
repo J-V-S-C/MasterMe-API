@@ -1,5 +1,5 @@
 import { Router, type RequestHandler } from 'express';
-import { Id, MaterialId, ShelfMaterial, ConceptId, Name, Card, Goal, Plan, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../../schemas/learning-workspace.schema';
+import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, GoalPatch, Plan, PlanPatch, PlanTaskOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../../schemas/learning-workspace.schema';
 import { authenticate } from '../../../middleware/authenticate';
 import { bindAiUsageOwner } from '../../../middleware/ai-usage-context';
 import { aiBurstRateLimit } from '../../../middleware/rate-limit';
@@ -24,6 +24,8 @@ export function createLearningWorkspaceRouter(
     validateRequest({ params: MaterialId }),
     asyncRoute(controller.outline),
   );
+  router.get('/materials/:materialId/reading-position', validateRequest({ params: MaterialId }), asyncRoute(controller.readingPosition));
+  router.put('/materials/:materialId/reading-position', validateRequest({ params: MaterialId, body: ReadingPosition }), asyncRoute(controller.setReadingPosition));
   router.get(
     '/materials/:materialId/relations',
     validateRequest({ params: MaterialId }),
@@ -81,6 +83,7 @@ export function createLearningWorkspaceRouter(
     validateRequest({ body: Goal }),
     asyncRoute(controller.createGoal),
   );
+  router.patch('/goals/:id', validateRequest({ params: Id, body: GoalPatch }), asyncRoute(controller.updateGoal));
   router.get(
     '/plans',
     asyncRoute(controller.plans),
@@ -90,6 +93,8 @@ export function createLearningWorkspaceRouter(
     validateRequest({ body: Plan }),
     asyncRoute(controller.createPlan),
   );
+  router.patch('/plans/:id', validateRequest({ params: Id, body: PlanPatch }), asyncRoute(controller.updatePlan));
+  router.put('/plans/:id/tasks/order', validateRequest({ params: Id, body: PlanTaskOrder }), asyncRoute(controller.reorderPlanTasks));
   router.get(
     '/tasks',
     asyncRoute(controller.tasks),
@@ -142,6 +147,11 @@ export function createLearningWorkspaceRouter(
   router.get(
     '/suggestions',
     asyncRoute(controller.suggestions),
+  );
+  router.post(
+    '/evidence/:id/revisit',
+    validateRequest({ params: Id }),
+    asyncRoute(controller.requestRevisit),
   );
   router.post(
     '/suggestions/:id/decision',

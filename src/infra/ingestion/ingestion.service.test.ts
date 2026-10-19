@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Pool } from 'pg';
 import { MAX_MATERIAL_LENGTH } from '../../application/material-limits';
+import { makePdf } from '../../../scripts/generate-phase2-pdfs';
 import {
   classifyProcessingFailure,
   extractPdfText,
@@ -168,57 +169,6 @@ const uploadFile = (content: string): Express.Multer.File => ({
   path: '',
 });
 
-const buildPdf = (
-  pageCount: number,
-  text = 'Conteúdo PDF válido para teste',
-): Buffer => {
-  const chunks = text.match(/[\s\S]{1,1_000}/g) ?? [];
-  const textOperations = chunks
-    .map((chunk) => {
-      const escaped = chunk
-        .replaceAll('\\', '\\\\')
-        .replaceAll('(', '\\(')
-        .replaceAll(')', '\\)');
-      return `(${escaped}) Tj`;
-    })
-    .join('\n');
-  const content = `BT /F1 12 Tf 72 720 Td\n${textOperations}\nET`;
-  const pageIds = Array.from({ length: pageCount }, (_, index) => index + 5);
-  const objects = new Map<number, string>([
-    [1, '<< /Type /Catalog /Pages 2 0 R >>'],
-    [
-      2,
-      `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${pageCount} >>`,
-    ],
-    [
-      3,
-      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
-    ],
-    [
-      4,
-      `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
-    ],
-  ]);
-  for (const id of pageIds)
-    objects.set(
-      id,
-      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>',
-    );
-
-  let body = '%PDF-1.4\n';
-  const offsets: number[] = [0];
-  for (let id = 1; id <= pageCount + 4; id += 1) {
-    offsets[id] = Buffer.byteLength(body);
-    body += `${id} 0 obj\n${objects.get(id)}\nendobj\n`;
-  }
-  const xref = Buffer.byteLength(body);
-  body += `xref\n0 ${pageCount + 5}\n0000000000 65535 f \n`;
-  for (let id = 1; id <= pageCount + 4; id += 1)
-    body += `${String(offsets[id]).padStart(10, '0')} 00000 n \n`;
-  body += `trailer\n<< /Size ${pageCount + 5} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
-  return Buffer.from(body);
-};
-
 describe('upload guardrails', () => {
   const temporaryDirectories: string[] = [];
   afterEach(async () => {
@@ -253,8 +203,13 @@ describe('upload guardrails', () => {
 
   test('isolated PDF parser rejects excess pages before extracting text', async () => {
     await expect(
-      extractPdfText(buildPdf(MAX_PDF_PAGES + 1)),
+      extractPdfText(makePdf(Array.from({ length: MAX_PDF_PAGES + 1 }, () => ({ lines: ['Plain PDF text for testing'] })), false)),
     ).rejects.toMatchObject({ code: 'PDF_TOO_MANY_PAGES' });
+  }, 15_000);
+
+  test('PDF at the page limit remains readable within the parser bounds', async () => {
+    const text = await extractPdfText(makePdf(Array.from({ length: MAX_PDF_PAGES }, () => ({ lines: ['Plain PDF text for testing'] })), false));
+    expect(text).toContain('Plain PDF text for testing');
   }, 15_000);
 
   test('database rollback removes the file and does not commit a partial event', async () => {
