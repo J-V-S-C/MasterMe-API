@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { Worker } from 'node:worker_threads';
 import type { Pool, PoolClient } from 'pg';
 import type { MasterMeService } from '../../application/services/masterme.service';
 import { AppError, ConflictError, NotFoundError } from '../../application/errors';
@@ -13,11 +12,10 @@ import {
   deriveEditorialUnits,
   type EditorialUnit,
 } from '../parsers/editorial-structure';
+import { extractPdfDocument, MAX_PDF_PAGES } from '../parsers/poppler-pdf';
+export { extractPdfDocument, MAX_PDF_PAGES };
 
 export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
-export const MAX_PDF_PAGES = 120;
-const PDF_PARSE_TIMEOUT_MS = 15_000;
-const PDF_WORKER_MEMORY_MB = 96;
 const allowed = new Map([
   ['application/pdf', 'PDF'],
   ['text/plain', 'TXT'],
@@ -124,88 +122,6 @@ export class LocalMaterialStorage {
   }
 }
 
-type PdfWorkerResult =
-  | { ok: true; text: string; units: EditorialUnit[] }
-  | {
-      ok: false;
-      code: 'PDF_TOO_MANY_PAGES' | 'MATERIAL_TOO_LARGE' | 'INVALID_FILE';
-      message: string;
-    };
-
-export const extractPdfDocument = async (
-  data: Buffer,
-): Promise<{ text: string; units: EditorialUnit[] }> => {
-  if (!data.subarray(0, 5).equals(Buffer.from('%PDF-')))
-    throw new AppError('INVALID_FILE', 'O arquivo PDF é inválido.');
-  const worker = new Worker(
-    new URL('../../workers/pdf-text.worker.ts', import.meta.url),
-    {
-      resourceLimits: {
-        maxOldGenerationSizeMb: PDF_WORKER_MEMORY_MB,
-        maxYoungGenerationSizeMb: 16,
-        stackSizeMb: 4,
-      },
-    },
-  );
-  return await new Promise<{ text: string; units: EditorialUnit[] }>(
-    (resolve, reject) => {
-      let settled = false;
-      const finish = (callback: () => void) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        void worker.terminate();
-        callback();
-      };
-      const timeout = setTimeout(
-        () =>
-          finish(() =>
-            reject(
-              new AppError('PDF_PARSE_TIMEOUT',
-                'O PDF demorou demais para ser processado. Divida o arquivo e tente novamente.',
-              ),
-            ),
-          ),
-        PDF_PARSE_TIMEOUT_MS,
-      );
-      timeout.unref();
-      worker.once('message', (result: PdfWorkerResult) =>
-        finish(() => {
-          if (result.ok) resolve({ text: result.text, units: result.units });
-          else
-            reject(
-              new AppError(
-                result.code,
-                result.message,
-              ),
-            );
-        }),
-      );
-      worker.once('error', () =>
-        finish(() =>
-          reject(
-            new AppError('INVALID_FILE', 'Não foi possível ler o PDF.'),
-          ),
-        ),
-      );
-      worker.once('exit', (code) => {
-        if (code !== 0)
-          finish(() =>
-            reject(
-              new AppError('INVALID_FILE',
-                'Não foi possível ler o PDF com segurança.',
-              ),
-            ),
-          );
-      });
-      worker.postMessage({
-        data,
-        maxPages: MAX_PDF_PAGES,
-        maxCharacters: MAX_MATERIAL_LENGTH,
-      });
-    },
-  );
-};
 export const extractPdfText = async (data: Buffer): Promise<string> =>
   (await extractPdfDocument(data)).text;
 
@@ -489,7 +405,7 @@ export class IngestionService {
   }
   public async status(id: string): Promise<object> {
     const result = await this.pool.query(
-      'SELECT m.id,m.processing_status AS status,m.processing_error AS error,m.processed_at AS "processedAt",j.id AS "jobId",j.stage,j.total_chunks AS "totalChunks",j.completed_chunks AS "completedChunks",j.progress_percent AS "progressPercent",j.attempts,j.started_at AS "startedAt",j.finished_at AS "finishedAt" FROM study_materials m LEFT JOIN LATERAL (SELECT * FROM processing_jobs WHERE material_id=m.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE m.id=$1',
+      'SELECT m.id,m.processing_status AS status,m.processing_error AS error,m.processed_at AS "processedAt",m.active_extraction_job_id AS "activeExtractionJobId",j.id AS "jobId",j.stage,j.total_chunks AS "totalChunks",j.completed_chunks AS "completedChunks",j.progress_percent AS "progressPercent",j.attempts,j.started_at AS "startedAt",j.finished_at AS "finishedAt" FROM study_materials m LEFT JOIN LATERAL (SELECT * FROM processing_jobs WHERE material_id=m.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE m.id=$1',
       [id],
     );
     if (!result.rows[0]) throw new NotFoundError('Material');
@@ -636,16 +552,8 @@ export class ProcessingWorker {
               );
           },
           async () => this.isActive(job!.id),
+          job.id,
         ),
-      );
-      const completed = await this.pool.query(
-        "UPDATE processing_jobs SET status='DONE',stage='READY',progress_percent=100,finished_at=now(),updated_at=now() WHERE id=$1 AND status='PROCESSING' RETURNING id",
-        [job.id],
-      );
-      if (!completed.rows[0]) return true;
-      await this.pool.query(
-        "UPDATE study_materials SET processing_status='READY',processed_at=now(),processing_error=NULL WHERE id=$1",
-        [job.material_id],
       );
       await this.ingestion.event(
         'material.ready',

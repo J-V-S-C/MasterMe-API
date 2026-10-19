@@ -1,7 +1,7 @@
 import type { RequestHandler } from 'express';
 import { z } from 'zod';
 import { getValidated } from '../../middleware/validate-request';
-import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, Plan, PlanPatch, PlanTaskOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../schemas/learning-workspace.schema';
+import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, GoalPatch, Plan, PlanPatch, PlanTaskOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../schemas/learning-workspace.schema';
 import type { LearningWorkspaceService } from '../../application/services/learning-workspace.service';
 
 const owner = (value: unknown): string => z.uuid().parse(value);
@@ -119,6 +119,18 @@ export class LearningWorkspaceController {
               : undefined,
           }),
         });
+    };
+  public readonly updateGoal: RequestHandler = async (_req, res) => {
+      const value = getValidated(res, 'body', GoalPatch);
+      res.json({ data: await this.service.updateGoal(
+        owner(res.locals.userId),
+        getValidated(res, 'params', Id).id,
+        {
+          title: value.title,
+          description: value.description,
+          deadline: value.deadline === undefined ? undefined : value.deadline === null ? null : new Date(`${value.deadline}T00:00:00Z`),
+        },
+      ) });
     };
   public readonly plans: RequestHandler = async (_req, res) => {
       res.json({ data: await this.service.plans(owner(res.locals.userId)) });
@@ -247,12 +259,16 @@ export class LearningWorkspaceController {
   public readonly suggestions: RequestHandler = async (_req, res) => {
       res.json({ data: await this.service.suggestions(owner(res.locals.userId)) });
     };
+  public readonly requestRevisit: RequestHandler = async (_req, res) => {
+      res.json({ data: await this.service.requestRevisit(owner(res.locals.userId), getValidated(res, 'params', Id).id) });
+    };
   public readonly decideSuggestion: RequestHandler = async (_req, res) => {
+      const value = getValidated(res, 'body', Decision);
       res.json({
         data: await this.service.decideSuggestion(
           owner(res.locals.userId),
           getValidated(res, 'params', Id).id,
-          getValidated(res, 'body', Decision).decision,
+          { ...value, scheduledAt: value.scheduledAt ? new Date(value.scheduledAt) : undefined },
         ),
       });
     };

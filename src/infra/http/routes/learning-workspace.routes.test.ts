@@ -187,6 +187,23 @@ describe('learning workspace routes', () => {
     });
   });
 
+  test('validates editable goals and converts a cleared deadline', async () => {
+    const calls: unknown[][] = [];
+    await withServer({ updateGoal: async (...args: unknown[]) => {
+      calls.push(args);
+      return { id: materialId, title: 'Updated goal', deadline: null };
+    } }, async (baseUrl) => {
+      expect((await fetch(`${baseUrl}/goals/${materialId}`, json('PATCH', {}))).status).toBe(400);
+      expect((await fetch(`${baseUrl}/goals/${materialId}`, json('PATCH', { deadline: 'invalid' }))).status).toBe(400);
+      expect(calls).toHaveLength(0);
+      const updated = await fetch(`${baseUrl}/goals/${materialId}`, json('PATCH', { title: 'Updated goal', deadline: null }));
+      expect(updated.status).toBe(200);
+      expect(calls[0]?.[0]).toBe(ownerId);
+      expect(calls[0]?.[1]).toBe(materialId);
+      expect(calls[0]?.[2]).toMatchObject({ title: 'Updated goal', deadline: null });
+    });
+  });
+
   test('validates AI answers and suggestion decisions before calling the service', async () => {
     const answerCalls: unknown[][] = [];
     const decisionCalls: unknown[][] = [];
@@ -211,16 +228,50 @@ describe('learning workspace routes', () => {
       }));
       expect(answer.status).toBe(201);
       expect(answerCalls[0]?.[1]).toMatchObject({ requestId, assisted: false });
+      const unassistedHint = await fetch(`${baseUrl}/activities/answers`, json('POST', {
+        requestId, activityType: 'APPLICATION', answer: 'A sufficiently detailed application answer.',
+        hintsUsed: ['Consulted the source'], assisted: false,
+      }));
+      expect(unassistedHint.status).toBe(400);
+      expect(answerCalls).toHaveLength(1);
+      const linked = await fetch(`${baseUrl}/activities/answers`, json('POST', {
+        requestId, activityType: 'APPLICATION', answer: 'A sufficiently detailed application answer.',
+        hintsUsed: ['Consulted the source'], assisted: true, previousEvidenceId: materialId,
+      }));
+      expect(linked.status).toBe(201);
+      expect(answerCalls[1]?.[1]).toMatchObject({ assisted: true, hintsUsed: ['Consulted the source'], previousEvidenceId: materialId });
 
       const invalidDecision = await fetch(`${baseUrl}/suggestions/${suggestionId}/decision`,
         json('POST', { decision: 'DONE' }));
       expect(invalidDecision.status).toBe(400);
+      const invalidEdit = await fetch(`${baseUrl}/suggestions/${suggestionId}/decision`,
+        json('POST', { decision: 'IGNORED', title: 'Unexpected edit' }));
+      expect(invalidEdit.status).toBe(400);
       expect(decisionCalls).toHaveLength(0);
 
       const accepted = await fetch(`${baseUrl}/suggestions/${suggestionId}/decision`,
-        json('POST', { decision: 'ACCEPTED' }));
+        json('POST', { decision: 'ACCEPTED', title: 'Review mechanism', durationMinutes: 40 }));
       expect(accepted.status).toBe(200);
-      expect(decisionCalls).toEqual([[ownerId, suggestionId, 'ACCEPTED']]);
+      expect(decisionCalls).toEqual([[ownerId, suggestionId, {
+        decision: 'ACCEPTED', title: 'Review mechanism', durationMinutes: 40,
+      }]]);
+    });
+  });
+
+  test('routes a revisit request only for a valid evidence id', async () => {
+    const calls: unknown[][] = [];
+    await withServer({
+      requestRevisit: async (...args: unknown[]) => {
+        calls.push(args);
+        return { id: suggestionId, status: 'PENDING' };
+      },
+    }, async (baseUrl) => {
+      expect((await fetch(`${baseUrl}/evidence/invalid/revisit`, { method: 'POST' })).status).toBe(400);
+      expect(calls).toHaveLength(0);
+      const response = await fetch(`${baseUrl}/evidence/${requestId}/revisit`, { method: 'POST' });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ data: { id: suggestionId, status: 'PENDING' } });
+      expect(calls).toEqual([[ownerId, requestId]]);
     });
   });
 });

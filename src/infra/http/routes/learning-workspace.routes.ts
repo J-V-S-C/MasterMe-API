@@ -1,5 +1,5 @@
 import { Router, type RequestHandler } from 'express';
-import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, Plan, PlanPatch, PlanTaskOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../../schemas/learning-workspace.schema';
+import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, GoalPatch, Plan, PlanPatch, PlanTaskOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../../schemas/learning-workspace.schema';
 import { authenticate } from '../../../middleware/authenticate';
 import { bindAiUsageOwner } from '../../../middleware/ai-usage-context';
 import { aiBurstRateLimit } from '../../../middleware/rate-limit';
@@ -83,6 +83,7 @@ export function createLearningWorkspaceRouter(
     validateRequest({ body: Goal }),
     asyncRoute(controller.createGoal),
   );
+  router.patch('/goals/:id', validateRequest({ params: Id, body: GoalPatch }), asyncRoute(controller.updateGoal));
   router.get(
     '/plans',
     asyncRoute(controller.plans),
@@ -146,6 +147,11 @@ export function createLearningWorkspaceRouter(
   router.get(
     '/suggestions',
     asyncRoute(controller.suggestions),
+  );
+  router.post(
+    '/evidence/:id/revisit',
+    validateRequest({ params: Id }),
+    asyncRoute(controller.requestRevisit),
   );
   router.post(
     '/suggestions/:id/decision',

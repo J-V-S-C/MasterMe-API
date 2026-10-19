@@ -234,10 +234,12 @@ model concept_confidences {
 model concepts {
   id                   String               @id @db.Uuid
   material_id          String               @db.Uuid
+  extraction_job_id    String?              @db.Uuid
   name                 String               @db.VarChar(160)
   description          String
   kind                 String               @db.VarChar(16)
   source_excerpt       String
+  source_offset        Int?
   fundamental_premises Json
   edge_cases           Json
   prerequisite_ids     Json
@@ -318,6 +320,7 @@ model processing_jobs {
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model study_materials {
   id                  String                @id @db.Uuid
+  active_extraction_job_id String?          @db.Uuid
   title               String                @db.VarChar(160)
   content             String
   created_at          DateTime              @db.Timestamptz(6)
@@ -391,12 +394,14 @@ model material_units {
 model concept_relations {
   id String @id @db.Uuid
   material_id String @db.Uuid
+  extraction_job_id String? @db.Uuid
   from_concept_id String @db.Uuid
   to_concept_id String @db.Uuid
   relation_type String
   statement String
   justification String
   source_excerpt String
+  source_offset Int?
   provenance String
   created_at DateTime @default(now()) @db.Timestamptz(6)
   study_materials study_materials @relation(fields: [material_id], references: [id], onDelete: Cascade)
@@ -525,11 +530,16 @@ model learning_evidence {
   task_id String? @db.Uuid
   activity_type String
   prompt String
+  prompt_version String @default("legacy")
+  criteria Json @default("[]")
+  hints_used Json @default("[]")
+  previous_evidence_id String? @db.Uuid
   answer String
   status String
   assisted Boolean @default(false)
   diagnosis String @default("")
   source_excerpt String
+  source_offset Int?
   request_id String? @db.Uuid
   created_at DateTime @default(now()) @db.Timestamptz(6)
   users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
@@ -540,8 +550,10 @@ model learning_evidence {
   study_suggestions study_suggestions[]
   evidence_contestations evidence_contestations[]
   activity_requests activity_requests[]
+  @@unique([id, owner_id, material_id], map: "learning_evidence_id_owner_material_key")
   @@unique([owner_id, request_id], map: "learning_evidence_request_idx")
   @@index([owner_id, created_at(sort: Desc)], map: "learning_evidence_owner_created_idx")
+  @@index([previous_evidence_id], map: "learning_evidence_previous_idx", where: raw("(previous_evidence_id IS NOT NULL)"))
   @@schema("public")
 }
 

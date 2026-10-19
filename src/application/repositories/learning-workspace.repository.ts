@@ -1,6 +1,6 @@
 import type { suggestNextAction } from '../domain/learning-cycle';
 import type { SupportedLocale } from '../domain/material';
-import type { ActivityInput, EvidenceInput, GoalInput, PlanInput, PlanUpdate, RelationInput, SuggestionDecision, TaskInput, TaskUpdate } from '../contracts/learning-workspace.service';
+import type { ActivityInput, EvidenceInput, GoalInput, GoalUpdate, PlanInput, PlanUpdate, RelationInput, SuggestionDecision, TaskInput, TaskUpdate } from '../contracts/learning-workspace.service';
 
 export interface ActivityOutcome {
   event: { id: string; request_id: string | null };
@@ -14,6 +14,7 @@ export interface ActivityContext {
   conceptId?: string;
   conceptName: string;
   sourceExcerpt: string;
+  sourceOffset?: number;
   criteria: string[];
   studyQuestion?: string;
   relation?: { sourceName: string; targetName: string };
@@ -39,6 +40,7 @@ export interface LearningWorkspaceRepository {
   deleteCard(ownerId: string, conceptId: string): Promise<void>;
   goals(ownerId: string): Promise<unknown>;
   createGoal(ownerId: string, input: GoalInput): Promise<unknown>;
+  updateGoal(ownerId: string, id: string, input: GoalUpdate): Promise<unknown>;
   plans(ownerId: string): Promise<unknown>;
   createPlan(ownerId: string, input: PlanInput): Promise<unknown>;
   updatePlan(ownerId: string, id: string, input: PlanUpdate): Promise<unknown>;
@@ -57,5 +59,6 @@ export interface LearningWorkspaceRepository {
   claimActivity(ownerId: string, requestId: string, inputHash: string, legacyHash?: string): Promise<ActivityClaim>;
   releaseActivity(ownerId: string, requestId: string, leaseToken: string): Promise<void>;
   suggestions(ownerId: string): Promise<unknown>;
+  requestRevisit(ownerId: string, evidenceId: string): Promise<unknown>;
   decideSuggestion(ownerId: string, id: string, decision: SuggestionDecision): Promise<unknown>;
 }

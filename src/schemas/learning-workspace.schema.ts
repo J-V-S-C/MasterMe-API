@@ -12,6 +12,11 @@ export const Goal = z.object({
   description: z.string().max(2000).default(''),
   deadline: z.iso.date().optional(),
 });
+export const GoalPatch = z.object({
+  title: z.string().trim().min(1).max(160).optional(),
+  description: z.string().max(2000).optional(),
+  deadline: z.iso.date().nullable().optional(),
+}).refine((value) => Object.keys(value).length > 0);
 export const Plan = z.object({
   title: z.string().trim().min(1).max(160),
   goalId: z.uuid().optional(),
@@ -61,6 +66,7 @@ export const Relation = z.object({
   statement: z.string().trim().min(5).max(500),
   justification: z.string().trim().min(5).max(1000),
   sourceExcerpt: z.string().min(1).max(3000),
+  sourceOffset: z.number().int().nonnegative().optional(),
 });
 export const Evidence = z.object({
   materialId: z.uuid(),
@@ -77,8 +83,14 @@ export const Evidence = z.object({
   answer: z.string().trim().min(5).max(20_000),
   status: z.literal('SELF_REPORTED'),
   assisted: z.boolean().default(false),
+  hintsUsed: z.array(z.string().trim().min(1).max(200)).max(10).default([]),
+  previousEvidenceId: z.uuid().optional(),
   diagnosis: z.literal('').default(''),
   sourceExcerpt: z.string().min(1).max(3000),
+  sourceOffset: z.number().int().nonnegative().optional(),
+}).refine((value) => value.hintsUsed.length === 0 || value.assisted, {
+  message: 'Pistas usadas exigem atividade assistida.',
+  path: ['assisted'],
 });
 export const ActivityAnswer = z.object({
   requestId: z.uuid(),
@@ -93,8 +105,21 @@ export const ActivityAnswer = z.object({
   ]),
   answer: z.string().trim().min(20).max(20_000),
   assisted: z.boolean().default(false),
+  hintsUsed: z.array(z.string().trim().min(1).max(200)).max(10).default([]),
+  previousEvidenceId: z.uuid().optional(),
+}).refine((value) => value.hintsUsed.length === 0 || value.assisted, {
+  message: 'Pistas usadas exigem atividade assistida.',
+  path: ['assisted'],
 });
-export const Decision = z.object({ decision: z.enum(['ACCEPTED', 'IGNORED']) });
+export const Decision = z.object({
+  decision: z.enum(['ACCEPTED', 'IGNORED']),
+  title: z.string().trim().min(1).max(160).optional(),
+  durationMinutes: z.number().int().min(1).max(480).optional(),
+  scheduledAt: z.iso.datetime({ offset: true }).optional(),
+  planId: z.uuid().optional(),
+}).refine((value) => value.decision === 'ACCEPTED' ||
+  (value.title === undefined && value.durationMinutes === undefined &&
+    value.scheduledAt === undefined && value.planId === undefined));
 export const Contestation = z.object({ reason: z.string().trim().min(5).max(2000) });
 export const Timezone = z
   .string()

@@ -9,6 +9,7 @@ export interface Concept {
   description: string;
   kind: FragmentKind;
   sourceExcerpt: string;
+  sourceOffset?: number;
   fundamentalPremises: string[];
   edgeCases: string[];
   edgeCaseQuestion?: string;
@@ -26,6 +27,7 @@ export interface ConceptRelation {
   statement: string;
   justification: string;
   sourceExcerpt: string;
+  sourceOffset?: number;
   provenance: 'EXTRACTED' | 'STUDENT';
 }
 export interface ConceptConfidence {

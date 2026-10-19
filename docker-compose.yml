@@ -1,59 +1,88 @@
 services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Defina POSTGRES_DB em .env.development}
+      POSTGRES_USER: ${POSTGRES_USER:?Defina POSTGRES_USER em .env.development}
+      POSTGRES_HOST_AUTH_METHOD: ${POSTGRES_HOST_AUTH_METHOD:?Defina POSTGRES_HOST_AUTH_METHOD em .env.development}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:?Defina POSTGRES_PORT em .env.development}:5432"
+    volumes:
+      - postgres_dev:/var/lib/postgresql/data
+      - ./dev/postgres-init.sql:/docker-entrypoint-initdb.d/01-auth.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  test-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${TEST_POSTGRES_DB:?Defina TEST_POSTGRES_DB em .env.development}
+      POSTGRES_USER: ${TEST_POSTGRES_USER:?Defina TEST_POSTGRES_USER em .env.development}
+      POSTGRES_HOST_AUTH_METHOD: ${POSTGRES_HOST_AUTH_METHOD:?Defina POSTGRES_HOST_AUTH_METHOD em .env.development}
+    ports:
+      - "127.0.0.1:${TEST_POSTGRES_PORT:?Defina TEST_POSTGRES_PORT em .env.development}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   api:
     build: .
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
     mem_limit: 384m
     pids_limit: 256
-    environment:
-      PORT: 3333
-      DATABASE_URL: ${DATABASE_URL:?Configure a Session pooler URL do Supabase}
-      SUPABASE_URL: ${SUPABASE_URL:?Configure SUPABASE_URL}
-      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-3}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:?Configure GEMINI_API_KEY no ambiente}
-      MODEL_NAME: ${MODEL_NAME:-gemini-3.5-flash-lite}
-      GEMINI_MODEL_FALLBACKS: ${GEMINI_MODEL_FALLBACKS:-gemini-3.5-flash}
-      EXTRACTION_MAX_CONCEPTS: ${EXTRACTION_MAX_CONCEPTS:-12}
-      MATERIAL_STORAGE_PATH: /app/data/materials
-      EXTRACTION_CONCURRENCY: ${EXTRACTION_CONCURRENCY:-1}
-      AI_DAILY_REQUEST_LIMIT: ${AI_DAILY_REQUEST_LIMIT:-100}
-      AI_CREDITS_ENABLED: ${AI_CREDITS_ENABLED:-true}
-      AI_GLOBAL_DAILY_CREDIT_LIMIT: ${AI_GLOBAL_DAILY_CREDIT_LIMIT:-240}
-      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
-      INFINITEPAY_HANDLE: ${INFINITEPAY_HANDLE:-}
-      INFINITEPAY_TIMEOUT_MS: ${INFINITEPAY_TIMEOUT_MS:-5000}
-      METRICS_BEARER_TOKEN: ${METRICS_BEARER_TOKEN:-}
-      OBSERVABILITY_DB_TIMEOUT_MS: ${OBSERVABILITY_DB_TIMEOUT_MS:-1000}
+    environment: &dev-environment
+      NODE_ENV: ${NODE_ENV:?Defina NODE_ENV em .env.development}
+      PORT: ${PORT:?Defina PORT em .env.development}
+      DATABASE_URL: ${DEV_DATABASE_URL:?Defina DEV_DATABASE_URL em .env.development}
+      DEV_DATABASE_URL: ${DEV_DATABASE_URL:?Defina DEV_DATABASE_URL em .env.development}
+      SUPABASE_URL: ${SUPABASE_URL:?Defina SUPABASE_URL no .env privado}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:?Defina DATABASE_POOL_MAX em .env.development}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?Defina GEMINI_API_KEY no .env privado}
+      MODEL_NAME: ${MODEL_NAME:?Defina MODEL_NAME em .env.development}
+      GEMINI_MODEL_FALLBACKS: ${GEMINI_MODEL_FALLBACKS:?Defina GEMINI_MODEL_FALLBACKS em .env.development}
+      EXTRACTION_MAX_CONCEPTS: ${EXTRACTION_MAX_CONCEPTS:?Defina EXTRACTION_MAX_CONCEPTS em .env.development}
+      MATERIAL_STORAGE_PATH: ${MATERIAL_STORAGE_PATH:?Defina MATERIAL_STORAGE_PATH em .env.development}
+      EXTRACTION_CONCURRENCY: ${EXTRACTION_CONCURRENCY:?Defina EXTRACTION_CONCURRENCY em .env.development}
+      AI_DAILY_REQUEST_LIMIT: ${AI_DAILY_REQUEST_LIMIT:?Defina AI_DAILY_REQUEST_LIMIT em .env.development}
+      AI_CREDITS_ENABLED: ${AI_CREDITS_ENABLED:?Defina AI_CREDITS_ENABLED em .env.development}
+      AI_GLOBAL_DAILY_CREDIT_LIMIT: ${AI_GLOBAL_DAILY_CREDIT_LIMIT:?Defina AI_GLOBAL_DAILY_CREDIT_LIMIT em .env.development}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:?Defina PUBLIC_APP_URL em .env.development}
+      INFINITEPAY_HANDLE: ""
+      INFINITEPAY_TIMEOUT_MS: ${INFINITEPAY_TIMEOUT_MS:?Defina INFINITEPAY_TIMEOUT_MS em .env.development}
+      METRICS_BEARER_TOKEN: ""
+      OBSERVABILITY_DB_TIMEOUT_MS: ${OBSERVABILITY_DB_TIMEOUT_MS:?Defina OBSERVABILITY_DB_TIMEOUT_MS em .env.development}
     ports:
-      - "3333:3333"
+      - "127.0.0.1:${PORT:?Defina PORT em .env.development}:${PORT:?Defina PORT em .env.development}"
     volumes:
       - material_uploads:/app/data/materials
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:' + process.env.PORT + '/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
 
   worker:
     build: .
     command: ["bun", "server.ts", "--worker"]
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
     mem_limit: 256m
     pids_limit: 256
-    environment:
-      DATABASE_URL: ${DATABASE_URL:?Configure a Session pooler URL do Supabase}
-      SUPABASE_URL: ${SUPABASE_URL:?Configure SUPABASE_URL}
-      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-3}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:?Configure GEMINI_API_KEY no ambiente}
-      MODEL_NAME: ${MODEL_NAME:-gemini-3.5-flash-lite}
-      GEMINI_MODEL_FALLBACKS: ${GEMINI_MODEL_FALLBACKS:-gemini-3.5-flash}
-      EXTRACTION_MAX_CONCEPTS: ${EXTRACTION_MAX_CONCEPTS:-12}
-      MATERIAL_STORAGE_PATH: /app/data/materials
-      EXTRACTION_CONCURRENCY: ${EXTRACTION_CONCURRENCY:-1}
-      AI_DAILY_REQUEST_LIMIT: ${AI_DAILY_REQUEST_LIMIT:-100}
-      AI_CREDITS_ENABLED: ${AI_CREDITS_ENABLED:-true}
-      AI_GLOBAL_DAILY_CREDIT_LIMIT: ${AI_GLOBAL_DAILY_CREDIT_LIMIT:-240}
-      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
-      INFINITEPAY_HANDLE: ${INFINITEPAY_HANDLE:-}
-      INFINITEPAY_TIMEOUT_MS: ${INFINITEPAY_TIMEOUT_MS:-5000}
-      METRICS_BEARER_TOKEN: ${METRICS_BEARER_TOKEN:-}
-      OBSERVABILITY_DB_TIMEOUT_MS: ${OBSERVABILITY_DB_TIMEOUT_MS:-1000}
+    environment: *dev-environment
     volumes:
       - material_uploads:/app/data/materials
 
 volumes:
+  postgres_dev:
   material_uploads:

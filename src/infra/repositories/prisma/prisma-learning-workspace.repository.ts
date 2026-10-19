@@ -10,6 +10,7 @@ import {
 import { ConflictError, NotFoundError } from '../../../application/errors';
 import type { ActivityContext, ActivityClaim, EvidenceSuggestion } from '../../../application/repositories/learning-workspace.repository';
 import type { ActivityInput } from '../../../application/contracts/learning-workspace.service';
+import type { SuggestionDecision } from '../../../application/contracts/learning-workspace.service';
 
 export class PrismaLearningWorkspaceRepository {
   public constructor(private readonly db: PrismaClient) {}
@@ -85,9 +86,9 @@ export class PrismaLearningWorkspaceRepository {
   }
 
   public async relations(ownerId: string, materialId: string) {
-    await this.ownedMaterial(ownerId, materialId);
+    const material = await this.ownedMaterial(ownerId, materialId);
     return this.db.concept_relations.findMany({
-      where: { material_id: materialId },
+      where: { material_id: materialId, extraction_job_id: material.active_extraction_job_id },
       orderBy: { created_at: 'asc' },
     });
   }
@@ -107,15 +108,21 @@ export class PrismaLearningWorkspaceRepository {
       statement: string;
       justification: string;
       sourceExcerpt: string;
+      sourceOffset?: number;
     },
   ) {
     const material = await this.ownedMaterial(ownerId, input.materialId);
     if (!material.content.includes(input.sourceExcerpt))
       throw new ConflictError('O trecho da relação não pertence ao material.');
+    if (input.sourceOffset !== undefined && material.content.slice(input.sourceOffset, input.sourceOffset + input.sourceExcerpt.length) !== input.sourceExcerpt)
+      throw new ConflictError('A posição da relação não corresponde ao trecho.');
+    const firstOffset = material.content.indexOf(input.sourceExcerpt);
+    const sourceOffset = input.sourceOffset ?? (material.content.indexOf(input.sourceExcerpt, firstOffset + 1) < 0 ? firstOffset : undefined);
     const concepts = await this.db.concepts.findMany({
       where: {
         id: { in: [input.fromConceptId, input.toConceptId] },
         material_id: material.id,
+        extraction_job_id: material.active_extraction_job_id,
       },
       select: { id: true },
     });
@@ -135,12 +142,14 @@ export class PrismaLearningWorkspaceRepository {
       create: {
         id: randomUUID(),
         material_id: material.id,
+        extraction_job_id: material.active_extraction_job_id,
         from_concept_id: input.fromConceptId,
         to_concept_id: input.toConceptId,
         relation_type: input.relationType,
         statement: input.statement,
         justification: input.justification,
         source_excerpt: input.sourceExcerpt,
+        source_offset: sourceOffset ?? null,
         provenance: 'STUDENT',
       },
       update: {},
@@ -238,6 +247,18 @@ export class PrismaLearningWorkspaceRepository {
       data: { id: randomUUID(), owner_id: ownerId, ...input },
     });
   }
+  public async updateGoal(
+    ownerId: string,
+    id: string,
+    input: { title?: string; description?: string; deadline?: Date | null },
+  ) {
+    const updated = await this.db.learning_goals.updateMany({
+      where: { id, owner_id: ownerId },
+      data: input,
+    });
+    if (!updated.count) throw new NotFoundError('Objetivo');
+    return this.db.learning_goals.findFirstOrThrow({ where: { id, owner_id: ownerId } });
+  }
   public plans(ownerId: string) {
     return this.db.study_plans.findMany({
       where: { owner_id: ownerId },
@@ -331,6 +352,9 @@ export class PrismaLearningWorkspaceRepository {
   public tasks(ownerId: string) {
     return this.db.study_tasks.findMany({
       where: { owner_id: ownerId },
+      include: { study_suggestions: { select: { learning_evidence: {
+        select: { id: true, prompt: true, diagnosis: true, source_excerpt: true, source_offset: true, status: true, created_at: true },
+      } } } },
       orderBy: [{ scheduled_at: 'asc' }, { created_at: 'asc' }],
     });
   }
@@ -519,8 +543,13 @@ export class PrismaLearningWorkspaceRepository {
       answer: string;
       status: EvidenceStatus;
       assisted: boolean;
+      hintsUsed?: string[];
+      previousEvidenceId?: string;
+      promptVersion?: string;
+      criteria?: string[];
       diagnosis: string;
       sourceExcerpt: string;
+      sourceOffset?: number;
       requestId?: string;
       leaseToken?: string;
     },
@@ -529,6 +558,8 @@ export class PrismaLearningWorkspaceRepository {
     const material = await this.ownedMaterial(ownerId, input.materialId);
     if (!material.content.includes(input.sourceExcerpt))
       throw new ConflictError('A evidência não pertence ao material.');
+    if (input.sourceOffset !== undefined && material.content.slice(input.sourceOffset, input.sourceOffset + input.sourceExcerpt.length) !== input.sourceExcerpt)
+      throw new ConflictError('A posição da evidência não corresponde ao trecho.');
     if (input.conceptId) {
       const concept = await this.db.concepts.findFirst({
         where: { id: input.conceptId, material_id: material.id },
@@ -553,6 +584,19 @@ export class PrismaLearningWorkspaceRepository {
       )
         throw new NotFoundError('Tarefa');
     }
+    if (input.previousEvidenceId) {
+      const previous = await this.db.learning_evidence.findFirst({
+        where: {
+          id: input.previousEvidenceId,
+          owner_id: ownerId,
+          material_id: input.materialId,
+          activity_type: input.activityType,
+          concept_id: input.conceptId ?? null,
+          relation_id: input.relationId ?? null,
+        },
+      });
+      if (!previous) throw new NotFoundError('Tentativa anterior');
+    }
     return this.db.$transaction(async (tx) => {
       const event = await tx.learning_evidence.create({
         data: {
@@ -564,11 +608,16 @@ export class PrismaLearningWorkspaceRepository {
           task_id: input.taskId ?? null,
           activity_type: input.activityType,
           prompt: input.prompt,
+          prompt_version: input.promptVersion ?? 'self-report-v1',
+          criteria: input.criteria ?? [],
+          hints_used: input.hintsUsed ?? [],
+          previous_evidence_id: input.previousEvidenceId ?? null,
           answer: input.answer,
           status: input.status,
           assisted: input.assisted,
           diagnosis: input.diagnosis,
           source_excerpt: input.sourceExcerpt,
+          source_offset: input.sourceOffset ?? null,
           request_id: input.requestId ?? null,
         },
       });
@@ -607,6 +656,7 @@ export class PrismaLearningWorkspaceRepository {
     let conceptId = input.conceptId;
     let conceptName: string;
     let sourceExcerpt: string;
+    let sourceOffset: number | undefined;
     let criteria: string[];
     let studyQuestion: string | undefined;
     let relation: { sourceName: string; targetName: string } | undefined;
@@ -623,6 +673,7 @@ export class PrismaLearningWorkspaceRepository {
       conceptId = row.from_concept_id;
       conceptName = `${row.source.name} → ${row.target.name}`;
       sourceExcerpt = row.source_excerpt;
+      sourceOffset = row.source_offset ?? undefined;
       criteria = [row.statement, row.justification];
       relation = { sourceName: row.source.name, targetName: row.target.name };
     } else {
@@ -633,6 +684,7 @@ export class PrismaLearningWorkspaceRepository {
       materialId = row.material_id;
       conceptName = row.name;
       sourceExcerpt = row.source_excerpt;
+      sourceOffset = row.source_offset ?? undefined;
       criteria = Array.isArray(row.fundamental_premises)
         ? row.fundamental_premises.filter((item): item is string => typeof item === 'string')
         : [];
@@ -651,6 +703,7 @@ export class PrismaLearningWorkspaceRepository {
       conceptId,
       conceptName,
       sourceExcerpt,
+      sourceOffset,
       criteria,
       studyQuestion,
       relation,
@@ -727,20 +780,60 @@ export class PrismaLearningWorkspaceRepository {
       include: {
         learning_evidence: {
           select: {
+            id: true,
             material_id: true,
+            prompt: true,
+            diagnosis: true,
             source_excerpt: true,
+            source_offset: true,
             activity_type: true,
             status: true,
+            created_at: true,
           },
         },
       },
       orderBy: { created_at: 'desc' },
     });
   }
+  public async requestRevisit(ownerId: string, evidenceId: string) {
+    return this.db.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM learning_evidence WHERE id=${evidenceId}::uuid AND owner_id=${ownerId}::uuid FOR UPDATE
+      `;
+      if (!rows.length) throw new NotFoundError('Evidência');
+      const evidence = await tx.learning_evidence.findUniqueOrThrow({
+        where: { id: evidenceId }, include: { study_materials: { select: { locale: true } } },
+      });
+      const existing = await tx.study_suggestions.findUnique({
+        where: { owner_id_evidence_id: { owner_id: ownerId, evidence_id: evidenceId } },
+      });
+      if (existing) {
+        if (existing.status === 'IGNORED') return tx.study_suggestions.update({
+          where: { id: existing.id }, data: { status: 'PENDING' },
+        });
+        return existing;
+      }
+      const concept = evidence.concept_id
+        ? await tx.concepts.findUnique({ where: { id: evidence.concept_id }, select: { name: true } })
+        : null;
+      return tx.study_suggestions.create({
+        data: {
+          id: randomUUID(), owner_id: ownerId, evidence_id: evidenceId,
+          concept_id: evidence.concept_id,
+          title: evidence.study_materials.locale === 'en-US'
+            ? `Revisit ${concept?.name ?? 'material'}`
+            : `Retomar ${concept?.name ?? 'material'}`,
+          reason: evidence.study_materials.locale === 'en-US'
+            ? 'You requested a revisit of this attempt and its source.'
+            : 'Retomada solicitada por você para revisitar esta tentativa e sua fonte.',
+        },
+      });
+    });
+  }
   public async decideSuggestion(
     ownerId: string,
     id: string,
-    decision: 'ACCEPTED' | 'IGNORED',
+    input: SuggestionDecision,
   ) {
     return this.db.$transaction(async (tx) => {
       const suggestion = await tx.study_suggestions.findFirst({
@@ -749,13 +842,19 @@ export class PrismaLearningWorkspaceRepository {
       });
       if (!suggestion) throw new NotFoundError('Sugestão');
       if (suggestion.status !== 'PENDING') return suggestion;
+      if (input.planId) {
+        const owned = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM study_plans WHERE id=${input.planId}::uuid AND owner_id=${ownerId}::uuid FOR UPDATE
+        `;
+        if (!owned.length) throw new NotFoundError('Roteiro');
+      }
       const claimed = await tx.study_suggestions.updateMany({
         where: { id, owner_id: ownerId, status: 'PENDING' },
-        data: { status: decision },
+        data: { status: input.decision },
       });
       if (!claimed.count)
         return tx.study_suggestions.findUniqueOrThrow({ where: { id } });
-      if (decision === 'IGNORED')
+      if (input.decision === 'IGNORED')
         return tx.study_suggestions.findUniqueOrThrow({ where: { id } });
       const task = await tx.study_tasks.create({
         data: {
@@ -763,7 +862,10 @@ export class PrismaLearningWorkspaceRepository {
           owner_id: ownerId,
           material_id: suggestion.learning_evidence.material_id,
           concept_id: suggestion.concept_id,
-          title: suggestion.title,
+          title: input.title ?? suggestion.title,
+          plan_id: input.planId ?? null,
+          duration_minutes: input.durationMinutes ?? null,
+          scheduled_at: input.scheduledAt ?? null,
           activity_type: 'REVISIT',
           reason: suggestion.reason,
         },
