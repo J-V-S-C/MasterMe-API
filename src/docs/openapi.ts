@@ -81,7 +81,7 @@ export const openApiDocument = {
       },
     },
     '/api/materials/upload': {
-      post: { summary: 'Envia PDF, Markdown ou TXT para processamento assíncrono', description: 'Aceita um arquivo de até 8 MiB. O texto extraído é limitado a 100.000 caracteres e PDFs a 120 páginas. Cada conta pode iniciar até 8 uploads por 15 minutos e 24 por janela de 24 horas.', requestBody: { required: true, content: { 'multipart/form-data': { schema: { type: 'object', required: ['file'], additionalProperties: false, properties: { file: { type: 'string', format: 'binary' }, title: { type: 'string', maxLength: 160 }, locale: { type: 'string', enum: ['pt-BR', 'en-US'], default: 'pt-BR' } } } } } }, responses: { '202': { description: 'Material enfileirado' }, '400': { description: 'Arquivo inválido, ausente ou sem texto legível' }, '408': { description: 'PDF excedeu o tempo seguro de parsing' }, '413': { description: 'Arquivo acima de 8 MiB, texto acima de 100.000 caracteres ou PDF acima de 120 páginas' }, '429': { description: 'Limite de frequência, concorrência ou volume diário de upload' }, '503': { description: 'Resultado do commit não pôde ser confirmado; consulte os materiais antes de reenviar' } } },
+      post: { summary: 'Envia PDF, Markdown ou TXT para processamento assíncrono', description: 'Aceita um arquivo de até 8 MiB. PDFs são limitados a 800 páginas. Livros longos são extraídos em partes; cada chamada ao Gemini consome um crédito. Texto colado tem limite separado de 500.000 caracteres. Cada conta pode iniciar até 8 uploads por 15 minutos e 24 por janela de 24 horas.', requestBody: { required: true, content: { 'multipart/form-data': { schema: { type: 'object', required: ['file'], additionalProperties: false, properties: { file: { type: 'string', format: 'binary' }, title: { type: 'string', maxLength: 160 }, locale: { type: 'string', enum: ['pt-BR', 'en-US'], default: 'pt-BR' } } } } } }, responses: { '202': { description: 'Material enfileirado' }, '400': { description: 'Arquivo inválido, ausente ou sem texto legível' }, '408': { description: 'PDF excedeu o tempo seguro de parsing' }, '413': { description: 'Arquivo acima de 8 MiB ou PDF acima de 800 páginas' }, '429': { description: 'Limite de frequência, concorrência ou volume diário de upload' }, '503': { description: 'Resultado do commit não pôde ser confirmado; consulte os materiais antes de reenviar' } } },
     },
     '/api/materials/{id}': { delete: { summary: 'Remove o material próprio e seu histórico; a limpeza do arquivo original é durável e assíncrona', security: [{ bearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '204': { description: 'Material e histórico removidos' }, '404': { description: 'Material não pertence ao usuário' }, '409': { description: 'Extração ainda ativa' } } } },
     '/api/materials/{id}/status': { get: { summary: 'Consulta o status de processamento e a versão ativa da extração', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Status do material; activeExtractionJobId identifica a última extração concluída, ou null para dados legados' } } } },
@@ -249,7 +249,7 @@ export const openApiDocument = {
     },
     '/api/billing/catalog': {
       get: {
-        summary: 'Catálogo público de planos e pesos de créditos',
+        summary: 'Catálogo público de planos e custo por tentativa de IA',
         description: 'Sem INFINITEPAY_HANDLE, retorna somente FREE. Com pagamentos ativos, expõe preços definidos pelo servidor; Essencial e Pro são pagamentos únicos.',
         responses: { '200': { description: 'Catálogo público cacheável' } },
       },
@@ -303,7 +303,7 @@ export const openApiDocument = {
     '/api/billing/me': {
       get: {
         summary: 'Entitlement, saldo e estimativas conservadoras do usuário',
-        description: 'Expõe limites diário e do período do tier efetivo. Pro tem prioridade quando os dois tiers estão ativos, sem incorporar saldo ou vigência Essencial. Estimativas consideram o número máximo configurado de tentativas/fallbacks.',
+        description: 'No plano gratuito, somente o limite diário se aplica e os campos de período repetem o dia por compatibilidade. Planos pagos mantêm o limite da vigência. Pro tem prioridade quando os dois tiers estão ativos, sem incorporar saldo ou vigência Essencial. Estimativas consideram o número máximo configurado de tentativas/fallbacks.',
         security: [{ bearerAuth: [] }],
         responses: { '200': { description: 'Plano efetivo, vigência, créditos usados/restantes, pesos e estimativas por operação' } },
       },

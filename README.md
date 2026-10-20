@@ -60,8 +60,8 @@ manifesto e a configuração da VM de produção, com limites e segredos própri
 para testar parsers, proveniência e compatibilidade; a documentação descreve
 o resultado esperado, mas não substitui esses dados de entrada reproduzíveis.
 PDFs são extraídos por `pdftohtml` do Poppler em subprocesso com timeout,
-limite de memória virtual, limite de saída, máximo de 120 páginas e 100.000
-caracteres; o Dockerfile instala `poppler-utils` e inclui `prlimit`. Fora do
+limite de memória virtual, limite de saída e máximo de 800 páginas;
+o Dockerfile instala `poppler-utils` e inclui `prlimit`. Fora do
 container, instale Poppler e `prlimit` (util-linux) para testar
 upload de PDF. O parser XML SAX preserva apenas sumários que localizam títulos
 nas páginas; sem sumário confiável, o material continua uma unidade única.
@@ -148,9 +148,9 @@ Prometheus coletando, Grafana visualizando ou tracing OpenTelemetry em produçã
 
 ## Segurança, entitlement e créditos de IA
 
-- O plano gratuito recebe 24 créditos/dia e 120 por mês-calendário. Essencial recebe 120/dia e 1.500 por vigência de 30 dias; Pro recebe 180/dia e 15.000 por vigência de 365 dias.
-- Avaliação custa 2 créditos; caso-limite/problema 4; localização 6; projeto 8; extração 12. Cada fallback real reserva novamente o peso antes da chamada.
-- O consumo é reservado atomicamente no PostgreSQL e respeita simultaneamente limite diário, limite do período, `AI_GLOBAL_DAILY_CREDIT_LIMIT` e o kill switch `AI_CREDITS_ENABLED`.
+- O plano gratuito recebe 100 créditos/dia, sem teto mensal. Os campos de período da API repetem o dia no plano Livre para manter compatibilidade. Essencial recebe 120/dia e 1.500 por vigência de 30 dias; Pro recebe 180/dia e 15.000 por vigência de 365 dias.
+- Cada tentativa real de geração no Gemini custa 1 crédito, inclusive fallback. O crédito representa uma requisição enviada, não tokens nem garantia de capacidade no provedor.
+- O consumo é reservado atomicamente no PostgreSQL e respeita o limite diário, `AI_GLOBAL_DAILY_CREDIT_LIMIT` e o kill switch `AI_CREDITS_ENABLED`; entitlements pagos também respeitam o limite da vigência.
 - `GET /api/billing/me` é a fonte autoritativa de saldo. `GET /api/ai-usage/today` permanece temporariamente apenas para telemetria compatível de chamadas/tokens.
 - Cache hit não consome quota. A interface mostra o saldo interno do MasterMe, que é independente dos limites do projeto no Google AI Studio.
 - A API limita rajadas globais por IP e aplica um limite por usuário somente nas rotas capazes de consumir IA. Produção deve manter também rate limiting no Caddy/Cloudflare.
@@ -259,10 +259,15 @@ Para essa medição separada em fixtures sintéticas, use
 não grava no banco, desativa fallback de modelo, não imprime chaves nem texto de
 usuários e emite modelo, tokens, duração e diagnóstico de ancoragem. A chamada
 consome a cota do provedor configurado.
-Neste corte, um material aceita até 100.000 caracteres de texto extraído;
-uploads aceitam até 8 MiB e PDFs até 120 páginas. Um livro maior deve ser
-dividido antes do envio. Esses limites são verificados antes da extração de
-conceitos e não implicam suporte a livros extensos.
+Texto colado aceita até 500.000 caracteres por requisição. Arquivos PDF,
+Markdown e TXT aceitam até 8 MiB; PDFs aceitam até 800 páginas. O texto
+extraído de arquivos não tem um teto adicional por caracteres. A extração
+divide livros longos em partes de até cerca de 100.000 caracteres de texto
+indexado e faz uma chamada ao Gemini por parte. Cada tentativa de chamada
+consome um crédito; fallback e tentativas posteriores podem consumir mais.
+O mapa final seleciona até o limite configurado de conceitos entre as partes.
+Os limites de tamanho, páginas, tempo e memória ainda podem impedir certos
+arquivos de serem importados.
 
 ## Limites do MVP
 
@@ -300,7 +305,7 @@ Defina `DATABASE_URL`, `SUPABASE_URL` HTTPS, `GEMINI_API_KEY`,
 `AI_GLOBAL_DAILY_CREDIT_LIMIT` e `AI_CREDITS_ENABLED`. `PUBLIC_APP_URL` usa
 por padrão a URL pública do frontend indicada em `deploy/.env.example`; defina-a
 na VM somente se a origem HTTPS canônica mudar.
-O exemplo limita o consumo global a 240 créditos/dia (até dez cotas gratuitas
+O exemplo limita o consumo global a 500 créditos/dia (até cinco cotas gratuitas
 completas); ajuste esse teto ao orçamento e à demanda antes da promoção.
 Deixe `INFINITEPAY_HANDLE` e `METRICS_BEARER_TOKEN` vazios no lançamento gratuito:
 pagamentos e `/metrics` ficam desativados. Um token de métricas de pelo menos

@@ -19,6 +19,8 @@ describe('backend release guardrails', () => {
     expect(workflow).toContain('docker compose -f deploy/compose.yml config --quiet')
     expect(workflow).toContain('load: true')
     expect(workflow).toContain('./scripts/smoke-production-image.sh masterme-backend:ci')
+    const smoke = await read('scripts/smoke-production-image.sh')
+    expect(smoke).toContain('"dailyCreditLimit":100')
   })
 
   test('deployment remains exclusive to main, is never cancelled and repeats validations', async () => {

@@ -179,12 +179,13 @@ describe('upload guardrails', () => {
     );
   });
 
-  test('rejects extracted text above the limit before saving or accessing the database', async () => {
+  test('accepts a text file beyond the pasted-text limit for import', async () => {
     const pool = new Pool();
     const storage = new LocalMaterialStorage(
       '/tmp/masterme-ingestion-limit-test',
     );
     const save = spyOn(storage, 'save');
+    const connect = spyOn(pool, 'connect').mockImplementation(async () => { throw new Error('database unavailable'); });
     try {
       await expect(
         new IngestionService(pool, storage).upload(
@@ -193,10 +194,11 @@ describe('upload guardrails', () => {
           'pt-BR',
           '00000000-0000-4000-8000-000000000001',
         ),
-      ).rejects.toMatchObject({ code: 'MATERIAL_TOO_LARGE' });
-      expect(save).not.toHaveBeenCalled();
+      ).rejects.toThrow('database unavailable');
+      expect(save).toHaveBeenCalled();
     } finally {
       save.mockRestore();
+      connect.mockRestore();
       await pool.end();
     }
   });
@@ -205,7 +207,21 @@ describe('upload guardrails', () => {
     await expect(
       extractPdfText(makePdf(Array.from({ length: MAX_PDF_PAGES + 1 }, () => ({ lines: ['Plain PDF text for testing'] })), false)),
     ).rejects.toMatchObject({ code: 'PDF_TOO_MANY_PAGES' });
-  }, 15_000);
+  }, 90_000);
+
+  test('PDF at the page limit remains readable within the parser bounds', async () => {
+    const text = await extractPdfText(makePdf(Array.from({ length: MAX_PDF_PAGES }, () => ({ lines: ['Plain PDF text for testing'] })), false));
+    expect(text).toContain('Plain PDF text for testing');
+  }, 90_000);
+
+  test('PDF extraction accepts more than 500,000 characters', async () => {
+    const pdf = makePdf(Array.from({ length: 600 }, (_, page) => ({
+      lines: Array.from({ length: 10 }, (_, line) =>
+        `Section ${page} line ${line} ${'technical content '.repeat(5)}`),
+    })), false);
+    const text = await extractPdfText(pdf);
+    expect(text.length).toBeGreaterThan(MAX_MATERIAL_LENGTH);
+  }, 90_000);
 
   test('PDF at the page limit remains readable within the parser bounds', async () => {
     const text = await extractPdfText(makePdf(Array.from({ length: MAX_PDF_PAGES }, () => ({ lines: ['Plain PDF text for testing'] })), false));

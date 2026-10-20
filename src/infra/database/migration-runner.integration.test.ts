@@ -613,7 +613,7 @@ integrationTest(
       ('88888888-8888-4888-8888-888888888888')`);
       const billing = new PostgresBillingRepository(pool);
       const reservations = await Promise.allSettled(
-        Array.from({ length: 13 }, () =>
+        Array.from({ length: 101 }, () =>
           billing.reserveCredits(
             '11111111-1111-4111-8111-111111111111',
             'INITIAL_EVALUATION',
@@ -623,7 +623,7 @@ integrationTest(
       );
       expect(
         reservations.filter((result) => result.status === 'fulfilled'),
-      ).toHaveLength(12);
+      ).toHaveLength(100);
       expect(
         reservations.filter((result) => result.status === 'rejected'),
       ).toHaveLength(1);
@@ -631,11 +631,13 @@ integrationTest(
       (SELECT credits FROM ai_credit_daily_usage WHERE owner_id='11111111-1111-4111-8111-111111111111')::int AS daily,
       (SELECT credits FROM ai_credit_monthly_usage WHERE owner_id='11111111-1111-4111-8111-111111111111')::int AS monthly,
       (SELECT count(*) FROM ai_credit_usage_events WHERE owner_id='11111111-1111-4111-8111-111111111111')::int AS events`);
-      expect(creditUsage.rows).toEqual([{ daily: 24, monthly: 24, events: 12 }]);
+      expect(creditUsage.rows).toEqual([{ daily: 100, monthly: null, events: 100 }]);
 
       const freeExtractionOwner = '77777777-7777-4777-8777-777777777777';
-      await billing.reserveCredits(freeExtractionOwner, 'EXTRACTION', { enabled: true, globalDailyLimit: 1_000 });
-      await billing.reserveCredits(freeExtractionOwner, 'EXTRACTION', { enabled: true, globalDailyLimit: 1_000 });
+      await client.query(`INSERT INTO ai_credit_monthly_usage (owner_id,month_start,credits)
+        VALUES ($1,date_trunc('month',now() AT TIME ZONE 'UTC')::date,999)`, [freeExtractionOwner]);
+      for (let attempt = 0; attempt < 100; attempt += 1)
+        await billing.reserveCredits(freeExtractionOwner, 'EXTRACTION', { enabled: true, globalDailyLimit: 1_000 });
       await expect(billing.reserveCredits(freeExtractionOwner, 'EXTRACTION', {
         enabled: true,
         globalDailyLimit: 1_000,
@@ -699,7 +701,7 @@ integrationTest(
       );
       expect(isolatedUsage.rows).toEqual([
         { plan_id: 'ESSENTIAL', credits_used: 0 },
-        { plan_id: 'PRO', credits_used: 2 },
+        { plan_id: 'PRO', credits_used: 1 },
       ]);
       const essentialRepurchase = await billing.createOrGetOrder({
         id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02',
