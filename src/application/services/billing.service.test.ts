@@ -123,15 +123,15 @@ class FakeBillingRepository implements BillingRepository {
   public async getCreditBalance(): Promise<CreditBalance> {
     return {
       planId: 'FREE',
-      dailyLimit: 24,
+      dailyLimit: 100,
       dailyUsed: 2,
-      dailyRemaining: 22,
+      dailyRemaining: 98,
       dailyResetsAt: '2026-10-10T00:00:00.000Z',
-      periodLimit: 120,
-      periodUsed: 20,
-      periodRemaining: 100,
-      periodStartsAt: '2026-10-01T00:00:00.000Z',
-      periodEndsAt: '2026-11-01T00:00:00.000Z',
+      periodLimit: 100,
+      periodUsed: 2,
+      periodRemaining: 98,
+      periodStartsAt: '2026-10-09T00:00:00.000Z',
+      periodEndsAt: '2026-10-10T00:00:00.000Z',
       validUntil: null,
     };
   }
@@ -152,8 +152,8 @@ describe('BillingService', () => {
           id: 'FREE',
           priceInCents: 0,
           durationDays: null,
-          dailyCreditLimit: 24,
-          periodCreditLimit: 120,
+          dailyCreditLimit: 100,
+          periodCreditLimit: 100,
         },
         {
           id: 'ESSENTIAL',
@@ -171,11 +171,11 @@ describe('BillingService', () => {
         },
       ],
       creditWeights: {
-        INITIAL_EVALUATION: 2,
-        EDGE_CASE_GENERATION: 4,
-        LOCALIZATION: 6,
-        PRACTICE_PROJECT: 8,
-        EXTRACTION: 12,
+        INITIAL_EVALUATION: 1,
+        EDGE_CASE_GENERATION: 1,
+        LOCALIZATION: 1,
+        PRACTICE_PROJECT: 1,
+        EXTRACTION: 1,
       },
     });
     expect(JSON.stringify(service.catalog())).not.toContain(
@@ -457,15 +457,15 @@ describe('BillingService', () => {
     ]);
   });
 
-  test('summary uses the smallest headroom and counts all fallbacks in its conservative estimate', async () => {
+  test('free summary counts one provider attempt per credit and reserves for fallbacks', async () => {
     const repository = new FakeBillingRepository();
     const service = new BillingService(repository, undefined, {
       publicAppUrl: 'https://masterme.app',
       maxProviderAttempts: 2,
     });
     const summary = await service.getMe(ownerId);
-    expect(summary.estimates.INITIAL_EVALUATION).toBe(5);
-    expect(summary.estimates.EXTRACTION).toBe(0);
+    expect(summary.estimates.INITIAL_EVALUATION).toBe(49);
+    expect(summary.estimates.EXTRACTION).toBe(49);
   });
 
   test('records reservations and credit blocks without user-controlled labels', async () => {

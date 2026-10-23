@@ -16,18 +16,16 @@ as requisições para a API disponível somente em `127.0.0.1:3333` na VPS.
 ## Executar
 
 ```bash
-bun install
-cp .env.example .env
-# preencha GEMINI_API_KEY e DATABASE_URL
-bun run generate
-bun run migrate
-bun run dev
+# configure GEMINI_API_KEY e SUPABASE_URL no .env privado
+docker compose --env-file .env --env-file .env.development up --build
 ```
 
 Verificação local:
 
 ```bash
-bun run validate
+docker compose --env-file .env --env-file .env.development up -d test-db
+bun install
+bun --env-file=.env --env-file=.env.development run validate
 ```
 
 ## Arquitetura
@@ -48,6 +46,25 @@ OpenTelemetry, Prometheus e Grafana é a direção escolhida para observabilidad
 instrumentação, coleta, armazenamento, dashboards e alertas só estarão
 entregues quando operarem juntos. A lista abaixo descreve o estado atual, não
 a conclusão dessa migração arquitetural ou operacional.
+
+`prisma/migrations/` é a única fonte dos arquivos SQL de migração. O comando
+`bun run migrate` lê esses arquivos e preserva os nomes e checksums do ledger
+já existente no banco de produção; não execute `prisma migrate deploy` nesse
+banco sem antes reconciliar o histórico do Prisma com esse ledger. A migração
+dos adapters para Prisma Client é gradual e não altera essa regra de rollout.
+`dev/postgres-init.sql` cria apenas a tabela `auth.users` que o Supabase já
+fornece, para o PostgreSQL local do Compose. `docker-compose.yml` é o ambiente
+local; `deploy/compose.yml`, `deploy/.env.example` e o script de deploy são o
+manifesto e a configuração da VM de produção, com limites e segredos próprios.
+`test-fixtures/phase2/` contém materiais pequenos e PDFs reais de referência
+para testar parsers, proveniência e compatibilidade; a documentação descreve
+o resultado esperado, mas não substitui esses dados de entrada reproduzíveis.
+PDFs são extraídos por `pdftohtml` do Poppler em subprocesso com timeout,
+limite de memória virtual, limite de saída e máximo de 800 páginas;
+o Dockerfile instala `poppler-utils` e inclui `prlimit`. Fora do
+container, instale Poppler e `prlimit` (util-linux) para testar
+upload de PDF. O parser XML SAX preserva apenas sumários que localizam títulos
+nas páginas; sem sumário confiável, o material continua uma unidade única.
 
 - Express recebe e valida params/bodies antes dos controllers.
 - `src/main/factories/` monta repositório → service → controller por recurso;
@@ -131,9 +148,9 @@ Prometheus coletando, Grafana visualizando ou tracing OpenTelemetry em produçã
 
 ## Segurança, entitlement e créditos de IA
 
-- O plano gratuito recebe 24 créditos/dia e 120 por mês-calendário. Essencial recebe 120/dia e 1.500 por vigência de 30 dias; Pro recebe 180/dia e 15.000 por vigência de 365 dias.
-- Avaliação custa 2 créditos; caso-limite/problema 4; localização 6; projeto 8; extração 12. Cada fallback real reserva novamente o peso antes da chamada.
-- O consumo é reservado atomicamente no PostgreSQL e respeita simultaneamente limite diário, limite do período, `AI_GLOBAL_DAILY_CREDIT_LIMIT` e o kill switch `AI_CREDITS_ENABLED`.
+- O plano gratuito recebe 100 créditos/dia, sem teto mensal. Os campos de período da API repetem o dia no plano Livre para manter compatibilidade. Essencial recebe 120/dia e 1.500 por vigência de 30 dias; Pro recebe 180/dia e 15.000 por vigência de 365 dias.
+- Cada tentativa real de geração no Gemini custa 1 crédito, inclusive fallback. O crédito representa uma requisição enviada, não tokens nem garantia de capacidade no provedor.
+- O consumo é reservado atomicamente no PostgreSQL e respeita o limite diário, `AI_GLOBAL_DAILY_CREDIT_LIMIT` e o kill switch `AI_CREDITS_ENABLED`; entitlements pagos também respeitam o limite da vigência.
 - `GET /api/billing/me` é a fonte autoritativa de saldo. `GET /api/ai-usage/today` permanece temporariamente apenas para telemetria compatível de chamadas/tokens.
 - Cache hit não consome quota. A interface mostra o saldo interno do MasterMe, que é independente dos limites do projeto no Google AI Studio.
 - A API limita rajadas globais por IP e aplica um limite por usuário somente nas rotas capazes de consumir IA. Produção deve manter também rate limiting no Caddy/Cloudflare.
@@ -181,15 +198,76 @@ cache em `practice_projects`.
 
 ## Docker
 
-O Compose inicia API e worker; o PostgreSQL é externo no Supabase e o frontend permanece fora do Docker.
+O Compose local inicia API, worker e PostgreSQL 17 em um volume próprio. Os
+valores de desenvolvimento vêm do `.env.development` versionado; a chave Gemini
+e a URL do Supabase Auth vêm do `.env` privado. O segundo arquivo tem precedência, e o Compose passa
+`DEV_DATABASE_URL` à API como `DATABASE_URL`, sem usar a URL do `.env` privado.
+O frontend permanece fora do Docker.
+O Supabase configurado em `SUPABASE_URL` autentica os usuários; os dados da aplicação ficam no
+PostgreSQL local. Após validar o token, o backend cadastra o ID autenticado na
+tabela local `auth.users` para satisfazer as chaves estrangeiras. A chave do
+Gemini pode ser compartilhada entre ambientes; considere o consumo da mesma cota.
 
 ```bash
-docker compose up --build
+docker compose --env-file .env --env-file .env.development up --build
 ```
+
+O banco de desenvolvimento usa `127.0.0.1:5432`. O serviço `test-db` usa
+`127.0.0.1:5433` e é exclusivo para os testes de integração. A URL desse banco
+está em `.env.development`; `MIGRATION_TEST_REQUIRED=true` faz a suíte falhar
+se ela não for carregada, em vez de pular os testes. A suíte apaga schemas no
+banco de teste. O CI provisiona seu próprio banco de teste.
 
 O PostgreSQL de produção fica no Supabase. Apenas os arquivos enviados ficam no
 volume Docker `material_uploads` da VPS; por isso esse volume deve ser incluído
 na estratégia de backup enquanto não houver object storage.
+
+Ao excluir um material, o banco apaga seu histórico vinculado e grava a chave
+do arquivo original em `material_file_deletions` na mesma transação. O worker
+remove o arquivo do volume e apaga a pendência; se o volume falhar, a pendência
+permanece para nova tentativa. Mantenha o worker ativo e monitore pendências
+antigas nessa tabela antes de descartar o volume.
+
+Cada job de extração concluído identifica uma versão. A API expõe
+`activeExtractionJobId` em `GET /api/materials/:id/status`; `null` indica os
+conceitos legados. Uma nova extração só ativa seus conceitos e relações na
+mesma transação que conclui o job. Conceitos antigos permanecem no banco para
+sessões, evidências e fichas existentes. Se a nova extração falhar ou for
+cancelada, a versão anterior continua ativa. A migração 023 é aditiva; para
+rollback da aplicação, preserve suas colunas e use a imagem anterior. Remover
+essas colunas requer avaliar referências históricas criadas após a migração.
+
+A migração 024 acrescenta contexto imutável às novas tentativas de relação,
+aplicação e retomada: versão da pergunta, critérios usados, pistas declaradas e
+ID da tentativa anterior quando houver. Tentativas legadas recebem a versão
+`legacy` e listas vazias, sem critérios inventados. A API só aceita
+`previousEvidenceId` da mesma conta, material, atividade, conceito e relação;
+`hintsUsed` exige `assisted=true`. A interface liga automaticamente uma nova
+tentativa à última do mesmo alvo e mostra esse vínculo no histórico. Novas
+avaliações usam a rubrica `activity-v2`: compreensão, relação, aplicação e
+retomada têm critérios distintos, sempre acompanhados das premissas ancoradas
+no conteúdo. Relações de contraste e parte-todo não exigem causalidade.
+
+Para reproduzir a linha de base local de parsing dos materiais de referência,
+execute `bun scripts/measure-phase2-baseline.ts`. O script emite JSON por
+fixture com tamanho, duração, estrutura editorial, payload e variação de
+memória do processo. Ele não chama IA; tokens, custo e qualidade pedagógica
+da extração exigem uma medição separada com provedor e limite de gasto definidos.
+Para essa medição separada em fixtures sintéticas, use
+`PHASE2_LIVE_BENCHMARK=1 bun --env-file .env scripts/measure-phase2-ai.ts`;
+`PHASE2_FIXTURE_OFFSET` e `PHASE2_FIXTURE_LIMIT` restringem a amostra. O script
+não grava no banco, desativa fallback de modelo, não imprime chaves nem texto de
+usuários e emite modelo, tokens, duração e diagnóstico de ancoragem. A chamada
+consome a cota do provedor configurado.
+Texto colado aceita até 500.000 caracteres por requisição. Arquivos PDF,
+Markdown e TXT aceitam até 8 MiB; PDFs aceitam até 800 páginas. O texto
+extraído de arquivos não tem um teto adicional por caracteres. A extração
+divide livros longos em partes de até cerca de 100.000 caracteres de texto
+indexado e faz uma chamada ao Gemini por parte. Cada tentativa de chamada
+consome um crédito; fallback e tentativas posteriores podem consumir mais.
+O mapa final seleciona até o limite configurado de conceitos entre as partes.
+Os limites de tamanho, páginas, tempo e memória ainda podem impedir certos
+arquivos de serem importados.
 
 ## Limites do MVP
 
@@ -227,7 +305,7 @@ Defina `DATABASE_URL`, `SUPABASE_URL` HTTPS, `GEMINI_API_KEY`,
 `AI_GLOBAL_DAILY_CREDIT_LIMIT` e `AI_CREDITS_ENABLED`. `PUBLIC_APP_URL` usa
 por padrão a URL pública do frontend indicada em `deploy/.env.example`; defina-a
 na VM somente se a origem HTTPS canônica mudar.
-O exemplo limita o consumo global a 240 créditos/dia (até dez cotas gratuitas
+O exemplo limita o consumo global a 500 créditos/dia (até cinco cotas gratuitas
 completas); ajuste esse teto ao orçamento e à demanda antes da promoção.
 Deixe `INFINITEPAY_HANDLE` e `METRICS_BEARER_TOKEN` vazios no lançamento gratuito:
 pagamentos e `/metrics` ficam desativados. Um token de métricas de pelo menos

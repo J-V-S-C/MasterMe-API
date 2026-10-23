@@ -14,8 +14,8 @@ export type AiUsageEvent = {
   errorCode: string | null;
 };
 export type ExtractedKnowledge = {
-  fragments: Array<Pick<Concept, 'name' | 'description' | 'kind' | 'sourceExcerpt' | 'fundamentalPremises' | 'edgeCases' | 'edgeCaseQuestion' | 'studyQuestion'> & { prerequisiteNames: string[] }>;
-  relations?: Array<{ fromName: string; toName: string; relationType: 'REQUIRES' | 'ENABLES' | 'CONTRASTS' | 'APPLIES_TO' | 'PART_OF'; statement: string; justification: string; sourceExcerpt: string }>;
+  fragments: Array<Pick<Concept, 'name' | 'description' | 'kind' | 'sourceExcerpt' | 'fundamentalPremises' | 'edgeCases' | 'edgeCaseQuestion' | 'studyQuestion'> & { sourceOffset?: number; prerequisiteNames: string[] }>;
+  relations?: Array<{ fromName: string; toName: string; relationType: 'REQUIRES' | 'ENABLES' | 'CONTRASTS' | 'APPLIES_TO' | 'PART_OF'; statement: string; justification: string; sourceExcerpt: string; sourceOffset?: number }>;
 };
 
 export type LocalizedKnowledgeResponse = {

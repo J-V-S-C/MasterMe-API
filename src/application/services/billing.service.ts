@@ -259,7 +259,9 @@ export class BillingService {
 
   public async getMe(ownerId: string) {
     const balance = await this.repository.getCreditBalance(ownerId);
-    const available = Math.min(balance.dailyRemaining, balance.periodRemaining);
+    const available = balance.planId === 'FREE'
+      ? balance.dailyRemaining
+      : Math.min(balance.dailyRemaining, balance.periodRemaining);
     const attempts = Math.max(1, this.configuration.maxProviderAttempts);
     return {
       ...balance,

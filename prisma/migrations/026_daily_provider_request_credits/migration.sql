@@ -1,5 +1,16 @@
--- Allow a free account to reserve an extraction and one fallback in a day.
--- Historical migration 014 remains immutable; the monthly free cap stays at 120.
+-- One MasterMe credit represents one attempted Gemini generation. Free access
+-- renews daily; paid entitlements retain their existing validity periods.
+-- Convert existing daily weighted counters to request counts for the cutover day.
+UPDATE ai_credit_daily_usage AS usage SET credits = (
+  SELECT count(*)::int FROM ai_credit_usage_events AS event
+  WHERE event.owner_id=usage.owner_id
+    AND (event.created_at AT TIME ZONE 'UTC')::date=usage.usage_date
+);
+UPDATE ai_credit_global_daily_usage AS usage SET credits = (
+  SELECT count(*)::int FROM ai_credit_usage_events AS event
+  WHERE (event.created_at AT TIME ZONE 'UTC')::date=usage.usage_date
+);
+
 CREATE OR REPLACE FUNCTION reserve_ai_credits(
   p_owner_id UUID,
   p_operation TEXT,
@@ -11,15 +22,13 @@ SECURITY INVOKER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  v_weight INT;
   v_plan_id TEXT;
-  v_daily_limit INT;
   v_period_limit INT;
   v_period_used INT;
+  v_daily_limit INT;
   v_daily_used INT;
   v_global_used BIGINT;
   v_today DATE := (now() AT TIME ZONE 'UTC')::date;
-  v_month_start DATE := date_trunc('month', now() AT TIME ZONE 'UTC')::date;
 BEGIN
   IF NOT p_enabled THEN
     RETURN QUERY SELECT 'DISABLED'::TEXT;
@@ -29,19 +38,11 @@ BEGIN
     RETURN QUERY SELECT 'GLOBAL_LIMIT'::TEXT;
     RETURN;
   END IF;
-
-  v_weight := CASE p_operation
-    WHEN 'INITIAL_EVALUATION' THEN 2
-    WHEN 'STRESS_EVALUATION' THEN 2
-    WHEN 'EDGE_CASE_GENERATION' THEN 4
-    WHEN 'EDGE_CASE_EVALUATION' THEN 4
-    WHEN 'ISOMORPHIC_PROBLEM' THEN 4
-    WHEN 'LOCALIZATION' THEN 6
-    WHEN 'PRACTICE_PROJECT' THEN 8
-    WHEN 'EXTRACTION' THEN 12
-    ELSE NULL
-  END;
-  IF v_weight IS NULL THEN
+  IF p_operation NOT IN (
+    'INITIAL_EVALUATION', 'STRESS_EVALUATION', 'EDGE_CASE_GENERATION',
+    'EDGE_CASE_EVALUATION', 'ISOMORPHIC_PROBLEM', 'LOCALIZATION',
+    'PRACTICE_PROJECT', 'EXTRACTION'
+  ) THEN
     RETURN QUERY SELECT 'INVALID_OPERATION'::TEXT;
     RETURN;
   END IF;
@@ -60,45 +61,35 @@ BEGIN
     FOR UPDATE;
   IF NOT FOUND THEN
     v_plan_id := 'FREE';
-    v_period_limit := 120;
-    INSERT INTO ai_credit_monthly_usage (owner_id,month_start,credits)
-      VALUES (p_owner_id,v_month_start,0)
-      ON CONFLICT (owner_id,month_start) DO NOTHING;
-    SELECT credits INTO v_period_used FROM ai_credit_monthly_usage
-      WHERE owner_id=p_owner_id AND month_start=v_month_start
-      FOR UPDATE;
   END IF;
 
-  v_daily_limit := CASE v_plan_id WHEN 'PRO' THEN 180 WHEN 'ESSENTIAL' THEN 120 ELSE 24 END;
+  v_daily_limit := CASE v_plan_id WHEN 'PRO' THEN 180 WHEN 'ESSENTIAL' THEN 120 ELSE 100 END;
   INSERT INTO ai_credit_daily_usage (owner_id,usage_date,credits)
     VALUES (p_owner_id,v_today,0) ON CONFLICT (owner_id,usage_date) DO NOTHING;
   SELECT credits INTO v_daily_used FROM ai_credit_daily_usage
     WHERE owner_id=p_owner_id AND usage_date=v_today FOR UPDATE;
 
-  IF v_global_used + v_weight > p_global_daily_limit THEN
+  IF v_global_used + 1 > p_global_daily_limit THEN
     RETURN QUERY SELECT 'GLOBAL_LIMIT'::TEXT;
     RETURN;
   END IF;
-  IF v_daily_used + v_weight > v_daily_limit THEN
+  IF v_daily_used + 1 > v_daily_limit THEN
     RETURN QUERY SELECT 'DAILY_LIMIT'::TEXT;
     RETURN;
   END IF;
-  IF v_period_used + v_weight > v_period_limit THEN
+  IF v_plan_id <> 'FREE' AND v_period_used + 1 > v_period_limit THEN
     RETURN QUERY SELECT 'PERIOD_LIMIT'::TEXT;
     RETURN;
   END IF;
 
-  UPDATE ai_credit_global_daily_usage SET credits=credits+v_weight WHERE usage_date=v_today;
-  UPDATE ai_credit_daily_usage SET credits=credits+v_weight WHERE owner_id=p_owner_id AND usage_date=v_today;
-  IF v_plan_id='FREE' THEN
-    UPDATE ai_credit_monthly_usage SET credits=credits+v_weight
-      WHERE owner_id=p_owner_id AND month_start=v_month_start;
-  ELSE
-    UPDATE billing_entitlements SET credits_used=credits_used+v_weight,updated_at=now()
+  UPDATE ai_credit_global_daily_usage SET credits=credits+1 WHERE usage_date=v_today;
+  UPDATE ai_credit_daily_usage SET credits=credits+1 WHERE owner_id=p_owner_id AND usage_date=v_today;
+  IF v_plan_id <> 'FREE' THEN
+    UPDATE billing_entitlements SET credits_used=credits_used+1,updated_at=now()
       WHERE owner_id=p_owner_id AND plan_id=v_plan_id;
   END IF;
   INSERT INTO ai_credit_usage_events (owner_id,operation,plan_id,credits)
-    VALUES (p_owner_id,p_operation,v_plan_id,v_weight);
+    VALUES (p_owner_id,p_operation,v_plan_id,1);
 
   RETURN QUERY SELECT 'RESERVED'::TEXT;
 END;

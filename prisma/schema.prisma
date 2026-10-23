@@ -234,10 +234,12 @@ model concept_confidences {
 model concepts {
   id                   String               @id @db.Uuid
   material_id          String               @db.Uuid
+  extraction_job_id    String?              @db.Uuid
   name                 String               @db.VarChar(160)
   description          String
   kind                 String               @db.VarChar(16)
   source_excerpt       String
+  source_offset        Int?
   fundamental_premises Json
   edge_cases           Json
   prerequisite_ids     Json
@@ -318,6 +320,7 @@ model processing_jobs {
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model study_materials {
   id                  String                @id @db.Uuid
+  active_extraction_job_id String?          @db.Uuid
   title               String                @db.VarChar(160)
   content             String
   created_at          DateTime              @db.Timestamptz(6)
@@ -330,6 +333,7 @@ model study_materials {
   processed_at        DateTime?             @db.Timestamptz(6)
   owner_id            String                @db.Uuid
   locale              String                @default("pt-BR") @db.VarChar(10)
+  reading_offset      Int                   @default(0)
   concepts            concepts[]
   generated_artifacts generated_artifacts[]
   practice_projects   practice_projects[]
@@ -340,6 +344,7 @@ model study_materials {
   shelf_materials     shelf_materials[]
   study_tasks         study_tasks[]
   learning_evidence   learning_evidence[]
+  study_plan_materials study_plan_materials[]
 
   @@index([owner_id, created_at(sort: Desc)], map: "study_materials_owner_created_idx")
   @@unique([id, owner_id], map: "study_materials_id_owner_id_key")
@@ -389,12 +394,14 @@ model material_units {
 model concept_relations {
   id String @id @db.Uuid
   material_id String @db.Uuid
+  extraction_job_id String? @db.Uuid
   from_concept_id String @db.Uuid
   to_concept_id String @db.Uuid
   relation_type String
   statement String
   justification String
   source_excerpt String
+  source_offset Int?
   provenance String
   created_at DateTime @default(now()) @db.Timestamptz(6)
   study_materials study_materials @relation(fields: [material_id], references: [id], onDelete: Cascade)
@@ -458,6 +465,21 @@ model study_plans {
   users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
   learning_goals learning_goals? @relation(fields: [goal_id], references: [id], onDelete: SetNull)
   study_tasks study_tasks[]
+  study_plan_materials study_plan_materials[]
+  @@unique([id, owner_id], map: "study_plans_id_owner_id_key")
+  @@schema("public")
+}
+
+model study_plan_materials {
+  plan_id String @db.Uuid
+  owner_id String @db.Uuid
+  material_id String @db.Uuid
+  ordinal Int
+  study_plans study_plans @relation(fields: [plan_id, owner_id], references: [id, owner_id], onDelete: Cascade, onUpdate: NoAction, map: "study_plan_materials_plan_owner_fkey")
+  study_materials study_materials @relation(fields: [material_id, owner_id], references: [id, owner_id], onDelete: Cascade, onUpdate: NoAction, map: "study_plan_materials_material_owner_fkey")
+  @@id([plan_id, material_id])
+  @@unique([plan_id, ordinal])
+  @@index([owner_id], map: "study_plan_materials_owner_idx")
   @@schema("public")
 }
 
@@ -474,6 +496,7 @@ model study_tasks {
   scheduled_at DateTime? @db.Timestamptz(6)
   status String @default("PENDING")
   reason String @default("")
+  sort_order Int @default(1000000)
   created_at DateTime @default(now()) @db.Timestamptz(6)
   updated_at DateTime @default(now()) @db.Timestamptz(6)
   users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
@@ -484,6 +507,7 @@ model study_tasks {
   learning_evidence learning_evidence[]
   study_suggestions study_suggestions[]
   @@index([owner_id, scheduled_at], map: "study_tasks_owner_schedule_idx")
+  @@index([owner_id, plan_id, sort_order, created_at], map: "study_tasks_plan_order_idx")
   @@schema("public")
 }
 
@@ -506,11 +530,16 @@ model learning_evidence {
   task_id String? @db.Uuid
   activity_type String
   prompt String
+  prompt_version String @default("legacy")
+  criteria Json @default("[]")
+  hints_used Json @default("[]")
+  previous_evidence_id String? @db.Uuid
   answer String
   status String
   assisted Boolean @default(false)
   diagnosis String @default("")
   source_excerpt String
+  source_offset Int?
   request_id String? @db.Uuid
   created_at DateTime @default(now()) @db.Timestamptz(6)
   users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
@@ -521,8 +550,10 @@ model learning_evidence {
   study_suggestions study_suggestions[]
   evidence_contestations evidence_contestations[]
   activity_requests activity_requests[]
+  @@unique([id, owner_id, material_id], map: "learning_evidence_id_owner_material_key")
   @@unique([owner_id, request_id], map: "learning_evidence_request_idx")
   @@index([owner_id, created_at(sort: Desc)], map: "learning_evidence_owner_created_idx")
+  @@index([previous_evidence_id], map: "learning_evidence_previous_idx", where: raw("(previous_evidence_id IS NOT NULL)"))
   @@schema("public")
 }
 
@@ -568,5 +599,15 @@ model activity_requests {
   users users @relation(fields: [owner_id], references: [id], onDelete: Cascade)
   learning_evidence learning_evidence? @relation(fields: [evidence_id], references: [id], onDelete: SetNull)
   @@id([owner_id, request_id])
+  @@schema("public")
+}
+
+model material_file_deletions {
+  material_id String @id @db.Uuid
+  storage_key String
+  attempts Int @default(0)
+  run_after DateTime @default(now()) @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
   @@schema("public")
 }

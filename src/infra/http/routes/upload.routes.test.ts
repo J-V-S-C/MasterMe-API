@@ -8,9 +8,11 @@ import { testSecurity } from './test-security';
 
 const withUploadServer = async (
   run: (baseUrl: string) => Promise<void>,
+  deleteMaterial: (id: string, ownerId: string) => Promise<void> = async () => {},
 ): Promise<void> => {
   const study = {} as MasterMeService;
   const ingestion = {
+    deleteMaterial,
     upload: async () => {
       throw new Error('Upload should not be called');
     },
@@ -79,4 +81,16 @@ describe('multipart upload guardrails', () => {
       });
     });
   });
+});
+
+
+test('material deletion validates the id and returns no content', async () => {
+  const deleted: string[] = [];
+  await withUploadServer(async (baseUrl) => {
+    const invalid = await fetch(`${baseUrl}/api/materials/not-a-uuid`, { method: 'DELETE' });
+    expect(invalid.status).toBe(400);
+    const valid = await fetch(`${baseUrl}/api/materials/11111111-1111-4111-8111-111111111111`, { method: 'DELETE' });
+    expect(valid.status).toBe(204);
+    expect(deleted).toEqual(['11111111-1111-4111-8111-111111111111']);
+  }, async (id) => { deleted.push(id); });
 });

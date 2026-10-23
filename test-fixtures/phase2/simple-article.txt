@@ -1,0 +1,1 @@
+An index helps a database locate rows without scanning every record. A query can use an index when its predicate matches the indexed columns. The index consumes storage and adds work to writes, so a useful index depends on the queries and the update pattern.

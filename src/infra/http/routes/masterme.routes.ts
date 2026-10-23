@@ -40,6 +40,7 @@ export const createMasterMeRouter = (
   router.use(...security);
   if (files) {
     router.get('/events', files.events);
+    router.delete('/materials/:id', validateRequest({ params: IdParamsSchema }), files.deleteMaterial);
     router.get('/processing/overview', files.overview);
     router.post(
       '/materials/upload',
@@ -83,6 +84,7 @@ export const createMasterMeRouter = (
           : []),
         'GET /api/billing/me',
         'GET /api/materials/:id',
+        'DELETE /api/materials/:id',
         'POST /api/materials/:id/extract',
         'GET /api/materials/:id/concepts',
         'POST /api/materials/:id/localize',
