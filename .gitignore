@@ -18,10 +18,11 @@ logs/
 *.tgz
 report.*.json
 
-# Local environment (keep the documented template)
+# Private environment; the development configuration is public.
 .env
 .env.*
 !.env.example
+!.env.development
 
 # Tool and editor caches
 .cache/

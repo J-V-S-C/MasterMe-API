@@ -71,6 +71,7 @@ export class MasterMeService {
     materialId: string,
     onProgress?: (progress: ExtractionProgress) => Promise<void>,
     shouldPersist: () => Promise<boolean> = async () => true,
+    processingJobId?: string,
   ): Promise<Concept[]> {
     const material = await this.getMaterial(materialId);
     const extracted = await this.llm.extractKnowledge(material, onProgress);
@@ -86,7 +87,8 @@ export class MasterMeService {
       idsByName.set(name, randomUUID());
     }
     const concepts = extracted.fragments.map((fragment): Concept => {
-      if (!material.content.includes(fragment.sourceExcerpt))
+      if (!material.content.includes(fragment.sourceExcerpt) ||
+        (fragment.sourceOffset !== undefined && material.content.slice(fragment.sourceOffset, fragment.sourceOffset + fragment.sourceExcerpt.length) !== fragment.sourceExcerpt))
         throw new ConflictError(
           `O trecho de origem de "${fragment.name}" não pertence ao material.`,
         );
@@ -108,6 +110,7 @@ export class MasterMeService {
         description: fragment.description,
         kind: fragment.kind,
         sourceExcerpt: fragment.sourceExcerpt,
+        sourceOffset: fragment.sourceOffset,
         fundamentalPremises: fragment.fundamentalPremises,
         edgeCases: fragment.edgeCases,
         edgeCaseQuestion: fragment.edgeCaseQuestion,
@@ -117,6 +120,8 @@ export class MasterMeService {
         nextIds: [],
       };
     });
+    if (concepts.length === 0)
+      throw new ConflictError('A extração não retornou conceitos.');
     const byId = new Map(concepts.map((concept) => [concept.id, concept]));
     for (const concept of concepts)
       for (const prerequisiteId of concept.prerequisiteIds) {
@@ -136,7 +141,8 @@ export class MasterMeService {
           !fromConceptId ||
           !toConceptId ||
           fromConceptId === toConceptId ||
-          !material.content.includes(relation.sourceExcerpt)
+          !material.content.includes(relation.sourceExcerpt) ||
+          (relation.sourceOffset !== undefined && material.content.slice(relation.sourceOffset, relation.sourceOffset + relation.sourceExcerpt.length) !== relation.sourceExcerpt)
         )
           throw new ConflictError(
             'A extração retornou uma relação sem fonte ou conceitos válidos.',
@@ -150,11 +156,12 @@ export class MasterMeService {
           statement: relation.statement,
           justification: relation.justification,
           sourceExcerpt: relation.sourceExcerpt,
+          sourceOffset: relation.sourceOffset,
           provenance: 'EXTRACTED',
         };
       },
     );
-    await this.repository.saveConcepts(concepts, relations);
+    await this.repository.saveConcepts(concepts, relations, processingJobId);
     return concepts;
   }
 

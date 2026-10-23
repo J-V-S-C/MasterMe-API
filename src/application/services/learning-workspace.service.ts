@@ -1,10 +1,11 @@
 import type { LearningWorkspaceRepository } from '../repositories/learning-workspace.repository';
-import type { ActivityInput, EvidenceInput, GoalInput, PlanInput, RelationInput, SuggestionDecision, TaskInput, TaskUpdate } from '../contracts/learning-workspace.service';
+import type { ActivityInput, EvidenceInput, GoalInput, GoalUpdate, PlanInput, PlanUpdate, RelationInput, SuggestionDecision, TaskInput, TaskUpdate } from '../contracts/learning-workspace.service';
 import type { ActivityAssessmentGateway } from '../ports/activity-assessment.gateway';
 import { ConflictError } from '../errors';
 import { createHash } from 'node:crypto';
 import { buildActivityPrompt } from '../prompts/activity-prompt';
 import { suggestNextAction } from '../domain/learning-cycle';
+import { criteriaForActivity } from '../domain/activity-rubric';
 
 export class LearningWorkspaceService {
   public constructor(
@@ -13,6 +14,8 @@ export class LearningWorkspaceService {
   ) {}
 
   public outline(ownerId: string, materialId: string) { return this.repository.outline(ownerId, materialId); }
+  public readingPosition(ownerId: string, materialId: string) { return this.repository.readingPosition(ownerId, materialId); }
+  public setReadingPosition(ownerId: string, materialId: string, offset: number) { return this.repository.setReadingPosition(ownerId, materialId, offset); }
   public relations(ownerId: string, materialId: string) { return this.repository.relations(ownerId, materialId); }
   public createRelation(ownerId: string, input: RelationInput) { return this.repository.createRelation(ownerId, input); }
   public shelves(ownerId: string) { return this.repository.shelves(ownerId); }
@@ -24,8 +27,11 @@ export class LearningWorkspaceService {
   public deleteCard(ownerId: string, conceptId: string) { return this.repository.deleteCard(ownerId, conceptId); }
   public goals(ownerId: string) { return this.repository.goals(ownerId); }
   public createGoal(ownerId: string, input: GoalInput) { return this.repository.createGoal(ownerId, input); }
+  public updateGoal(ownerId: string, id: string, input: GoalUpdate) { return this.repository.updateGoal(ownerId, id, input); }
   public plans(ownerId: string) { return this.repository.plans(ownerId); }
   public createPlan(ownerId: string, input: PlanInput) { return this.repository.createPlan(ownerId, input); }
+  public updatePlan(ownerId: string, id: string, input: PlanUpdate) { return this.repository.updatePlan(ownerId, id, input); }
+  public reorderPlanTasks(ownerId: string, planId: string, taskIds: string[]) { return this.repository.reorderPlanTasks(ownerId, planId, taskIds); }
   public tasks(ownerId: string) { return this.repository.tasks(ownerId); }
   public createTask(ownerId: string, input: TaskInput) { return this.repository.createTask(ownerId, input); }
   public updateTask(ownerId: string, id: string, input: TaskUpdate) { return this.repository.updateTask(ownerId, id, input); }
@@ -56,6 +62,7 @@ export class LearningWorkspaceService {
       relation: context.relation,
     };
     const prompt = buildActivityPrompt(promptInput);
+    const criteria = criteriaForActivity(input.activityType, context.locale, context.criteria);
     const hashFor = (text: string) => createHash('sha256').update(JSON.stringify({
       ownerId,
       conceptId: context.conceptId,
@@ -64,6 +71,8 @@ export class LearningWorkspaceService {
       activityType: input.activityType,
       answer: input.answer,
       assisted: input.assisted,
+      ...(input.hintsUsed?.length ? { hintsUsed: input.hintsUsed } : {}),
+      ...(input.previousEvidenceId ? { previousEvidenceId: input.previousEvidenceId } : {}),
       prompt: text,
       sourceExcerpt: context.sourceExcerpt,
     })).digest('hex');
@@ -79,7 +88,7 @@ export class LearningWorkspaceService {
         activityType: input.activityType,
         conceptName: context.conceptName,
         sourceExcerpt: context.sourceExcerpt,
-        criteria: context.criteria,
+        criteria,
         prompt,
         answer: input.answer,
       });
@@ -93,8 +102,13 @@ export class LearningWorkspaceService {
         answer: input.answer,
         status: evaluation.status,
         assisted: input.assisted,
+        hintsUsed: input.hintsUsed,
+        previousEvidenceId: input.previousEvidenceId,
         diagnosis: evaluation.feedback,
+        promptVersion: 'activity-v2',
+        criteria,
         sourceExcerpt: context.sourceExcerpt,
+        sourceOffset: context.sourceOffset,
         requestId: input.requestId,
         leaseToken: claim.leaseToken,
       }, suggestNextAction({
@@ -109,5 +123,6 @@ export class LearningWorkspaceService {
     }
   }
   public suggestions(ownerId: string) { return this.repository.suggestions(ownerId); }
+  public requestRevisit(ownerId: string, evidenceId: string) { return this.repository.requestRevisit(ownerId, evidenceId); }
   public decideSuggestion(ownerId: string, id: string, decision: SuggestionDecision) { return this.repository.decideSuggestion(ownerId, id, decision); }
 }

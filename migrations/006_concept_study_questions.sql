@@ -1,1 +1,0 @@
-ALTER TABLE concepts ADD COLUMN IF NOT EXISTS study_question JSONB;

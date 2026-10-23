@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import { readFile } from 'node:fs/promises'
+import { projectMigrations } from './migration-catalog'
 
-const migrationUrl = new URL('../../../migrations/014_infinitepay_billing.sql', import.meta.url)
+const migrationUrl = new URL('../../../prisma/migrations/014_infinitepay_billing/migration.sql', import.meta.url)
+const dailyCreditsMigrationUrl = new URL('../../../prisma/migrations/026_daily_provider_request_credits/migration.sql', import.meta.url)
 
 describe('billing migration', () => {
   test('protects grants, transactions and idempotency with uniqueness', async () => {
@@ -48,5 +50,19 @@ describe('billing migration', () => {
     expect(sql).toContain("WHEN 'INITIAL_EVALUATION' THEN 2")
     expect(sql).toContain("WHEN 'EXTRACTION' THEN 12")
     expect(sql.indexOf("RETURN QUERY SELECT 'PERIOD_LIMIT'::TEXT")).toBeLessThan(sql.indexOf('UPDATE ai_credit_global_daily_usage'))
+  })
+
+  test('new reservation counts provider attempts and leaves free monthly usage untouched', async () => {
+    const sql = await readFile(dailyCreditsMigrationUrl, 'utf8')
+    expect(sql).toContain("ELSE 100 END")
+    expect(sql).toContain("v_plan_id <> 'FREE' AND v_period_used + 1 > v_period_limit")
+    expect(sql).not.toContain('UPDATE ai_credit_monthly_usage')
+    expect(sql).toContain('VALUES (p_owner_id,p_operation,v_plan_id,1)')
+    expect(sql).toContain('REVOKE ALL ON FUNCTION reserve_ai_credits(UUID,TEXT,BIGINT,BOOLEAN) FROM PUBLIC')
+  })
+
+  test('new migration follows the existing 025 ledger without a gap', async () => {
+    const names = (await projectMigrations()).map((migration) => migration.name)
+    expect(names.indexOf('026_daily_provider_request_credits.sql')).toBe(names.indexOf('025_source_offsets.sql') + 1)
   })
 })

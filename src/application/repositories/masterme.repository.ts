@@ -36,6 +36,7 @@ export interface MasterMeRepository {
   saveConcepts(
     concepts: Concept[],
     relations?: ConceptRelation[],
+    processingJobId?: string,
   ): Awaitable<void>;
   saveConceptLocalizations(
     materialId: string,

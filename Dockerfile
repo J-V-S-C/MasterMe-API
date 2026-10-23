@@ -8,6 +8,7 @@ RUN bun run generate
 
 FROM oven/bun:1.3.6
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils util-linux && rm -rf /var/lib/apt/lists/*
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 COPY --chown=bun:bun . .

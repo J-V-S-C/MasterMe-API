@@ -6,6 +6,7 @@ describe('assessment question screening', () => {
     'O que é uma função na linguagem de programação?',
     'Qual é o retorno desta função quando recebe zero?',
     'What does binary search return if the target is absent?',
+    'What concept does the introduction define regarding query execution?',
   ])('rejects recall-only question: %s', (question) => {
     expect(passesAssessmentQuestionScreen(question)).toBeFalse();
   });

@@ -25,8 +25,8 @@ docker run --detach --name "$container" --network host \
   "$image" bun run start >/dev/null
 
 for attempt in $(seq 1 30); do
-  if curl --fail --silent --show-error --max-time 2 "http://127.0.0.1:${port}/health" >/dev/null \
-    && curl --fail --silent --show-error --max-time 2 "http://127.0.0.1:${port}/ready" >/dev/null; then
+  if curl --fail --silent --max-time 2 "http://127.0.0.1:${port}/health" >/dev/null \
+    && curl --fail --silent --max-time 2 "http://127.0.0.1:${port}/ready" >/dev/null; then
     metrics_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 2 "http://127.0.0.1:${port}/metrics")"
     webhook_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 2 --request POST "http://127.0.0.1:${port}/api/billing/webhooks/infinitepay")"
     checkout_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 2 --request POST "http://127.0.0.1:${port}/api/billing/checkouts")"
@@ -36,8 +36,11 @@ for attempt in $(seq 1 30); do
     test "$webhook_status" = 404
     test "$checkout_status" = 404
     test "$reconcile_status" = 404
-    grep --quiet '"id":"FREE"' <<<"$catalog"
-    grep --quiet '"dailyCreditLimit":24' <<<"$catalog"
+    if ! grep --quiet '"id":"FREE"' <<<"$catalog" \
+      || ! grep --quiet '"dailyCreditLimit":100' <<<"$catalog"; then
+      echo 'Smoke test: catálogo gratuito não apresenta o plano Livre com 100 créditos diários.' >&2
+      exit 1
+    fi
     if grep --quiet '"id":"ESSENTIAL"\|"id":"PRO"' <<<"$catalog"; then
       echo 'paid plans leaked into the free-launch catalog' >&2
       exit 1
@@ -45,11 +48,13 @@ for attempt in $(seq 1 30); do
     exit 0
   fi
   if ! docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null | grep --quiet '^true$'; then
+    echo 'Smoke test: o contêiner encerrou antes de ficar pronto.' >&2
     docker logs "$container"
     exit 1
   fi
   sleep 1
 done
 
+echo 'Smoke test: /health ou /ready não respondeu com sucesso em 30 segundos.' >&2
 docker logs "$container"
 exit 1

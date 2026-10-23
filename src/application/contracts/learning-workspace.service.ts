@@ -8,6 +8,7 @@ export interface RelationInput {
   statement: string;
   justification: string;
   sourceExcerpt: string;
+  sourceOffset?: number;
 }
 
 export interface TaskInput {
@@ -35,12 +36,31 @@ export interface GoalInput {
   deadline?: Date;
 }
 
+export interface GoalUpdate {
+  title?: string;
+  description?: string;
+  deadline?: Date | null;
+}
+
 export interface PlanInput {
   title: string;
   goalId?: string;
+  materialIds?: string[];
 }
 
-export type SuggestionDecision = 'ACCEPTED' | 'IGNORED';
+export interface PlanUpdate {
+  title?: string;
+  goalId?: string | null;
+  materialIds?: string[];
+}
+
+export interface SuggestionDecision {
+  decision: 'ACCEPTED' | 'IGNORED';
+  title?: string;
+  durationMinutes?: number;
+  scheduledAt?: Date;
+  planId?: string;
+}
 
 export interface EvidenceInput {
   materialId: string;
@@ -52,8 +72,13 @@ export interface EvidenceInput {
   answer: string;
   status: EvidenceStatus;
   assisted: boolean;
+  hintsUsed?: string[];
+  previousEvidenceId?: string;
+  promptVersion?: string;
+  criteria?: string[];
   diagnosis: string;
   sourceExcerpt: string;
+  sourceOffset?: number;
   requestId?: string;
   leaseToken?: string;
 }
@@ -65,5 +90,7 @@ export interface ActivityInput {
   activityType: EvidenceActivity;
   answer: string;
   assisted: boolean;
+  hintsUsed?: string[];
+  previousEvidenceId?: string;
   taskId?: string;
 }

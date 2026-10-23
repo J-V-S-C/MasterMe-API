@@ -272,6 +272,11 @@ export class IngestionController {
       ),
     });
   };
+  public readonly deleteMaterial: RequestHandler = async (_req, res) => {
+    const { id } = getValidated(res, 'params', IdParamsSchema);
+    await this.ingestion.deleteMaterial(id, res.locals.userId!);
+    res.status(204).end();
+  };
   public readonly status: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
     res.set('cache-control', 'no-store');

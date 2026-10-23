@@ -41,6 +41,14 @@ describe('practice HTTP schemas', () => {
 describe('material limits', () => {
   const longContent = 'a'.repeat(MAX_MATERIAL_LENGTH + 1);
 
+  test('accepts material beyond the former 100,000-character limit', () =>
+    expect(
+      CreateMaterialBodySchema.safeParse({
+        title: 'Livro',
+        content: 'a'.repeat(100_001),
+      }).success,
+    ).toBeTrue());
+
   test('rejects typed text above the API limit', () =>
     expect(
       CreateMaterialBodySchema.safeParse({

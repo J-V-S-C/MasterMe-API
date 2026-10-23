@@ -1,38 +1,26 @@
-import { readFile, readdir } from 'node:fs/promises';
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
 import { getEnvironment } from './src/config/environment';
-import {
-  checksumMigration,
-  runMigrations,
-  type Migration,
-} from './src/infra/database/migration-runner';
+import { runMigrations } from './src/infra/database/migration-runner';
+import { projectMigrations } from './src/infra/database/migration-catalog';
 
-// Para migrações manuais, o arquivo local é a fonte explícita da configuração.
-// Isso impede que uma DATABASE_URL antiga, exportada no terminal, direcione o
-// comando silenciosamente para outro banco.
-dotenv.config({ override: true });
+// Variáveis fornecidas pelo Compose têm precedência sobre arquivos locais.
+dotenv.config();
 const environment = getEnvironment();
 const databaseHost = new URL(environment.DATABASE_URL).hostname;
-if (!databaseHost.endsWith('.pooler.supabase.com')) {
+const productionPooler = databaseHost.endsWith('.pooler.supabase.com');
+const localDevelopmentDatabase = environment.NODE_ENV === 'development' &&
+  Boolean(process.env.DEV_DATABASE_URL) &&
+  environment.DATABASE_URL === process.env.DEV_DATABASE_URL;
+if (!productionPooler && !localDevelopmentDatabase) {
   throw new Error(
-    'Migração bloqueada: DATABASE_URL não aponta para o Session pooler do Supabase. Use Connect > Session pooler, porta 5432.',
+    'Migração bloqueada: use DEV_DATABASE_URL em desenvolvimento ou o Session pooler do Supabase.',
   );
 }
 const pool = new Pool({ connectionString: environment.DATABASE_URL });
 try {
-  console.info('Conexão confirmada com o Session pooler do Supabase.');
-  const directory = new URL('./migrations/', import.meta.url);
-  const migrations: Migration[] = [];
-  for (const name of (await readdir(directory))
-    .filter((file) => file.endsWith('.sql'))
-    .sort()) {
-    const sql = await readFile(
-      new URL(`./migrations/${name}`, import.meta.url),
-      'utf8',
-    );
-    migrations.push({ name, sql, checksum: checksumMigration(sql) });
-  }
+  console.info('Conexão com o banco de migrações confirmada.');
+  const migrations = await projectMigrations();
   const client = await pool.connect();
   try {
     const result = await runMigrations(client, migrations);
