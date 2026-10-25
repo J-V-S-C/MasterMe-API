@@ -23,6 +23,9 @@ export const Plan = z.object({
   materialIds: z.array(z.uuid()).max(30).refine((ids) => new Set(ids).size === ids.length).optional(),
 });
 export const PlanTaskOrder = z.object({ taskIds: z.array(z.uuid()).refine((ids) => new Set(ids).size === ids.length) });
+export const TaskBoardOrder = PlanTaskOrder.extend({
+  statuses: z.record(z.uuid(), z.enum(['PENDING', 'IN_PROGRESS', 'DONE'])).optional(),
+});
 export const PlanPatch = Plan.partial().extend({ goalId: z.uuid().nullable().optional() })
   .refine((value) => Object.keys(value).length > 0);
 export const Activity = z.enum([
@@ -47,9 +50,11 @@ export const Task = z.object({
 export const TaskPatch = z
   .object({
     title: z.string().trim().min(1).max(160).optional(),
+    materialId: z.uuid().nullable().optional(),
+    conceptId: z.uuid().nullable().optional(),
     durationMinutes: z.number().int().min(1).max(480).nullable().optional(),
     scheduledAt: z.iso.datetime({ offset: true }).nullable().optional(),
-    status: z.enum(['PENDING', 'DONE', 'REMOVED']).optional(),
+    status: z.enum(['PENDING', 'IN_PROGRESS', 'DONE', 'REMOVED']).optional(),
   })
   .refine((value) => Object.keys(value).length > 0);
 export const Relation = z.object({

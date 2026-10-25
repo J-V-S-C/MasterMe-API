@@ -26,6 +26,17 @@ describe('splitMaterialForExtraction', () => {
     ])
   })
 
+
+  test('bounds evidence chunks and starts each on a word boundary when possible', () => {
+    const content = 'A complete sentence about one idea. '.repeat(110);
+    const paragraphs = indexMaterialParagraphs(content, 160);
+    expect(paragraphs.length).toBeGreaterThan(1);
+    expect(paragraphs.every((paragraph) => paragraph.text.length <= 160)).toBe(true);
+    expect(paragraphs.map(({ text }) => text).join('')).toBe(content.trim());
+    expect(paragraphs.every((paragraph) => content.slice(paragraph.offset, paragraph.offset + paragraph.text.length) === paragraph.text)).toBe(true);
+    expect(paragraphs.slice(1).every((paragraph) => /^[A-Z]/.test(paragraph.text))).toBe(true);
+  })
+
   test('keeps distinct offsets for repeated source paragraphs', () => {
     const content = 'Same source.\n\nSame source.';
     expect(indexMaterialParagraphs(content).map(({ offset }) => offset)).toEqual([0, 14]);
@@ -66,7 +77,7 @@ test('extracts book batches separately and preserves cited offsets', async () =>
   expect(progress.at(-1)).toEqual({ stage: 'REDUCING', totalChunks: 2, completedChunks: 2 })
   expect(result.fragments.length).toBe(2)
   expect(result.fragments[0]?.sourceExcerpt).toBe('First passage.')
-  expect(result.fragments[1]?.sourceExcerpt).toBe('x'.repeat(12_000))
+  expect(result.fragments[1]?.sourceExcerpt).toBe('x'.repeat(1_600))
   expect(material.content.includes(result.fragments[1]!.sourceExcerpt)).toBe(true)
 })
 

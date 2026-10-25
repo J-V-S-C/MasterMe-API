@@ -97,6 +97,13 @@ integrationTest(
       const secondTask = await repository.createTask(ownerA, { title: 'Explain article', activityType: 'EXPLAIN', planId: plan.id, materialId: materialB });
       const reorderedTasks = await repository.reorderPlanTasks(ownerA, plan.id, [secondTask.id, firstTask.id]);
       expect(reorderedTasks.map((task) => task.id)).toEqual([secondTask.id, firstTask.id]);
+      const standaloneTask = await repository.createTask(ownerA, { title: 'Review notes', activityType: 'READ', materialId: materialA });
+      const priorities = await repository.reorderTasks(ownerA, [standaloneTask.id, secondTask.id, firstTask.id], { [secondTask.id]: 'IN_PROGRESS' });
+      expect(priorities.map((task) => task.id)).toEqual([standaloneTask.id, secondTask.id, firstTask.id]);
+      expect(priorities.find((task) => task.id === secondTask.id)?.status).toBe('IN_PROGRESS');
+      await expect(repository.reorderTasks(ownerA, [standaloneTask.id, secondTask.id, firstTask.id], { [ownerB]: 'DONE' })).rejects.toThrow('ordem');
+      await expect(repository.reorderTasks(ownerB, [standaloneTask.id, secondTask.id, firstTask.id])).rejects.toThrow('ordem');
+      await expect(repository.reorderTasks(ownerA, [firstTask.id])).rejects.toThrow('ordem');
       await expect(repository.reorderPlanTasks(ownerB, plan.id, [firstTask.id, secondTask.id])).rejects.toThrow('Roteiro');
       await expect(repository.reorderPlanTasks(ownerA, plan.id, [firstTask.id])).rejects.toThrow('ordem');
       await client.query(
@@ -232,7 +239,7 @@ integrationTest(
         decisions.filter((result) => result.status === 'fulfilled').length,
       ).toBeGreaterThan(0);
       const tasksAfterDecision = await repository.tasks(ownerA);
-      expect(tasksAfterDecision).toHaveLength(3);
+      expect(tasksAfterDecision).toHaveLength(4);
       const revisit = tasksAfterDecision.find((task) => task.activity_type === 'REVISIT');
       expect(revisit).toMatchObject({ title: 'Review the cause', duration_minutes: 40 });
       expect(revisit?.study_suggestions[0]?.learning_evidence.id).toBe(repeated.event.id);

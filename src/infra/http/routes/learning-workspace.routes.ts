@@ -1,5 +1,5 @@
 import { Router, type RequestHandler } from 'express';
-import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, GoalPatch, Plan, PlanPatch, PlanTaskOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../../schemas/learning-workspace.schema';
+import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, GoalPatch, Plan, PlanPatch, PlanTaskOrder, TaskBoardOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../../schemas/learning-workspace.schema';
 import { authenticate } from '../../../middleware/authenticate';
 import { bindAiUsageOwner } from '../../../middleware/ai-usage-context';
 import { aiBurstRateLimit } from '../../../middleware/rate-limit';
@@ -99,6 +99,7 @@ export function createLearningWorkspaceRouter(
     '/tasks',
     asyncRoute(controller.tasks),
   );
+  router.put('/tasks/order', validateRequest({ body: TaskBoardOrder }), asyncRoute(controller.reorderTasks));
   router.post(
     '/tasks',
     validateRequest({ body: Task }),

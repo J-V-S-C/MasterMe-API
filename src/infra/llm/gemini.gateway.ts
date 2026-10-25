@@ -22,25 +22,37 @@ import type { ActivityAssessmentGateway } from '../../application/ports/activity
 
 const asJson = (value: unknown): string => JSON.stringify(value);
 const EXTRACTION_CHUNK_SIZE = 12_000;
+const MAX_EVIDENCE_SPAN_CHARS = 1_600;
 const MAX_EXTRACTION_PROMPT_CHARS = 100_000;
 const localeName = (locale: SupportedLocale): string =>
   locale === 'pt-BR' ? 'português do Brasil' : 'English (United States)';
 export const indexMaterialParagraphs = (
   content: string,
-  maxParagraphSize = EXTRACTION_CHUNK_SIZE,
+  maxParagraphSize = MAX_EVIDENCE_SPAN_CHARS,
 ): Array<{ id: string; text: string; offset: number }> => {
   const paragraphs: Array<{ id: string; text: string; offset: number }> = [];
   let start = 0;
   const add = (end: number) => {
     const raw = content.slice(start, end);
     const text = raw.trim();
-    if (text) for (let index = 0; index < text.length; index += maxParagraphSize) {
-      const part = text.slice(index, index + maxParagraphSize);
-      paragraphs.push({
-        id: `P${String(paragraphs.length + 1).padStart(4, '0')}`,
-        text: part,
-        offset: start + raw.indexOf(text) + index,
-      });
+    if (text) {
+      let index = 0;
+      while (index < text.length) {
+        let end = Math.min(index + maxParagraphSize, text.length);
+        if (end < text.length) {
+          const minimum = index + Math.floor(maxParagraphSize * 0.6);
+          const sentence = text.lastIndexOf('. ', end - 1);
+          const line = text.lastIndexOf('\n', end - 1);
+          const space = text.lastIndexOf(' ', end - 1);
+          end = sentence >= minimum ? sentence + 2 : line >= minimum ? line + 1 : space >= minimum ? space + 1 : end;
+        }
+        paragraphs.push({
+          id: `P${String(paragraphs.length + 1).padStart(4, '0')}`,
+          text: text.slice(index, end),
+          offset: start + raw.indexOf(text) + index,
+        });
+        index = end;
+      }
     }
   };
   for (const separator of content.matchAll(/\n\s*\n+/g)) {

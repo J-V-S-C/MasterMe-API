@@ -25,9 +25,11 @@ export interface TaskInput {
 
 export interface TaskUpdate {
   title?: string;
+  materialId?: string | null;
+  conceptId?: string | null;
   durationMinutes?: number | null;
   scheduledAt?: Date | null;
-  status?: 'PENDING' | 'DONE' | 'REMOVED';
+  status?: 'PENDING' | 'IN_PROGRESS' | 'DONE' | 'REMOVED';
 }
 
 export interface GoalInput {
