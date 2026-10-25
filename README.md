@@ -155,7 +155,7 @@ This README is the operational guide to this repository. In an independent clone
 
 ## Deploy OCI and production protection
 
-Backend and frontend are independent Git repositories. `development` integrates; `main` publishes. The frontend runs on Cloudflare Workers; API, worker and uploads are on OCI; PostgreSQL is in the Supabase. The backend image is published in GHCR by SHA. VM needs Docker Engine, Compose and HTTPS proxy. The proxy forwards to `127.0.0.1:3333` and preserves the SSE in `/api/events`.
+Backend and frontend are independent Git repositories. `dev` integrates; `main` publishes. The frontend runs on Cloudflare Workers; API, worker and uploads are on OCI; PostgreSQL is in the Supabase. The backend image is published in GHCR by SHA. VM needs Docker Engine, Compose and HTTPS proxy. The proxy forwards to `127.0.0.1:3333` and preserves the SSE in `/api/events`.
 
 Use Supabase URL **Session pooler** on port 5432 with `sslmode=require`; hide reserved characters from the password in the URL. API and worker use independent pools (`DATABASE_POOL_MAX=3` as initial operating value). From the backend, `bun run migrate` executes migrations with ledger/checksum and advisory lock; partial schema or altered historical migration should fail, never be silently reapplied. Migrations are additive and are not reversed by the rollback of the image.
 
