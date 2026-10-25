@@ -21,7 +21,7 @@ export function suggestNextAction(input: {
   return { activityType: 'REVISIT', title: `Retomar ${input.conceptName}`, reason };
 }
 
-export function scheduledLoad(tasks: Array<{ status: 'PENDING' | 'DONE' | 'REMOVED'; durationMinutes: number | null }>, availableMinutes: number) {
-  const plannedMinutes = tasks.filter((task) => task.status === 'PENDING').reduce((sum, task) => sum + (task.durationMinutes ?? 0), 0);
+export function scheduledLoad(tasks: Array<{ status: 'PENDING' | 'IN_PROGRESS' | 'DONE' | 'REMOVED'; durationMinutes: number | null }>, availableMinutes: number) {
+  const plannedMinutes = tasks.filter((task) => task.status === 'PENDING' || task.status === 'IN_PROGRESS').reduce((sum, task) => sum + (task.durationMinutes ?? 0), 0);
   return { plannedMinutes, availableMinutes, excessMinutes: Math.max(0, plannedMinutes - availableMinutes) };
 }

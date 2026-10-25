@@ -344,6 +344,30 @@ export class PrismaLearningWorkspaceRepository {
     }, { timeout: 30_000 });
   }
 
+  public async reorderTasks(ownerId: string, taskIds: string[], statuses?: Record<string, 'PENDING' | 'IN_PROGRESS' | 'DONE'>) {
+    return this.db.$transaction(async (tx) => {
+      const current = await tx.study_tasks.findMany({
+        where: { owner_id: ownerId, status: { not: 'REMOVED' } }, select: { id: true },
+      });
+      const requestedIds = new Set(taskIds);
+      if (requestedIds.size !== taskIds.length || current.length !== taskIds.length ||
+        current.some(({ id }) => !requestedIds.has(id)) ||
+        (statuses && Object.keys(statuses).some((id) => !requestedIds.has(id))))
+        throw new ConflictError('A ordem deve incluir todas as tarefas ativas. Recarregue e tente novamente.');
+      for (const [sortOrder, id] of taskIds.entries()) {
+        const changed = await tx.study_tasks.updateMany({
+          where: { id, owner_id: ownerId, status: { not: 'REMOVED' } },
+          data: { sort_order: sortOrder, ...(statuses?.[id] ? { status: statuses[id] } : {}), updated_at: new Date() },
+        });
+        if (!changed.count) throw new ConflictError('As tarefas mudaram. Recarregue e tente novamente.');
+      }
+      return tx.study_tasks.findMany({
+        where: { owner_id: ownerId, status: { not: 'REMOVED' } },
+        orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }],
+      });
+    }, { timeout: 30_000 });
+  }
+
   private async assertOwnedPlanMaterials(ownerId: string, ids: string[]) {
     if (!ids.length) return;
     const count = await this.db.study_materials.count({ where: { id: { in: ids }, owner_id: ownerId } });
@@ -352,7 +376,7 @@ export class PrismaLearningWorkspaceRepository {
   public tasks(ownerId: string) {
     return this.db.study_tasks.findMany({
       where: { owner_id: ownerId },
-      include: { study_suggestions: { select: { learning_evidence: {
+      include: { concepts: { select: { name: true } }, study_suggestions: { select: { learning_evidence: {
         select: { id: true, prompt: true, diagnosis: true, source_excerpt: true, source_offset: true, status: true, created_at: true },
       } } } },
       orderBy: [{ scheduled_at: 'asc' }, { created_at: 'asc' }],
@@ -423,15 +447,32 @@ export class PrismaLearningWorkspaceRepository {
     id: string,
     input: {
       title?: string;
+      materialId?: string | null;
+      conceptId?: string | null;
       durationMinutes?: number | null;
       scheduledAt?: Date | null;
-      status?: 'PENDING' | 'DONE' | 'REMOVED';
+      status?: 'PENDING' | 'IN_PROGRESS' | 'DONE' | 'REMOVED';
     },
   ) {
+    let effectiveMaterialId = input.materialId;
+    if (input.materialId !== undefined || input.conceptId !== undefined) {
+      const current = await this.db.study_tasks.findFirst({ where: { id, owner_id: ownerId } });
+      if (!current) throw new NotFoundError('Tarefa');
+      const materialId = input.materialId !== undefined ? input.materialId : current.material_id;
+      const conceptId = input.conceptId !== undefined ? input.conceptId : current.concept_id;
+      if (materialId) await this.ownedMaterial(ownerId, materialId);
+      if (conceptId) {
+        const concept = await this.db.concepts.findFirst({ where: { id: conceptId, study_materials: { owner_id: ownerId } } });
+        if (!concept || (materialId && concept.material_id !== materialId)) throw new NotFoundError('Conceito');
+        if (!materialId) effectiveMaterialId = concept.material_id;
+      }
+    }
     const changed = await this.db.study_tasks.updateMany({
       where: { id, owner_id: ownerId },
       data: {
         ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(effectiveMaterialId !== undefined ? { material_id: effectiveMaterialId } : {}),
+        ...(input.conceptId !== undefined ? { concept_id: input.conceptId } : {}),
         ...(input.durationMinutes !== undefined
           ? { duration_minutes: input.durationMinutes }
           : {}),
@@ -485,7 +526,7 @@ export class PrismaLearningWorkspaceRepository {
       tasks: today,
       load: scheduledLoad(
         today.map((task) => ({
-          status: task.status as 'PENDING' | 'DONE' | 'REMOVED',
+          status: task.status as 'PENDING' | 'IN_PROGRESS' | 'DONE' | 'REMOVED',
           durationMinutes: task.duration_minutes,
         })),
         availability?.minutes ?? 0,

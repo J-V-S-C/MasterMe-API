@@ -101,6 +101,19 @@ describe('learning workspace routes', () => {
     });
   });
 
+  test('validates priority changes for all pending tasks', async () => {
+    const calls: unknown[][] = [];
+    await withServer({
+      reorderTasks: async (owner, taskIds, statuses) => { calls.push([owner, taskIds, statuses]); return []; },
+    }, async (baseUrl) => {
+      const path = `${baseUrl}/tasks/order`;
+      expect((await fetch(path, json('PUT', { taskIds: [requestId, requestId] }))).status).toBe(400);
+      expect(calls).toHaveLength(0);
+      expect((await fetch(path, json('PUT', { taskIds: [suggestionId, requestId], statuses: { [requestId]: 'IN_PROGRESS' } }))).status).toBe(200);
+      expect(calls).toEqual([[ownerId, [suggestionId, requestId], { [requestId]: 'IN_PROGRESS' }]]);
+    });
+  });
+
   test('requires authentication before calling the service', async () => {
     let calls = 0;
     await withServer({ shelves: async () => { calls += 1; return []; } }, async (baseUrl) => {
