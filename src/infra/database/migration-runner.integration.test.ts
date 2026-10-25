@@ -24,7 +24,7 @@ import { errorHandler } from '../../middleware/error-handler';
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 if (process.env.MIGRATION_TEST_REQUIRED === 'true' && !databaseUrl) {
   throw new Error(
-    'MIGRATION_TEST_DATABASE_URL is required in CI; the real PostgreSQL suite must not be skipped.',
+    'MIGRATION_TEST_DATABASE_URL is required when MIGRATION_TEST_REQUIRED=true. Run local tests with bun run test and the dedicated test-db, or configure an isolated PostgreSQL URL in CI.',
   );
 }
 const integrationTest = databaseUrl ? test : test.skip;
