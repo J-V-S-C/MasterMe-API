@@ -2,7 +2,7 @@ import type { Concept } from '../domain/concept';
 import type { MasterMeQuestion } from '../domain/assessment';
 import type { PrioritizedConcept, PracticeProjectContent } from '../domain/practice-project';
 import type { Evaluation, EdgeCaseChallenge, IsomorphicProblem } from '../domain/assessment';
-import type { StudyMaterial, SupportedLocale } from '../domain/material';
+import type { MaterialOutlineUnit, StudyMaterial, SupportedLocale } from '../domain/material';
 import type { AiOperation } from '../domain/billing';
 
 export type AiUsageEvent = {
@@ -32,6 +32,7 @@ export interface MasterMeLlmGateway {
   extractKnowledge(
     material: StudyMaterial,
     onProgress?: (progress: ExtractionProgress) => Promise<void>,
+    outline?: MaterialOutlineUnit[],
   ): Promise<ExtractedKnowledge>;
   localizeKnowledge(
     concepts: Concept[],
@@ -52,6 +53,7 @@ export interface MasterMeLlmGateway {
     material: StudyMaterial,
     concepts: Concept[],
     priorities: PrioritizedConcept[],
+    preferences?: { difficulty?: 'FOUNDATION' | 'INTERMEDIATE' | 'ADVANCED'; size?: 'SMALL' | 'MEDIUM'; observedGaps?: string[]; chapterTitles?: string[] },
   ): Promise<PracticeProjectContent>;
   generateIsomorphicProblem(
     concepts: Concept[],

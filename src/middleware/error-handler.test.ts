@@ -39,7 +39,7 @@ describe('errorHandler', () => {
     errorHandler(new MulterError('LIMIT_FILE_SIZE'), { method: 'POST', path: '/api/materials' } as Request, response, (() => undefined) as NextFunction)
 
     expect(statusCode).toBe(413)
-    expect(payload).toEqual({ code: 'UPLOAD_TOO_LARGE', message: 'Envie um arquivo de até 8 MiB.', requestId: 'request-1' })
+    expect(payload).toEqual({ code: 'UPLOAD_TOO_LARGE', message: 'Envie um arquivo de até 16 MiB.', requestId: 'request-1' })
   })
 
   test('maps webhook JSON size limit to a stable 413', () => {

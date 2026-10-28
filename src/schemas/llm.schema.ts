@@ -19,6 +19,7 @@ export const GeminiEvaluationResponseSchema = z.object({
   strength: z.string(),
   gap: z.string(),
   nextAction: z.string(),
+  evidenceQuote: z.string(),
 })
 export type GeminiEvaluationResponse = z.infer<typeof GeminiEvaluationResponseSchema>
 
@@ -35,13 +36,13 @@ export const ExtractedFragmentSchema = z.object({
 })
 
 export const ExtractedKnowledgeSchema = z.object({
-  fragments: z.array(ExtractedFragmentSchema).min(1).max(30),
+  fragments: z.array(ExtractedFragmentSchema).min(1),
   relations: z.array(z.object({
     fromName: z.string().min(1), toName: z.string().min(1),
     relationType: z.enum(['REQUIRES', 'ENABLES', 'CONTRASTS', 'APPLIES_TO', 'PART_OF']),
     statement: z.string().min(5).max(500), justification: z.string().min(5).max(1000),
     sourceExcerpt: z.string().min(1),
-  })).max(60).optional(),
+  })).optional(),
 })
 export type ExtractedKnowledge = z.infer<typeof ExtractedKnowledgeSchema>
 

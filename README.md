@@ -16,6 +16,10 @@ The public domain is served by Caddy on OCI, which terminates HTTPS and forwards
 docker compose --env-file .env --env-file .env.development up --build
 ```
 
+The local Compose mounts the backend source and runs API and worker with Bun watch mode. After the first startup, edits to backend TypeScript files restart the affected process automatically. Rebuild the image when dependencies, the Prisma schema, or Dockerfile change; those files are not hot reloaded.
+
+For extraction failures, run `docker compose --env-file .env --env-file .env.development logs worker`. The `extract-material` record includes the processing stage, attempt, retry decision, safe failure reason, and any available application code, HTTP status, system code, or source location. It deliberately excludes raw provider messages, uploaded content, and student or material IDs. An older entry containing only `EXTRACTION_FAILED` cannot reveal the exact underlying exception; the material status can still show the student-facing failure and the job's last stage.
+
 Local validation:
 
 ```bash
@@ -35,6 +39,8 @@ Prisma ORM was chosen for persistence, with incremental migration of adapters an
 `prisma/migrations/` is the only source of the SQL migration files. The `bun run migrate` command reads these files and preserves the names and checksums of the ledger already existing in the production database; do not run `prisma migrate deploy` in this database without first reconciling Prisma's history with this ledger. The migration of adapters to Prisma Client is gradual and does not change this rollout rule. `dev/postgres-init.sql` creates only the `auth.users` table that Supabase already provides for the local PostgreSQL Compose. `docker-compose.yml` is the local environment; `deploy/compose.yml`, `deploy/.env.example` and the deploy script are the deployment manifest and configuration of the production VM, with its own limits and secrets. `test-fixtures/phase2/` contains small materials and representative reference PDFs to test parsers, provenance and compatibility; the documentation describes the expected result, but does not replace these reproducible input data. PDFs are extracted by `pdftohtml` from Poppler in subprocess with timeout, virtual memory limit, output limit and 800 pages maximum; the Dockerfile installs `poppler-utils` and includes `prlimit`. Outside the container, install Poppler and `prlimit` (util-linux) to test PDF upload. The XML SAX parser preserves only outline data that locates headings on the pages; without a reliable outline, the material remains a single unit.
 
 - Express receives and validates parameters and bodies before controllers.
+- Material kind (`BOOK`, `ARTICLE`, or `TEXT`) is inferred on upload or chosen by the student and can be corrected with `PATCH /api/materials/:id/kind`. Legacy rows keep an unset kind and retain the previous extraction inference. `GET /api/learning/materials/:id/outline-state` returns the outline revision and original headings; `PATCH /api/learning/materials/:id/outline` sends the complete ordered list with an expected revision. Existing entries keep their IDs and source offsets; a new entry supplies a title and source offsets within the original text. Omitted entries are removed only when they have no chapter checkpoint or linked task. Migrations 031 and 032 are additive; rollback keeps their columns and historical data while disabling the new writes.
+- `GET /api/learning/today` returns at most three time-fitting, explainable actions from today's scheduled tasks, due reviews, open gaps, and the next readable section. It never creates a task or changes learning evidence. The browser can override available minutes for the current session; the account's weekday availability is the default.
 - `src/main/factories/` mounts repository → service → controller by resource; `src/infra/http/routes/` only associates middleware and handlers. The worker uses service factories rather than HTTP controllers.
 - Repository contracts stay in `src/application/repositories/`; external gateways stay in `src/application/ports/`. Adapters PostgreSQL and in memory stay in `src/infra/repositories/`. The memory implementation only serves the tests.
 - Named service API interfaces and types are in `src/application/contracts/`, grouped by service; exclusive persistence types remain with the repository contract.
@@ -54,6 +60,7 @@ Prisma ORM was chosen for persistence, with incremental migration of adapters an
 |POST|`/api/materials`|Creates textual material.|
 |GET|`/api/materials`|List metadata without sending full content.|
 |GET|`/api/materials/:id`|Fetches a material's content on demand.|
+|GET|`/api/materials/:id/file`|Returns the original PDF to its owner for page reading.|
 |POST|`/api/materials/upload`|Uploads PDF, Markdown, or TXT.|
 |POST|`/api/materials/:id/extract`|Queues extraction.|
 |DELETE|`/api/materials/:id/extract`|Cancels an active extraction and discards its late result.|
@@ -62,6 +69,7 @@ Prisma ORM was chosen for persistence, with incremental migration of adapters an
 |GET|`/api/materials/:id/knowledge-map`|Returns map, explanation status and edge case.|
 |POST|`/api/materials/:id/localize`|Localizes generated content without altering evidence.|
 |POST|`/api/concepts/:id/sessions`|Initiates explanation of any concept.|
+|GET|`/api/concepts/:id/sessions`|Lists saved sessions and answers for one owned concept, newest first.|
 |POST|`/api/sessions/:id/answers`|Evaluates initial response; `PASSED` concludes the explanation.|
 |POST|`/api/sessions/:id/edge-case`|Creates or recovers opt-in edge case.|
 |POST|`/api/sessions/:id/edge-case/answers`|Evaluates the case without downgrading the explanation.|
@@ -144,7 +152,7 @@ Each extraction job completed identifies a version. The API exposes `activeExtra
 
 Migration 024 adds immutable context to new attempts at relation, application and retention: question version, used criteria, declared clues and ID of the previous attempt when one exists. Legacy attempts receive the `legacy` version and empty lists, without invented criteria. The API only accepts `previousEvidenceId` from the same account, material, activity, concept and relationship; `hintsUsed` requires `assisted=true`. The interface automatically connects a new attempt to the last of the same target and shows this link in the history. New evaluations use the `activity-v2` heading: understanding, relation, application and retention have different criteria, always accompanied by the assumptions anchored in the content. Contrast and whole-part relationships do not require causality.
 
-To reproduce the local parsing baseline of reference materials, run `bun scripts/measure-phase2-baseline.ts`. The script outputs JSON by fixture with size, duration, editorial structure, payload and process memory variation. It does not call AI; tokens, cost and pedagogical extraction quality require a separate measurement with defined provider and expense limit. For this separate measurement in synthetic fixtures, use `PHASE2_LIVE_BENCHMARK=1 bun --env-file=.env scripts/measure-phase2-ai.ts`; `PHASE2_FIXTURE_OFFSET` and `PHASE2_FIXTURE_LIMIT` restrict the sample. The script does not record in the database, disables model fallback, does not print keys or user text and reports model, tokens, duration and anchor diagnosis. The call consumes the quota of the configured provider. Paste text accepts up to 500,000 characters per request. PDF, Markdown and TXT files accept up to 8 MiB; PDFs accept up to 800 pages. The text extracted from files does not have an additional ceiling by characters. The extraction divides long books into parts of up to 100,000 characters of indexed text and makes a call to Gemini on the part. Each indexed evidence span is capped at 1,600 characters, preferring sentence or word boundaries while preserving exact source offsets; this limit narrows citations but does not guarantee semantic correctness. Each call attempt consumes a credit; fallback and subsequent attempts can consume more. The final map selects up to the configured concept limit between the parts. Size limits, pages, time and memory can still prevent certain files from being imported.
+To reproduce the local parsing baseline of reference materials, run `bun scripts/measure-phase2-baseline.ts`. The script outputs JSON by fixture with size, duration, editorial structure, payload and process memory variation. It does not call AI; tokens, cost and pedagogical extraction quality require a separate measurement with defined provider and expense limit. For this separate measurement in synthetic fixtures, use `PHASE2_LIVE_BENCHMARK=1 bun --env-file=.env scripts/measure-phase2-ai.ts`; `PHASE2_FIXTURE_OFFSET` and `PHASE2_FIXTURE_LIMIT` restrict the sample. The script does not record in the database, disables model fallback, does not print keys or user text and reports model, tokens, duration and anchor diagnosis. The call consumes the quota of the configured provider. Paste text accepts up to 500,000 characters per request. PDF, Markdown and TXT files accept up to 16 MiB; PDFs accept up to 800 pages. The text extracted from files does not have an additional ceiling by characters. The extraction divides long books into parts of up to 100,000 characters of indexed text and makes a call to Gemini on the part. Each indexed evidence span is capped at 1,600 characters, preferring sentence or word boundaries while preserving exact source offsets; this limit narrows citations but does not guarantee semantic correctness. Each call attempt consumes a credit; fallback and subsequent attempts can consume more. The final map selects up to the configured concept limit between the parts. Size limits, pages, time and memory can still prevent certain files from being imported.
 
 ## MVP limits
 
@@ -153,7 +161,7 @@ To reproduce the local parsing baseline of reference materials, run `bun scripts
 - The Practice Project does not receive, execute or evaluate a solution.
 - Raw files stay in local volume; production should use object storage.
 
-This README is the operational guide to this repository. In an independent clone, code, tests, migrations, OpenAPI and workflows define executable behavior; external product context does not replace versioned contracts. Changes with code should register objective, accepted and risks in the phase plan or PR, execute `bun run validate` and receive independent review before being marked completed. The `agents.md` of the main workspace brings together engineering conventions when the backend is in the MasterMe workspace.
+This README is the operational guide to this repository. In an independent clone, code, tests, migrations, OpenAPI and workflows define executable behavior; external product context does not replace versioned contracts. The coding agent edits requested files without running checks, committing, or pushing unless the owner explicitly asks. Commit and CI automation run `bun run validate`; unvalidated edits must not be described as validated completion. The `agents.md` of the main workspace brings together engineering conventions when the backend is in the MasterMe workspace.
 
 ## Deploy OCI and production protection
 
@@ -170,13 +178,13 @@ api.seudominio.com {
   @operational path /metrics /metrics/*
   respond @operational 404
   request_body {
-    max_size 9MB
+    max_size 18MB
   }
   reverse_proxy 127.0.0.1:3333
 }
 ```
 
-Publicly expose only 80/443. Apply rate limiting to the proxy for API, upload, SSE and webhook. The 9 MB ceiling interrupts multipart before the process; the API accepts up to 8 MiB file. Set timeout for slow uploads. InfinitePay webhook is public and accepts a maximum of 16 KiB in the API; it only triggers rereconciliation, and entitlement depends on confirmed `payment_check`. Do not require user session for this webhook. `/metrics` can only be collected by loopback/private network with an operational bearer token; without configured token returns `404`, incorrect token returns `401`.
+Publicly expose only 80/443. Apply rate limiting to the proxy for API, upload, SSE and webhook. The 18 MB ceiling interrupts multipart before the process; the API accepts up to 16 MiB file. Set timeout for slow uploads. InfinitePay webhook is public and accepts a maximum of 16 KiB in the API; it only triggers rereconciliation, and entitlement depends on confirmed `payment_check`. Do not require user session for this webhook. `/metrics` can only be collected by loopback/private network with an operational bearer token; without configured token returns `404`, incorrect token returns `401`.
 
 CI requires PostgreSQL 17 disposable for integrations, dependencies audit, typecheck, testing, Compose validation, and production-only image smoke with read-only filesystem. CD repeats the gate before publishing to not depend on the order of parallel workflows. Automatic publication occurs only in `main`; manual execution in another branch must be refused. Deploy confirms `/ready` after migrations and updating of the API and the worker running. `/health` continues container liveness; this gate does not replace a point-to-point extraction test in the real environment.
 
@@ -205,3 +213,12 @@ Initial objectives, subject to adjustment with real data: API without 5xx in 99.
 - AI failure/cost: separate operation and result, check logs per request ID and share in the provider. Disconnect new attempts with `AI_CREDITS_ENABLED=false` if necessary; reactivate after controlled test.
 - Stalled extraction: check PENDING/PROCESSING/FAILED, Job Age, Worker Memory and Disk. Lease is resumed after five minutes; do not perform concurrent manual SQL. Restart only worker if API is healthy.
 - Billing pending: check pending orders and connectivity with InfinitePay; never force `PAID` into the database. Use authenticated rereconciliation after provider confirmation. Removing handle prevents new checkouts.
+# Book chapter checkpoints
+
+Book uploads with a named top-level source section are extracted one chapter at a time. The worker commits each completed chapter and records its checkpoint in `processing_job_units`. If a later chapter fails, completed chapters remain readable; automatic and manual retries reuse the same job and skip completed chapters. Cancelling stops future chapter commits. The status, retry, and cancel endpoints require the material owner. Migration `033_chapter_checkpoints` is additive; rollback disables the chapter path while preserving the table and existing concepts.
+
+Migration `034_question_versions` adds immutable learning objectives and question snapshots. New evaluated evidence links to the exact prompt, rubric, source excerpt, and extraction job through a question version. Old evidence remains readable with a null link. `GET /api/learning/materials/:materialId/questions` returns current concepts with their objectives and answered question versions, including a fallback objective for legacy concepts. Rollback stops new writes and reads from these tables while retaining their history.
+
+Migration `035_attempt_context` distinguishes Study, focused Drill, and delayed Review evidence, backfilling existing review-linked records. `GET /api/learning/materials/:materialId/drill` selects an active concept, recent uncontested gap, source, criterion, and an application question without spending AI credits. Submitting that question through `POST /api/learning/activities/answers` with `attemptContext: "DRILL"` uses the same grounded evaluator and records the attempt separately from Study and Review. Rollback can ignore the new column while retaining the evidence rows.
+
+Migration `036_task_project_link` adds an optional owner-checked project reference to Practice tasks. Creating or editing a linked task validates that the project belongs to the same material and account. Deleting a project clears its task reference; task completion never changes project or learning evidence. The column is additive and can be ignored on rollback.

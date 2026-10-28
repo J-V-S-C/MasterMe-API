@@ -7,6 +7,7 @@ import {
   CreateMaterialBodySchema,
   IdParamsSchema,
   LocaleBodySchema,
+  MaterialKindBodySchema,
   UploadMaterialBodySchema,
 } from '../../schemas/http.schema';
 import { getValidated } from '../../middleware/validate-request';
@@ -63,6 +64,12 @@ export class MasterMeController {
     res.json({ data: await this.service.getMaterial(id) });
   };
 
+  public readonly updateMaterialKind: RequestHandler = async (_req, res) => {
+    const { id } = getValidated(res, 'params', IdParamsSchema);
+    const { materialKind } = getValidated(res, 'body', MaterialKindBodySchema);
+    res.json({ data: await this.service.updateMaterialKind(id, res.locals.userId!, materialKind) });
+  };
+
   public readonly extractConcepts: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
     const concepts = await this.service.extractConcepts(id);
@@ -107,10 +114,20 @@ export class MasterMeController {
     res.json({ data: await this.service.getSession(id) });
   };
 
+  public readonly getConceptSessions: RequestHandler = async (_req, res) => {
+    const { id } = getValidated(res, 'params', IdParamsSchema);
+    res.json({ data: await this.service.getConceptSessions(id) });
+  };
+
+  public readonly getMaterialSessions: RequestHandler = async (_req, res) => {
+    const { id } = getValidated(res, 'params', IdParamsSchema);
+    res.json({ data: await this.service.getMaterialSessions(id) });
+  };
+
   public readonly evaluateInitialAnswer: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
-    const { answer } = getValidated(res, 'body', AnswerBodySchema);
-    const session = await this.service.evaluateInitialAnswer(id, answer);
+    const { answer, assisted, assistanceLevel, hintsUsed, solutionRevealed } = getValidated(res, 'body', AnswerBodySchema);
+    const session = await this.service.evaluateInitialAnswer(id, answer, { assisted, assistanceLevel, hintsUsed, solutionRevealed });
     await this.publish(
       'session.updated',
       { sessionId: id, conceptId: session.conceptId },
@@ -121,8 +138,8 @@ export class MasterMeController {
 
   public readonly evaluateStressReply: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
-    const { answer } = getValidated(res, 'body', AnswerBodySchema);
-    const session = await this.service.evaluateStressReply(id, answer);
+    const { answer, assisted, assistanceLevel, hintsUsed, solutionRevealed } = getValidated(res, 'body', AnswerBodySchema);
+    const session = await this.service.evaluateStressReply(id, answer, { assisted, assistanceLevel, hintsUsed, solutionRevealed });
     await this.publish(
       'session.updated',
       { sessionId: id, conceptId: session.conceptId },
@@ -162,8 +179,8 @@ export class MasterMeController {
     res,
   ) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
-    const { answer } = getValidated(res, 'body', AnswerBodySchema);
-    const session = await this.service.evaluateEdgeCaseAnswer(id, answer);
+    const { answer, assisted, assistanceLevel, hintsUsed, solutionRevealed } = getValidated(res, 'body', AnswerBodySchema);
+    const session = await this.service.evaluateEdgeCaseAnswer(id, answer, { assisted, assistanceLevel, hintsUsed, solutionRevealed });
     await this.publish(
       'session.updated',
       { sessionId: id, conceptId: session.conceptId },
@@ -257,6 +274,12 @@ export class MasterMeController {
 
 export class IngestionController {
   public constructor(private readonly ingestion: IngestionService) {}
+  public readonly originalPdf: RequestHandler = async (_req, res) => {
+    const { id } = getValidated(res, 'params', IdParamsSchema);
+    const pdf = await this.ingestion.originalPdf(id, res.locals.userId!);
+    res.set({ 'content-type': 'application/pdf', 'content-disposition': 'inline', 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff' });
+    res.send(pdf);
+  };
   public readonly upload: RequestHandler = async (req, res) => {
     if (!req.file)
       throw new AppError('INVALID_UPLOAD',
@@ -269,6 +292,7 @@ export class IngestionController {
         body.title,
         body.locale,
         res.locals.userId!,
+        body.materialKind,
       ),
     });
   };
@@ -280,7 +304,7 @@ export class IngestionController {
   public readonly status: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
     res.set('cache-control', 'no-store');
-    res.json({ data: await this.ingestion.status(id) });
+    res.json({ data: await this.ingestion.status(id, res.locals.userId!) });
   };
   public readonly events: RequestHandler = async (req, res) => {
     const cursor = req.header('last-event-id') ?? req.query.after;

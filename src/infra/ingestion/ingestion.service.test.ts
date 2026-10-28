@@ -363,9 +363,11 @@ describe('upload guardrails', () => {
 
   test('success commits material, job and event in one transaction', async () => {
     const statements: string[] = [];
+    const insertedValues: unknown[][] = [];
     const client = {
-      query: async (sql: string) => {
+      query: async (sql: string, values?: unknown[]) => {
         statements.push(sql);
+        if (sql.startsWith('INSERT INTO study_materials')) insertedValues.push(values ?? []);
         return { rows: [], rowCount: 1 };
       },
       release: () => undefined,
@@ -388,6 +390,7 @@ describe('upload guardrails', () => {
     expect(
       statements.some((sql) => sql.startsWith('INSERT INTO study_materials')),
     ).toBe(true);
+    expect(insertedValues[0]?.at(-1)).toBe('TEXT');
     expect(
       statements.some((sql) => sql.startsWith('INSERT INTO processing_jobs')),
     ).toBe(true);

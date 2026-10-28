@@ -1,4 +1,4 @@
-import type { EdgeCaseChallenge, Evaluation, StudySession } from './assessment';
+import type { AnswerAssistance, EdgeCaseChallenge, Evaluation, StudySession } from './assessment';
 
 export class InvalidStudySessionError extends Error {
   public constructor(message: string) {
@@ -56,10 +56,21 @@ export class StudySessionAggregate {
     }
   }
 
-  public recordInitialAnswer(answer: string, evaluation: Evaluation, at: string): void {
+  public recordInitialAnswer(answer: string, evaluation: Evaluation, at: string, assistance?: AnswerAssistance): void {
     if (this.hasInitialAnswer(answer)) return;
     this.assertCanAnswerInitially();
-    this.data.attempts.push({ stage: 'INITIAL', answer, evaluation: structuredClone(evaluation), createdAt: at });
+    this.data.attempts.push({
+      stage: 'INITIAL',
+      answer,
+      evaluation: structuredClone(evaluation),
+      ...(assistance ? {
+        assisted: assistance.assisted,
+        assistanceLevel: assistance.assistanceLevel,
+        hintsUsed: [...assistance.hintsUsed],
+        solutionRevealed: assistance.solutionRevealed,
+      } : {}),
+      createdAt: at,
+    });
     this.data.state = evaluation.status === 'PASSED' ? 'EXPLANATION_PASSED' : 'RETRY_INITIAL';
     this.data.updatedAt = at;
     this.assertInvariants();
@@ -92,11 +103,22 @@ export class StudySessionAggregate {
     return structuredClone(this.data.edgeCaseChallenge);
   }
 
-  public recordEdgeCaseAnswer(answer: string, evaluation: Evaluation, at: string): void {
+  public recordEdgeCaseAnswer(answer: string, evaluation: Evaluation, at: string, assistance?: AnswerAssistance): void {
     if (this.hasEdgeCaseAnswer(answer)) return;
     this.assertCanAnswerEdgeCase();
     this.data.edgeCaseStatus = evaluation.status === 'PASSED' ? 'PASSED' : 'REVIEW';
-    this.data.attempts.push({ stage: 'EDGE_CASE_REPLY', answer, evaluation: structuredClone(evaluation), createdAt: at });
+    this.data.attempts.push({
+      stage: 'EDGE_CASE_REPLY',
+      answer,
+      evaluation: structuredClone(evaluation),
+      ...(assistance ? {
+        assisted: assistance.assisted,
+        assistanceLevel: assistance.assistanceLevel,
+        hintsUsed: [...assistance.hintsUsed],
+        solutionRevealed: assistance.solutionRevealed,
+      } : {}),
+      createdAt: at,
+    });
     this.data.updatedAt = at;
     this.assertInvariants();
   }

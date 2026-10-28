@@ -28,6 +28,9 @@ describe('material ownership', () => {
     expect(
       await repository.findAllMaterials('33333333-3333-4333-8333-333333333333'),
     ).toEqual([]);
+    expect(repository.updateMaterialKind(material.id, '33333333-3333-4333-8333-333333333333', 'BOOK')).toBeUndefined();
+    expect(repository.findMaterial(material.id)?.materialKind).toBeUndefined();
+    expect(repository.updateMaterialKind(material.id, '22222222-2222-4222-8222-222222222222', 'BOOK')?.materialKind).toBe('BOOK');
   });
 
   test('isolates metrics and AI quota across accounts', async () => {

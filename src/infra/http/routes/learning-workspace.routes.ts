@@ -1,5 +1,5 @@
 import { Router, type RequestHandler } from 'express';
-import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, GoalPatch, Plan, PlanPatch, PlanTaskOrder, TaskBoardOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../../schemas/learning-workspace.schema';
+import { Id, MaterialId, OutlinePatch, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, GoalPatch, Plan, PlanPatch, PlanTaskOrder, TaskBoardOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, ActivityPromptQuery, FocusedDrillQuery, Decision, Contestation, DeskQuery, TodayQuery, ReviewReminder, Availability } from '../../../schemas/learning-workspace.schema';
 import { authenticate } from '../../../middleware/authenticate';
 import { bindAiUsageOwner } from '../../../middleware/ai-usage-context';
 import { aiBurstRateLimit } from '../../../middleware/rate-limit';
@@ -19,11 +19,18 @@ export function createLearningWorkspaceRouter(
 ): Router {
   const router = Router();
   router.use(authenticateRequest, bindAiUsageOwner);
+  router.get('/concepts/:conceptId/activity-prompts', validateRequest({ params: ConceptId, query: ActivityPromptQuery }), asyncRoute(controller.activityPrompts));
+  router.get('/materials/:materialId/questions', validateRequest({ params: MaterialId }), asyncRoute(controller.questionBank));
+  router.get('/materials/:materialId/drill', validateRequest({ params: MaterialId, query: FocusedDrillQuery }), asyncRoute(controller.focusedDrill));
+  router.get('/today', validateRequest({ query: TodayQuery }), asyncRoute(controller.today));
+  router.post('/reviews/:id/reminder', validateRequest({ params: Id, body: ReviewReminder }), asyncRoute(controller.decideReviewReminder));
   router.get(
     '/materials/:materialId/outline',
     validateRequest({ params: MaterialId }),
     asyncRoute(controller.outline),
   );
+  router.get('/materials/:materialId/outline-state', validateRequest({ params: MaterialId }), asyncRoute(controller.outlineState));
+  router.patch('/materials/:materialId/outline', validateRequest({ params: MaterialId, body: OutlinePatch }), asyncRoute(controller.updateOutline));
   router.get('/materials/:materialId/reading-position', validateRequest({ params: MaterialId }), asyncRoute(controller.readingPosition));
   router.put('/materials/:materialId/reading-position', validateRequest({ params: MaterialId, body: ReadingPosition }), asyncRoute(controller.setReadingPosition));
   router.get(
@@ -124,6 +131,7 @@ export function createLearningWorkspaceRouter(
     validateRequest({ query: DeskQuery }),
     asyncRoute(controller.desk),
   );
+  router.get('/reviews/due', asyncRoute(controller.dueReviews));
   router.get(
     '/materials/:materialId/evidence',
     validateRequest({ params: MaterialId }),

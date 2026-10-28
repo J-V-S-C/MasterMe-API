@@ -1,4 +1,4 @@
-export type EvidenceActivity = 'COMPREHENSION' | 'RELATION' | 'APPLICATION' | 'RETENTION';
+export type EvidenceActivity = 'COMPREHENSION' | 'REASONING' | 'RELATION' | 'APPLICATION' | 'RETENTION';
 export type EvidenceStatus = 'SELF_REPORTED' | 'PASSED' | 'INCOMPLETE' | 'LOGICAL_BREAK' | 'CONTESTED';
 export type TaskActivity = 'READ' | 'EXPLAIN' | 'RELATE' | 'APPLY' | 'REVISIT' | 'PRACTICE';
 

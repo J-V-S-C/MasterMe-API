@@ -3,6 +3,7 @@ import { MAX_MATERIAL_LENGTH } from '../application/material-limits';
 import {
   ConfidenceValueSchema,
   PracticeFocusModeSchema,
+  MaterialKindSchema,
   SupportedLocaleSchema,
 } from './masterme.schema';
 
@@ -10,20 +11,28 @@ export const CreateMaterialBodySchema = z.object({
   title: z.string().trim().min(1).max(160),
   content: z.string().trim().min(1).max(MAX_MATERIAL_LENGTH),
   locale: SupportedLocaleSchema.optional(),
+  materialKind: MaterialKindSchema.optional(),
 });
 export type CreateMaterialBody = z.infer<typeof CreateMaterialBodySchema>;
 
 export const UploadMaterialBodySchema = z.object({
   title: z.string().trim().min(1).max(160).optional(),
   locale: SupportedLocaleSchema.default('pt-BR'),
-});
+  materialKind: MaterialKindSchema.optional(),
+}).strict();
 export type UploadMaterialBody = z.infer<typeof UploadMaterialBodySchema>;
+
+export const MaterialKindBodySchema = z.object({ materialKind: MaterialKindSchema });
 
 export const IdParamsSchema = z.object({ id: z.string().uuid() });
 export type IdParams = z.infer<typeof IdParamsSchema>;
 
 export const AnswerBodySchema = z.object({
   answer: z.string().trim().min(20).max(20_000),
+  assisted: z.boolean().default(false),
+  assistanceLevel: z.number().int().min(0).max(4).default(0),
+  hintsUsed: z.array(z.string().trim().min(1).max(200)).max(12).default([]),
+  solutionRevealed: z.boolean().default(false),
 });
 export type AnswerBody = z.infer<typeof AnswerBodySchema>;
 
@@ -37,6 +46,8 @@ export const CreatePracticeProjectBodySchema = z
   .object({
     focusMode: PracticeFocusModeSchema,
     conceptIds: z.array(z.string().uuid()).max(5).optional(),
+    difficulty: z.enum(['FOUNDATION', 'INTERMEDIATE', 'ADVANCED']).optional(),
+    size: z.enum(['SMALL', 'MEDIUM']).optional(),
   })
   .superRefine((value, context) => {
     const ids = value.conceptIds ?? [];
