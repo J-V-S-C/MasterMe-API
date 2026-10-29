@@ -2,6 +2,15 @@ import { z } from 'zod';
 
 export const Id = z.object({ id: z.uuid() });
 export const MaterialId = z.object({ materialId: z.uuid() });
+export const OutlinePatch = z.object({
+  expectedRevision: z.number().int().nonnegative(),
+  units: z.array(z.union([
+    z.object({ id: z.uuid(), title: z.string().trim().min(1).max(160).nullable() }),
+    z.object({ title: z.string().trim().min(1).max(160), startOffset: z.number().int().nonnegative(), endOffset: z.number().int().positive() })
+      .refine((unit) => unit.endOffset > unit.startOffset, { path: ['endOffset'], message: 'O fim deve vir após o início.' }),
+  ])).min(1).max(3000)
+    .refine((units) => { const ids = units.flatMap((unit) => 'id' in unit ? [unit.id] : []); return new Set(ids).size === ids.length; }),
+});
 export const ReadingPosition = z.object({ offset: z.number().int().min(0) });
 export const ShelfMaterial = z.object({ id: z.uuid(), materialId: z.uuid() });
 export const ConceptId = z.object({ conceptId: z.uuid() });
@@ -38,20 +47,27 @@ export const Activity = z.enum([
 ]);
 export const Task = z.object({
   title: z.string().trim().min(1).max(160),
+  description: z.string().trim().max(500).optional(),
   activityType: Activity,
   planId: z.uuid().optional(),
   materialId: z.uuid().optional(),
   conceptId: z.uuid().optional(),
   unitId: z.uuid().optional(),
+  reviewId: z.uuid().optional(),
+  projectId: z.uuid().optional(),
   durationMinutes: z.number().int().min(1).max(480).optional(),
   scheduledAt: z.iso.datetime({ offset: true }).optional(),
   reason: z.string().max(500).optional(),
+}).refine((value) => !value.projectId || (value.activityType === 'PRACTICE' && !value.reviewId), {
+  message: 'Um projeto exige tarefa de prática sem revisão.', path: ['projectId'],
 });
 export const TaskPatch = z
   .object({
     title: z.string().trim().min(1).max(160).optional(),
+    description: z.string().trim().max(500).optional(),
     materialId: z.uuid().nullable().optional(),
     conceptId: z.uuid().nullable().optional(),
+    projectId: z.uuid().nullable().optional(),
     durationMinutes: z.number().int().min(1).max(480).nullable().optional(),
     scheduledAt: z.iso.datetime({ offset: true }).nullable().optional(),
     status: z.enum(['PENDING', 'IN_PROGRESS', 'DONE', 'REMOVED']).optional(),
@@ -80,6 +96,7 @@ export const Evidence = z.object({
   taskId: z.uuid().optional(),
   activityType: z.enum([
     'COMPREHENSION',
+    'REASONING',
     'RELATION',
     'APPLICATION',
     'RETENTION',
@@ -88,6 +105,7 @@ export const Evidence = z.object({
   answer: z.string().trim().min(5).max(20_000),
   status: z.literal('SELF_REPORTED'),
   assisted: z.boolean().default(false),
+  assistanceLevel: z.number().int().min(0).max(4).default(0),
   hintsUsed: z.array(z.string().trim().min(1).max(200)).max(10).default([]),
   previousEvidenceId: z.uuid().optional(),
   diagnosis: z.literal('').default(''),
@@ -99,23 +117,35 @@ export const Evidence = z.object({
 });
 export const ActivityAnswer = z.object({
   requestId: z.uuid(),
+  questionVariant: z.number().int().min(0).max(2).default(0),
   conceptId: z.uuid().optional(),
   relationId: z.uuid().optional(),
   taskId: z.uuid().optional(),
   activityType: z.enum([
     'COMPREHENSION',
+    'REASONING',
     'RELATION',
     'APPLICATION',
     'RETENTION',
   ]),
+  attemptContext: z.enum(['STUDY', 'DRILL']).default('STUDY'),
   answer: z.string().trim().min(20).max(20_000),
   assisted: z.boolean().default(false),
+  assistanceLevel: z.number().int().min(0).max(4).default(0),
   hintsUsed: z.array(z.string().trim().min(1).max(200)).max(10).default([]),
+  solutionRevealed: z.boolean().default(false),
   previousEvidenceId: z.uuid().optional(),
+  reviewId: z.uuid().optional(),
 }).refine((value) => value.hintsUsed.length === 0 || value.assisted, {
   message: 'Pistas usadas exigem atividade assistida.',
   path: ['assisted'],
+}).refine((value) => !value.reviewId || value.activityType === 'RETENTION', {
+  message: 'Uma revisão exige atividade de retomada.', path: ['activityType'],
+}).refine((value) => value.attemptContext !== 'DRILL' || value.activityType === 'APPLICATION', {
+  message: 'Uma prática focada exige atividade de aplicação.', path: ['activityType'],
 });
+export const ActivityPromptQuery = z.object({ variant: z.coerce.number().int().min(0).max(2).default(0) });
+export const FocusedDrillQuery = z.object({ conceptId: z.uuid().optional() });
 export const Decision = z.object({
   decision: z.enum(['ACCEPTED', 'IGNORED']),
   title: z.string().trim().min(1).max(160).optional(),
@@ -139,6 +169,11 @@ export const Timezone = z
     }
   });
 export const DeskQuery = z.object({ date: z.iso.date(), timezone: Timezone });
+export const TodayQuery = DeskQuery.extend({ availableMinutes: z.coerce.number().int().min(5).max(480).optional() });
+export const ReviewReminder = z.discriminatedUnion('action', [
+  z.strictObject({ action: z.literal('POSTPONE'), days: z.number().int().min(1).max(30) }),
+  z.strictObject({ action: z.literal('SKIP') }),
+]);
 export const Availability = z.object({
   weekday: z.number().int().min(0).max(6),
   minutes: z.number().int().min(0).max(1440),

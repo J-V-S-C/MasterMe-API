@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { batchIndexedParagraphs, GeminiMasterMeGateway, indexMaterialParagraphs, relationNamesInExcerpt, splitMaterialForExtraction } from './gemini.gateway'
+import { batchIndexedParagraphs, GeminiMasterMeGateway, indexMaterialParagraphs, planExtractionBatches, relationNamesInExcerpt, splitMaterialForExtraction } from './gemini.gateway'
 import type { GeminiStructuredClient } from './gemini-structured.client'
 
 describe('splitMaterialForExtraction', () => {
@@ -42,6 +42,21 @@ describe('splitMaterialForExtraction', () => {
     expect(indexMaterialParagraphs(content).map(({ offset }) => offset)).toEqual([0, 14]);
   })
 
+  test('starts a new evidence span at a chapter heading without a blank line', () => {
+    const content = 'Pipeline architecture has a monolithic deployment.\nChapter 12. Microkernel Architecture Style\nA microkernel has a core and plug-in components.';
+    const spans = indexMaterialParagraphs(content);
+    expect(spans.map(({ text }) => text)).toEqual([
+      'Pipeline architecture has a monolithic deployment.',
+      'Chapter 12. Microkernel Architecture Style\nA microkernel has a core and plug-in components.',
+    ]);
+    expect(spans.every(({ text, offset }) => content.slice(offset, offset + text.length) === text)).toBe(true);
+    const inline = 'See pricing options. Chapter 12. Microkernel Architecture Style\nA core and plug-ins.';
+    expect(indexMaterialParagraphs(inline).map(({ text }) => text)).toEqual([
+      'See pricing options.',
+      'Chapter 12. Microkernel Architecture Style\nA core and plug-ins.',
+    ]);
+  })
+
   test('splits long paragraphs while preserving offsets and bounded batches', () => {
     const paragraphs = indexMaterialParagraphs('x'.repeat(25), 10)
     expect(paragraphs.map(({ text, offset }) => [text, offset])).toEqual([
@@ -51,7 +66,63 @@ describe('splitMaterialForExtraction', () => {
       ['P0001'], ['P0002'], ['P0003'],
     ])
   })
+
+  test('uses editorial boundaries even when chapter titles are not numbered', () => {
+    const content = 'Prior material.\nChapter One\nThe first idea.';
+    const offset = content.indexOf('Chapter One');
+    expect(indexMaterialParagraphs(content, 1600, [offset]).map(({ text }) => text)).toEqual([
+      'Prior material.',
+      'Chapter One\nThe first idea.',
+    ]);
+  });
 })
+
+test('book extraction follows chapter order without a twelve-concept material cap', async () => {
+  const chapters = Array.from({ length: 15 }, (_, index) => `Chapter ${index + 1}. Topic ${index + 1}\nThis chapter explains topic ${index + 1} in its own context.`);
+  const content = chapters.join('\n\n');
+  const outline = chapters.map((chapter, index) => ({
+    order: index, title: `Chapter ${index + 1}. Topic ${index + 1}`, level: 1,
+    startOffset: content.indexOf(chapter), endOffset: content.indexOf(chapter) + chapter.length,
+    provenance: 'HEADING' as const, pageNumber: index + 1,
+  }));
+  let calls = 0;
+  const client = { generateStructured: async (_schema: unknown, prompt: string) => {
+    calls++;
+    const id = prompt.match(/\[(P\d+)\]/)?.[1];
+    return { fragments: [{ name: `Topic ${calls}`, description: `Topic ${calls} is explained in this chapter.`, kind: 'NODE', sourceParagraphId: id,
+      fundamentalPremises: ['The topic is explained.'], edgeCases: ['The topic changes.'], edgeCaseQuestion: 'How does this topic behave when conditions change?',
+      questionText: 'How does this topic work according to its chapter?', targetPremise: 'The chapter explains the topic.', expectedReasoningSteps: ['Read', 'Explain'],
+      learningObjective: 'Explain the topic.', requiredIdeas: ['Main point', 'Supporting detail'], commonMisconceptions: [], prerequisiteNames: [] }], relations: [] };
+  } } as unknown as GeminiStructuredClient;
+  const material = { id: 'book', title: 'Book', content, locale: 'en-US' as const, sourceType: 'PDF' as const, createdAt: new Date().toISOString() };
+  const result = await new GeminiMasterMeGateway(client).extractKnowledge(material, undefined, outline);
+  expect(calls).toBe(15);
+  expect(result.fragments).toHaveLength(15);
+  expect(result.fragments.every((fragment, index) => fragment.sourceExcerpt.includes(`Topic ${index + 1}`))).toBe(true);
+});
+
+test('explicit material kind controls chapter extraction without rewriting legacy inference', () => {
+  const content = 'Chapter 1. Start\nThe first mechanism.\n\nChapter 2. Continue\nThe second mechanism.';
+  const outline = [
+    { order: 0, title: 'Chapter 1. Start', level: 1, startOffset: 0, endOffset: content.indexOf('Chapter 2'), provenance: 'HEADING' as const },
+    { order: 1, title: 'Chapter 2. Continue', level: 1, startOffset: content.indexOf('Chapter 2'), endOffset: content.length, provenance: 'HEADING' as const },
+  ];
+  const material = { id: 'material', title: 'Reading', content, locale: 'en-US' as const, sourceType: 'PDF' as const, createdAt: new Date().toISOString() };
+  const paragraphs = indexMaterialParagraphs(content);
+  expect(planExtractionBatches({ ...material, materialKind: 'ARTICLE' }, paragraphs, outline).book).toBe(false);
+  expect(planExtractionBatches({ ...material, materialKind: 'BOOK' }, paragraphs, outline).book).toBe(true);
+  expect(planExtractionBatches(material, paragraphs, outline).book).toBe(true);
+});
+
+test('a book with a legacy unstructured outline can recover printed chapters for re-extraction', () => {
+  const content = 'Contents\n1. Introduction (34:30 mins)\n2. Modularity (28:45 mins)\n\nChapter 1. Introduction\nThe introduction explains the architect role.\n\nChapter 2. Modularity\nThe second chapter explains modularity.';
+  const material = { id: 'book', title: 'Book', content, locale: 'en-US' as const, sourceType: 'TEXT' as const, materialKind: 'BOOK' as const, createdAt: new Date().toISOString() };
+  const outline = [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: content.length, provenance: 'UNSTRUCTURED' as const }];
+  const plan = planExtractionBatches(material, indexMaterialParagraphs(content), outline);
+  expect(plan.book).toBe(true);
+  expect(plan.chapterLimits.size).toBe(2);
+  expect(plan.batches.every((batch) => batch.paragraphs.every((paragraph) => paragraph.offset >= content.indexOf('Chapter 1. Introduction')))).toBe(true);
+});
 
 test('extracts book batches separately and preserves cited offsets', async () => {
   const prompts: string[] = []

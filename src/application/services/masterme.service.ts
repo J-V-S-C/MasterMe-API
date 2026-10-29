@@ -1,14 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Concept, ConceptRelation, ConceptConfidence } from '../domain/concept';
 import type { MasterMeQuestion } from '../domain/assessment';
-import type { ConceptPerformance, EdgeCaseChallenge, IsomorphicProblem, StudySession } from '../domain/assessment';
-import type { MaterialSummary, StudyMaterial, SupportedLocale } from '../domain/material';
+import type { AnswerAssistance, ConceptPerformance, EdgeCaseChallenge, IsomorphicProblem, StudySession } from '../domain/assessment';
+import type { MaterialKind, MaterialSummary, StudyMaterial, SupportedLocale } from '../domain/material';
 import type { PracticeProject } from '../domain/practice-project';
 import {
   InvalidStudySessionError,
   StudySessionAggregate,
 } from '../domain/study-session';
 import type { MasterMeRepository } from '../repositories/masterme.repository';
+import { independentAssistance } from '../domain/assessment';
 import type {
   CreateMaterialCommand,
   KnowledgeMapConcept,
@@ -28,11 +29,16 @@ import {
   PracticeFocusService,
 } from '../domain/practice-focus';
 import type { PracticeFocus } from '../domain/practice-focus';
-import { passesAssessmentQuestionScreen } from '../prompts/assessment-question';
+import { focusExcerptOnChapter, passesAssessmentQuestionScreen, questionIntroducesUnsupportedTerms, sourceGroundedFallbackQuestion } from '../prompts/assessment-question';
 
 const now = (): string => new Date().toISOString();
-const PRACTICE_PROMPT_VERSION = 'practice-project-v2';
+const PRACTICE_PROMPT_VERSION = 'practice-project-v3';
 const EVALUATION_PROMPT_VERSION = 'evaluation-v2';
+type RecentLearningGap = { conceptId: string; activityType: string; diagnosis: string; createdAt: string };
+const withActivityNeeds = (performance: ConceptPerformance[], gaps: RecentLearningGap[]): ConceptPerformance[] => {
+  const active = new Set(gaps.filter((gap) => gap.activityType === 'APPLICATION' || gap.activityType === 'REASONING').map((gap) => gap.conceptId));
+  return performance.map((item) => active.has(item.conceptId) ? { ...item, performanceNeed: Math.max(item.performanceNeed ?? 0, 0.8) } : item);
+};
 
 export class MasterMeService {
   public constructor(
@@ -51,6 +57,7 @@ export class MasterMeService {
       title: input.title,
       content: input.content,
       locale: input.locale ?? 'pt-BR',
+      materialKind: input.materialKind ?? 'TEXT',
       createdAt: now(),
     };
     await this.repository.saveMaterial(material, ownerId);
@@ -67,16 +74,36 @@ export class MasterMeService {
     return this.repository.findAllMaterials(ownerId);
   }
 
+  public async updateMaterialKind(id: string, ownerId: string, kind: MaterialKind): Promise<StudyMaterial> {
+    return (await this.repository.updateMaterialKind(id, ownerId, kind)) ?? this.throwNotFound('Material');
+  }
+
   public async extractConcepts(
     materialId: string,
     onProgress?: (progress: ExtractionProgress) => Promise<void>,
     shouldPersist: () => Promise<boolean> = async () => true,
     processingJobId?: string,
+    unit?: { id: string; startOffset: number; endOffset: number },
   ): Promise<Concept[]> {
     const material = await this.getMaterial(materialId);
-    const extracted = await this.llm.extractKnowledge(material, onProgress);
+    const outline = unit ? [] : await this.repository.findMaterialOutline(materialId);
+    const extractionMaterial = unit ? { ...material, content: material.content.slice(unit.startOffset, unit.endOffset), materialKind: 'ARTICLE' as const } : material;
+    const extracted = await this.llm.extractKnowledge(extractionMaterial, async (progress) => {
+      if (!(await shouldPersist())) throw new ConflictError('A extração foi cancelada.');
+      await onProgress?.(progress);
+    }, outline);
     if (!(await shouldPersist()))
       throw new ConflictError('A extração foi cancelada.');
+    if (unit) {
+      for (const fragment of extracted.fragments) {
+        if (fragment.sourceOffset === undefined) throw new ConflictError('O trecho extraído não possui âncora no capítulo.');
+        fragment.sourceOffset += unit.startOffset;
+      }
+      for (const relation of extracted.relations ?? []) {
+        if (relation.sourceOffset === undefined) throw new ConflictError('A relação extraída não possui âncora no capítulo.');
+        relation.sourceOffset += unit.startOffset;
+      }
+    }
     const idsByName = new Map<string, string>();
     for (const fragment of extracted.fragments) {
       const name = fragment.name.trim().toLocaleLowerCase();
@@ -161,7 +188,7 @@ export class MasterMeService {
         };
       },
     );
-    await this.repository.saveConcepts(concepts, relations, processingJobId);
+    await this.repository.saveConcepts(concepts, relations, processingJobId, unit?.id);
     return concepts;
   }
 
@@ -249,27 +276,40 @@ export class MasterMeService {
     sessions: StudySession[],
   ): KnowledgeMapConcept[] {
     const latest = new Map<string, StudySession>();
-    for (const session of sessions)
+    const latestAnswered = new Map<string, StudySession>();
+    const latestApproved = new Map<string, StudySession>();
+    const latestEdge = new Map<string, StudySession>();
+    const approved = new Set<string>();
+    for (const session of sessions) {
+      if (session.state === 'EXPLANATION_PASSED') {
+        approved.add(session.conceptId);
+        if (!latestApproved.get(session.conceptId) || latestApproved.get(session.conceptId)!.updatedAt < session.updatedAt) latestApproved.set(session.conceptId, session);
+      }
+      if (session.attempts.some(({ stage }) => stage === 'INITIAL') && (!latestAnswered.get(session.conceptId) || latestAnswered.get(session.conceptId)!.updatedAt < session.updatedAt)) latestAnswered.set(session.conceptId, session);
+      if (session.edgeCaseStatus !== 'NOT_REQUESTED' && (!latestEdge.get(session.conceptId) || latestEdge.get(session.conceptId)!.updatedAt < session.updatedAt)) latestEdge.set(session.conceptId, session);
       if (
         !latest.get(session.conceptId) ||
         latest.get(session.conceptId)!.updatedAt < session.updatedAt
       )
         latest.set(session.conceptId, session);
+    }
     return concepts.map((concept) => {
       const session = latest.get(concept.id);
+      const answeredSession = latestApproved.get(concept.id) ?? latestAnswered.get(concept.id);
       const initialAttempts =
-        session?.attempts.filter(({ stage }) => stage === 'INITIAL') ?? [];
+        answeredSession?.attempts.filter(({ stage }) => stage === 'INITIAL') ?? [];
       const lastAttempt = initialAttempts.at(-1) ?? null;
       const status =
-        session?.state === 'EXPLANATION_PASSED'
+        approved.has(concept.id)
           ? 'EXPLAINED'
           : lastAttempt && lastAttempt.evaluation.status !== 'PASSED'
             ? 'REVIEW'
             : 'READY';
+      const focused = focusExcerptOnChapter(concept.sourceExcerpt, concept.name);
       return {
-        concept,
+        concept: focused.offsetDelta ? { ...concept, sourceExcerpt: focused.text, sourceOffset: concept.sourceOffset === undefined ? undefined : concept.sourceOffset + focused.offsetDelta } : concept,
         status,
-        edgeCaseStatus: session?.edgeCaseStatus ?? 'NOT_REQUESTED',
+        edgeCaseStatus: latestEdge.get(concept.id)?.edgeCaseStatus ?? 'NOT_REQUESTED',
         lastAttempt,
         question: this.questionForConcept(
           concept,
@@ -308,9 +348,25 @@ export class MasterMeService {
     );
   }
 
+  public async getConceptSessions(conceptId: string): Promise<StudySession[]> {
+    await this.requireConcept(conceptId);
+    const sessions = await this.repository.findSessionsByConceptIds([conceptId]);
+    return sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  public async getMaterialSessions(materialId: string): Promise<{ concepts: Concept[]; activeConceptIds: string[]; sessions: StudySession[] }> {
+    await this.getMaterial(materialId);
+    const [concepts, activeConcepts] = await Promise.all([
+      this.repository.findAllConceptsByMaterial(materialId), this.repository.findConceptsByMaterial(materialId),
+    ]);
+    if (!concepts.length) return { concepts: [], activeConceptIds: [], sessions: [] };
+    return { concepts, activeConceptIds: activeConcepts.map((concept) => concept.id), sessions: await this.repository.findSessionsByConceptIds(concepts.map((concept) => concept.id)) };
+  }
+
   public async evaluateInitialAnswer(
     sessionId: string,
     answer: string,
+    assistance: AnswerAssistance = independentAssistance,
   ): Promise<StudySession> {
     const session = await this.getSession(sessionId);
     const aggregate = StudySessionAggregate.rehydrate(session);
@@ -326,17 +382,37 @@ export class MasterMeService {
       question: session.question,
       answer,
     });
-    return this.mutateSession(session, requestHash, async (claimed) => {
+    const updated = await this.mutateSession(session, requestHash, async (claimed) => {
       const evaluation =
         (await this.repository.findEvaluation(requestHash)) ??
         (await this.llm.evaluateAnswer(concept, claimed.question, answer));
       await this.repository.saveEvaluation(requestHash, evaluation);
       const current = StudySessionAggregate.rehydrate(claimed);
       this.applySessionRule(() =>
-        current.recordInitialAnswer(answer, evaluation, now()),
+        current.recordInitialAnswer(answer, evaluation, now(), assistance),
       );
       return current.snapshot();
     });
+    const latest = [...updated.attempts].reverse().find((attempt) => attempt.stage === 'INITIAL');
+    if (latest) {
+      try {
+        await this.repository.scheduleReview({
+          conceptId: updated.conceptId,
+          activityType: 'RETENTION',
+          status: latest.evaluation.status,
+          assistance: latest.assisted === undefined ? assistance : {
+            assisted: latest.assisted,
+            assistanceLevel: latest.assistanceLevel ?? 0,
+            hintsUsed: latest.hintsUsed ?? [],
+            solutionRevealed: latest.solutionRevealed ?? false,
+          },
+          at: new Date(latest.createdAt),
+        });
+      } catch {
+        console.error(JSON.stringify({ level: 'error', operation: 'review-schedule', code: 'REVIEW_SCHEDULE_FAILED' }));
+      }
+    }
+    return updated;
   }
 
   public async requestEdgeCase(sessionId: string): Promise<StudySession> {
@@ -385,6 +461,7 @@ export class MasterMeService {
   public async evaluateEdgeCaseAnswer(
     sessionId: string,
     answer: string,
+    assistance: AnswerAssistance = independentAssistance,
   ): Promise<StudySession> {
     const session = await this.getSession(sessionId);
     const aggregate = StudySessionAggregate.rehydrate(session);
@@ -402,7 +479,7 @@ export class MasterMeService {
       challenge: activeChallenge,
       answer,
     });
-    return this.mutateSession(session, requestHash, async (claimed) => {
+    const updated = await this.mutateSession(session, requestHash, async (claimed) => {
       const current = StudySessionAggregate.rehydrate(claimed);
       const challenge = this.applySessionRule(() =>
         current.assertCanAnswerEdgeCase(),
@@ -412,17 +489,39 @@ export class MasterMeService {
         (await this.llm.evaluateEdgeCaseAnswer(concept, challenge, answer));
       await this.repository.saveEvaluation(requestHash, evaluation);
       this.applySessionRule(() =>
-        current.recordEdgeCaseAnswer(answer, evaluation, now()),
+        current.recordEdgeCaseAnswer(answer, evaluation, now(), assistance),
       );
       return current.snapshot();
     });
+    const latest = [...updated.attempts].reverse().find((attempt) =>
+      attempt.stage === 'EDGE_CASE_REPLY' || attempt.stage === 'STRESS_REPLY');
+    if (latest) {
+      try {
+        await this.repository.scheduleReview({
+          conceptId: updated.conceptId,
+          activityType: 'APPLICATION',
+          status: latest.evaluation.status,
+          assistance: latest.assisted === undefined ? assistance : {
+            assisted: latest.assisted,
+            assistanceLevel: latest.assistanceLevel ?? 0,
+            hintsUsed: latest.hintsUsed ?? [],
+            solutionRevealed: latest.solutionRevealed ?? false,
+          },
+          at: new Date(latest.createdAt),
+        });
+      } catch {
+        console.error(JSON.stringify({ level: 'error', operation: 'review-schedule', code: 'REVIEW_SCHEDULE_FAILED' }));
+      }
+    }
+    return updated;
   }
 
   public evaluateStressReply(
     sessionId: string,
     answer: string,
+    assistance: AnswerAssistance = independentAssistance,
   ): Promise<StudySession> {
-    return this.evaluateEdgeCaseAnswer(sessionId, answer);
+    return this.evaluateEdgeCaseAnswer(sessionId, answer, assistance);
   }
 
   public async saveConfidence(
@@ -520,15 +619,16 @@ export class MasterMeService {
   ): Promise<PracticeContext> {
     const concepts = await this.getConcepts(materialId);
     const ids = concepts.map(({ id }) => id);
-    const [sessions, confidences, projects] = await Promise.all([
+    const [sessions, confidences, projects, activityGaps] = await Promise.all([
       this.repository.findSessionsByConceptIds(ids),
       this.repository.findConfidencesByConceptIds(ids),
       this.repository.findPracticeProjectsByMaterial(materialId),
+      this.repository.findRecentLearningGaps(ids),
     ]);
     return {
       knowledgeMap: this.buildKnowledgeMap(concepts, sessions),
       confidences,
-      performance: this.buildPerformance(concepts, sessions),
+      performance: withActivityNeeds(this.buildPerformance(concepts, sessions), activityGaps),
       projects,
     };
   }
@@ -539,6 +639,22 @@ export class MasterMeService {
   ): Promise<PracticeProject> {
     const material = await this.getMaterial(materialId);
     const focus = await this.getPracticeFocus(materialId, input);
+    const [sessions, outline, activityGaps] = await Promise.all([
+      this.repository.findSessionsByConceptIds(focus.concepts.map((concept) => concept.id)),
+      this.repository.findMaterialOutline(materialId),
+      this.repository.findRecentLearningGaps(focus.concepts.map((concept) => concept.id)),
+    ]);
+    const observedGaps = sessions.flatMap((session) => session.attempts
+      .filter((attempt) => attempt.evaluation.status !== 'PASSED')
+      .map((attempt) => ({ date: attempt.createdAt, gap: attempt.evaluation.gap ?? attempt.evaluation.logicalBreak ?? attempt.evaluation.missingPremises[0] ?? '' })))
+      .filter((item) => item.gap).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8).map((item) => item.gap);
+    const namedUnits = outline.filter((unit) => unit.title);
+    const chapterLevel = [...new Set(namedUnits.map((unit) => unit.level))].sort((a, b) => a - b)
+      .find((level) => namedUnits.filter((unit) => unit.level === level).length >= 2) ?? Infinity;
+    const chapters = namedUnits.filter((unit) => unit.level === chapterLevel);
+    const chapterTitles = chapters.filter((unit, index) => focus.concepts.some((concept) => concept.sourceOffset !== undefined && concept.sourceOffset >= unit.startOffset && concept.sourceOffset < (chapters[index + 1]?.startOffset ?? material.content.length)))
+      .map((unit) => unit.title!).slice(0, 8);
+    const preferences = { difficulty: input.difficulty, size: input.size, observedGaps: [...activityGaps.map((gap) => `${gap.activityType}: ${gap.diagnosis}`), ...observedGaps].slice(0, 8).map((gap) => gap.slice(0, 500)), chapterTitles };
     const inputHash = this.hash({
       version: PRACTICE_PROMPT_VERSION,
       material: { id: material.id, title: material.title },
@@ -562,6 +678,7 @@ export class MasterMeService {
       focusMode: input.focusMode,
       conceptIds: input.conceptIds ? [...input.conceptIds].sort() : null,
       signals: focus.signalSnapshot,
+      preferences,
     });
     const cached = await this.repository.findPracticeProjectByHash(inputHash);
     if (cached) return cached;
@@ -569,6 +686,7 @@ export class MasterMeService {
       material,
       focus.concepts,
       focus.priorities,
+      preferences,
     );
     const project: PracticeProject = {
       id: randomUUID(),
@@ -594,15 +712,32 @@ export class MasterMeService {
     const confidences = await this.repository.findConfidencesByConceptIds(
       concepts.map(({ id }) => id),
     );
-    const performance = await this.getPerformance(materialId);
+    const [initialPerformance, activityGaps] = await Promise.all([
+      this.getPerformance(materialId),
+      this.repository.findRecentLearningGaps(concepts.map((concept) => concept.id)),
+    ]);
+    const performance = withActivityNeeds(initialPerformance, activityGaps);
     try {
-      return this.focus.select(
+      const selected = this.focus.select(
         input.focusMode,
         concepts,
         input.conceptIds,
         confidences,
         performance,
       );
+      const gapById = new Map<string, RecentLearningGap>();
+      for (const gap of activityGaps) if (!gapById.has(gap.conceptId)) gapById.set(gap.conceptId, gap);
+      return { ...selected,
+        priorities: selected.priorities.map((priority) => {
+          const gap = gapById.get(priority.conceptId);
+          if (!gap || (input.focusMode !== 'PERFORMANCE' && input.focusMode !== 'COMBINED')) return priority;
+          const concept = concepts.find((item) => item.id === priority.conceptId);
+          return { ...priority, reason: concept?.generatedLocale === 'en-US'
+            ? `recent ${gap.activityType.toLocaleLowerCase()} answer needs review`
+            : `resposta recente de ${gap.activityType === 'APPLICATION' ? 'aplicação' : 'raciocínio'} precisa de revisão` };
+        }),
+        signalSnapshot: { initial: selected.signalSnapshot, activityGaps: activityGaps.map(({ conceptId, activityType, createdAt }) => ({ conceptId, activityType, createdAt })) },
+      };
     } catch (error) {
       if (error instanceof InvalidPracticeFocusError)
         throw new UnprocessableEntityError(error.message);
@@ -667,11 +802,13 @@ export class MasterMeService {
     sessionNumber: number,
     persisted?: MasterMeQuestion,
   ): MasterMeQuestion {
-    return (
-      persisted ??
-      concept.studyQuestion ??
-      this.generateQuestion(concept, concepts, sessionNumber)
-    );
+    const source = focusExcerptOnChapter(concept.sourceExcerpt, concept.name).text;
+    const explanation = `${concept.name.replace(/([a-z])([A-Z])/g, '$1 $2')} ${concept.description} ${concept.fundamentalPremises.join(' ')}`;
+    const isSupported = (text: string) => !questionIntroducesUnsupportedTerms(text, source) && !questionIntroducesUnsupportedTerms(text, explanation);
+    if (persisted && isSupported(persisted.text)) return persisted;
+    if (concept.studyQuestion && isSupported(concept.studyQuestion.text)) return concept.studyQuestion;
+    if (persisted || concept.studyQuestion) return sourceGroundedFallbackQuestion(concept.name, concept.generatedLocale === 'en-US' ? 'en-US' : 'pt-BR');
+    return this.generateQuestion(concept, concepts, sessionNumber);
   }
   private async requireConcept(id: string): Promise<Concept> {
     return (

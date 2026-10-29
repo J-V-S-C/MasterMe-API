@@ -1,6 +1,7 @@
 import type { suggestNextAction } from '../domain/learning-cycle';
 import type { SupportedLocale } from '../domain/material';
-import type { ActivityInput, EvidenceInput, GoalInput, GoalUpdate, PlanInput, PlanUpdate, RelationInput, SuggestionDecision, TaskInput, TaskUpdate } from '../contracts/learning-workspace.service';
+import type { TodayAction } from '../domain/today-policy';
+import type { ActivityInput, EvidenceInput, FocusedDrillContext, GoalInput, GoalUpdate, ObjectiveQuestionRecord, OutlineEdit, PlanInput, PlanUpdate, RelationInput, SuggestionDecision, TaskInput, TaskUpdate } from '../contracts/learning-workspace.service';
 
 export interface ActivityOutcome {
   event: { id: string; request_id: string | null };
@@ -8,6 +9,19 @@ export interface ActivityOutcome {
 }
 
 export type EvidenceSuggestion = ReturnType<typeof suggestNextAction>;
+
+export type DueReview = {
+  id: string;
+  materialId: string;
+  materialTitle: string;
+  conceptId: string;
+  conceptName: string;
+  dueAt: string;
+  intervalDays: number;
+  reviewCount: number;
+  lastStatus: string | null;
+  lastDiagnosis: string | null;
+};
 
 export interface ActivityContext {
   materialId: string;
@@ -27,6 +41,10 @@ export type ActivityClaim =
 
 export interface LearningWorkspaceRepository {
   outline(ownerId: string, materialId: string): Promise<unknown>;
+  questionBank(ownerId: string, materialId: string): Promise<ObjectiveQuestionRecord[]>;
+  focusedDrillContext(ownerId: string, materialId: string, conceptId?: string): Promise<FocusedDrillContext>;
+  outlineState(ownerId: string, materialId: string): Promise<unknown>;
+  updateOutline(ownerId: string, materialId: string, input: OutlineEdit): Promise<unknown>;
   readingPosition(ownerId: string, materialId: string): Promise<{ offset: number }>;
   setReadingPosition(ownerId: string, materialId: string, offset: number): Promise<{ offset: number }>;
   relations(ownerId: string, materialId: string): Promise<unknown>;
@@ -52,11 +70,14 @@ export interface LearningWorkspaceRepository {
   availability(ownerId: string): Promise<unknown>;
   setAvailability(ownerId: string, weekday: number, minutes: number, timezone: string): Promise<unknown>;
   desk(ownerId: string, localDate: string, timezone: string): Promise<unknown>;
+  todayCandidates(ownerId: string, localDate: string, timezone: string): Promise<{ availableMinutes: number; candidates: TodayAction[] }>;
   evidence(ownerId: string, materialId: string): Promise<unknown>;
+  dueReviews(ownerId: string, now: Date): Promise<DueReview[]>;
+  decideReviewReminder(ownerId: string, reviewId: string, action: 'POSTPONE' | 'SKIP', now: Date, days?: number): Promise<unknown>;
   contestEvidence(ownerId: string, evidenceId: string, reason: string): Promise<unknown>;
   evidenceConceptName(ownerId: string, materialId: string, conceptId?: string): Promise<string>;
   recordEvidence(ownerId: string, input: EvidenceInput, suggestion: EvidenceSuggestion): Promise<ActivityOutcome>;
-  loadActivityContext(ownerId: string, input: ActivityInput): Promise<ActivityContext>;
+  loadActivityContext(ownerId: string, input: Pick<ActivityInput, 'conceptId' | 'relationId' | 'taskId'> & Partial<Pick<ActivityInput, 'previousEvidenceId' | 'activityType'>>): Promise<ActivityContext>;
   claimActivity(ownerId: string, requestId: string, inputHash: string, legacyHash?: string): Promise<ActivityClaim>;
   releaseActivity(ownerId: string, requestId: string, leaseToken: string): Promise<void>;
   suggestions(ownerId: string): Promise<unknown>;

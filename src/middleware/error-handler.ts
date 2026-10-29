@@ -62,7 +62,7 @@ export const errorHandler: ErrorRequestHandler = (
     res.status(tooLarge ? 413 : 400).json({
       code: tooLarge ? 'UPLOAD_TOO_LARGE' : 'INVALID_UPLOAD',
       message: tooLarge
-        ? 'Envie um arquivo de até 8 MiB.'
+        ? 'Envie um arquivo de até 16 MiB.'
         : 'Envie somente um arquivo válido.',
       requestId,
     });

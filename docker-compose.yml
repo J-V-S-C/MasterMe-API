@@ -32,6 +32,7 @@ services:
 
   api:
     build: .
+    command: ["sh", "-c", "bun run migrate && exec bun --watch server.ts"]
     depends_on:
       db:
         condition: service_healthy
@@ -63,6 +64,15 @@ services:
       - "127.0.0.1:${PORT:?Defina PORT em .env.development}:${PORT:?Defina PORT em .env.development}"
     volumes:
       - material_uploads:/app/data/materials
+      - ./server.ts:/app/server.ts:ro
+      - ./src/application:/app/src/application:ro
+      - ./src/config:/app/src/config:ro
+      - ./src/docs:/app/src/docs:ro
+      - ./src/infra:/app/src/infra:ro
+      - ./src/main:/app/src/main:ro
+      - ./src/middleware:/app/src/middleware:ro
+      - ./src/schemas:/app/src/schemas:ro
+      - ./src/types:/app/src/types:ro
     healthcheck:
       test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:' + process.env.PORT + '/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 5s
@@ -72,7 +82,7 @@ services:
 
   worker:
     build: .
-    command: ["bun", "server.ts", "--worker"]
+    command: ["bun", "--watch", "server.ts", "--worker"]
     depends_on:
       api:
         condition: service_healthy
@@ -82,6 +92,15 @@ services:
     environment: *dev-environment
     volumes:
       - material_uploads:/app/data/materials
+      - ./server.ts:/app/server.ts:ro
+      - ./src/application:/app/src/application:ro
+      - ./src/config:/app/src/config:ro
+      - ./src/docs:/app/src/docs:ro
+      - ./src/infra:/app/src/infra:ro
+      - ./src/main:/app/src/main:ro
+      - ./src/middleware:/app/src/middleware:ro
+      - ./src/schemas:/app/src/schemas:ro
+      - ./src/types:/app/src/types:ro
 
 volumes:
   postgres_dev:

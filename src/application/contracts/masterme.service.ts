@@ -1,17 +1,22 @@
 import type { Concept, ConceptConfidence } from '../domain/concept';
 import type { ConceptPerformance, MasterMeQuestion, StudySession } from '../domain/assessment';
-import type { SupportedLocale } from '../domain/material';
+import type { MaterialKind, SupportedLocale } from '../domain/material';
 import type { PracticeFocusMode, PracticeProject } from '../domain/practice-project';
 
 export interface CreateMaterialCommand {
   title: string;
   content: string;
   locale?: SupportedLocale;
+  materialKind?: MaterialKind;
 }
+
+
 
 export interface PracticeFocusCommand {
   focusMode: PracticeFocusMode;
   conceptIds?: string[];
+  difficulty?: 'FOUNDATION' | 'INTERMEDIATE' | 'ADVANCED';
+  size?: 'SMALL' | 'MEDIUM';
 }
 
 export interface KnowledgeMapConcept {

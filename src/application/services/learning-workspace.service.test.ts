@@ -27,13 +27,15 @@ const outcome: ActivityOutcome = { event: { id: 'event-1', request_id: input.req
 function repository(overrides: Partial<LearningWorkspaceRepository>): LearningWorkspaceRepository {
   const unused = async () => undefined;
   return {
-    outline: unused, readingPosition: async () => ({ offset: 0 }),
+    outline: unused, questionBank: async () => [], focusedDrillContext: async () => ({ materialId, conceptId, conceptName: context.conceptName, objectiveId: null, objectiveText: 'Explain the mechanism.', observedGap: null, sourceExcerpt: context.sourceExcerpt, sourceOffset: null, criteria: context.criteria, locale: 'en-US', previousEvidenceId: null, questionVariant: 0 }), outlineState: unused, updateOutline: unused, readingPosition: async () => ({ offset: 0 }),
     setReadingPosition: async (_ownerId, _materialId, offset) => ({ offset }),
     relations: unused, createRelation: unused,
     shelves: unused, createShelf: unused, deleteShelf: unused, setShelfMaterial: unused,
     cards: unused, saveCard: unused, deleteCard: unused, goals: unused, createGoal: unused, updateGoal: unused,
     plans: unused, createPlan: unused, updatePlan: unused, reorderPlanTasks: unused, reorderTasks: unused, tasks: unused, createTask: unused, updateTask: unused,
-    availability: unused, setAvailability: unused, desk: unused, evidence: unused,
+    availability: unused, setAvailability: unused, desk: unused, todayCandidates: async () => ({ availableMinutes: 30, candidates: [] }), evidence: unused,
+    dueReviews: async () => [],
+    decideReviewReminder: unused,
     contestEvidence: unused, suggestions: unused, requestRevisit: unused, decideSuggestion: unused,
     evidenceConceptName: async () => context.conceptName,
     loadActivityContext: async () => context,
@@ -59,7 +61,42 @@ test('evaluates in the material locale and accepts the legacy en-US request hash
     prompt: 'Explain the mechanism of Dependency injection using the material.',
     criteria: ['Explain the concept mechanism or essential conditions using the excerpt.', 'The caller chooses the implementation.'],
   });
-  expect(save.mock.calls[0]?.[1]).toMatchObject({ requestId: input.requestId, leaseToken: 'lease-1', promptVersion: 'activity-v2', criteria: ['Explain the concept mechanism or essential conditions using the excerpt.', 'The caller chooses the implementation.'] });
+  expect(save.mock.calls[0]?.[1]).toMatchObject({ requestId: input.requestId, leaseToken: 'lease-1', promptVersion: 'activity-v3', criteria: ['Explain the concept mechanism or essential conditions using the excerpt.', 'The caller chooses the implementation.'] });
+});
+
+test('previews the exact application and recall prompts used by assessment', async () => {
+  const service = new LearningWorkspaceService(repository({ loadActivityContext: async () => ({ ...context, studyQuestion: 'Why does the caller provide dependencies?' }) }));
+  expect(await service.activityPrompts(ownerId, conceptId)).toEqual({
+    reasoning: 'What does the excerpt support about Dependency injection, and why? Trace the stated premises to its conclusion. If the passage leaves a step unexplained, identify that limit instead of assuming it.',
+    application: 'How would you apply Dependency injection in a concrete case? Justify the mechanism using the excerpt.',
+    retention: 'Without consulting the material, recall: Why does the caller provide dependencies?',
+  });
+});
+
+test('records a different, versioned prompt for a drill retry', async () => {
+  const save = mock(async (_owner: string, _input: EvidenceInput, _suggestion: EvidenceSuggestion) => outcome);
+  const assess = mock(async (_input: Parameters<ActivityAssessmentGateway['evaluateActivity']>[0]) => ({ status: 'INCOMPLETE' as const, missingPremises: [], logicalBreak: null, feedback: 'Explain the changed condition.' }));
+  const service = new LearningWorkspaceService(repository({ recordEvidence: save }), { evaluateActivity: assess });
+  const preview = await service.activityPrompts(ownerId, conceptId, 1);
+  await service.evaluateActivity(ownerId, { ...input, activityType: 'APPLICATION', attemptContext: 'DRILL', questionVariant: 1, previousEvidenceId: '55555555-5555-4555-8555-555555555555' });
+  expect(assess.mock.calls[0]?.[0].prompt).toBe(preview.application);
+  expect(save.mock.calls[0]?.[1]).toMatchObject({ attemptContext: 'DRILL', promptVersion: 'activity-v4-variant1', previousEvidenceId: '55555555-5555-4555-8555-555555555555' });
+});
+
+test('focused drill preview states the objective, gap, criterion and exact server prompt', async () => {
+  const service = new LearningWorkspaceService(repository({ focusedDrillContext: async () => ({ materialId, conceptId, conceptName: context.conceptName, objectiveId: 'objective-1', objectiveText: 'Explain dependency injection.', observedGap: 'Missed the caller role.', sourceExcerpt: context.sourceExcerpt, sourceOffset: 4, criteria: context.criteria, locale: 'en-US', previousEvidenceId: 'attempt-1', questionVariant: 1 }) }));
+  const preview = await service.focusedDrill(ownerId, materialId, conceptId);
+  expect(preview).toMatchObject({ conceptId, objectiveId: 'objective-1', observedGap: 'Missed the caller role.', activityType: 'APPLICATION', questionVariant: 1, estimatedMinutes: 10 });
+  expect(preview.prompt).toContain('changed condition');
+  expect(preview.criteria).toContain('The caller chooses the implementation.');
+});
+
+test('rejects mismatched drill and review activity types before model evaluation', async () => {
+  const assess = mock(async (_input: Parameters<ActivityAssessmentGateway['evaluateActivity']>[0]) => ({ status: 'INCOMPLETE' as const, missingPremises: [], logicalBreak: null, feedback: 'Missing.' }));
+  const service = new LearningWorkspaceService(repository({}), { evaluateActivity: assess });
+  await expect(service.evaluateActivity(ownerId, { ...input, activityType: 'REASONING', attemptContext: 'DRILL' })).rejects.toThrow('aplicação');
+  await expect(service.evaluateActivity(ownerId, { ...input, activityType: 'APPLICATION', reviewId: '55555555-5555-4555-8555-555555555555' })).rejects.toThrow('retomada');
+  expect(assess).not.toHaveBeenCalled();
 });
 
 test('releases the owned lease when assessment fails', async () => {

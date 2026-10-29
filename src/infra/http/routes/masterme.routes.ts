@@ -8,6 +8,7 @@ import {
   CreateMaterialBodySchema,
   IdParamsSchema,
   LocaleBodySchema,
+  MaterialKindBodySchema,
   UploadMaterialBodySchema,
 } from '../../../schemas/http.schema';
 import multer from 'multer';
@@ -28,10 +29,10 @@ export const createMasterMeRouter = (
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
-      fileSize: 8 * 1024 * 1024,
+      fileSize: 16 * 1024 * 1024,
       files: 1,
-      fields: 2,
-      parts: 3,
+      fields: 3,
+      parts: 4,
       fieldSize: 200,
       fieldNameSize: 32,
       headerPairs: 20,
@@ -40,6 +41,7 @@ export const createMasterMeRouter = (
   router.use(...security);
   if (files) {
     router.get('/events', files.events);
+    router.get('/materials/:id/file', validateRequest({ params: IdParamsSchema }), files.originalPdf);
     router.delete('/materials/:id', validateRequest({ params: IdParamsSchema }), files.deleteMaterial);
     router.get('/processing/overview', files.overview);
     router.post(
@@ -84,12 +86,15 @@ export const createMasterMeRouter = (
           : []),
         'GET /api/billing/me',
         'GET /api/materials/:id',
+        'PATCH /api/materials/:id/kind',
         'DELETE /api/materials/:id',
         'POST /api/materials/:id/extract',
         'GET /api/materials/:id/concepts',
         'POST /api/materials/:id/localize',
         'GET /api/materials/:id/knowledge-map',
+        'GET /api/materials/:id/sessions',
         'POST /api/concepts/:id/sessions',
+        'GET /api/concepts/:id/sessions',
         'GET /api/sessions/:id',
         'POST /api/sessions/:id/answers',
         'POST /api/sessions/:id/edge-case',
@@ -122,6 +127,11 @@ export const createMasterMeRouter = (
     validateRequest({ params: IdParamsSchema }),
     controller.getMaterial,
   );
+  router.patch(
+    '/materials/:id/kind',
+    validateRequest({ params: IdParamsSchema, body: MaterialKindBodySchema }),
+    controller.updateMaterialKind,
+  );
   if (!files)
     router.post(
       '/materials/:id/extract',
@@ -145,10 +155,16 @@ export const createMasterMeRouter = (
     validateRequest({ params: IdParamsSchema }),
     controller.getKnowledgeMap,
   );
+  router.get('/materials/:id/sessions', validateRequest({ params: IdParamsSchema }), controller.getMaterialSessions);
   router.post(
     '/concepts/:id/sessions',
     validateRequest({ params: IdParamsSchema }),
     controller.startSession,
+  );
+  router.get(
+    '/concepts/:id/sessions',
+    validateRequest({ params: IdParamsSchema }),
+    controller.getConceptSessions,
   );
   router.get(
     '/sessions/:id',
