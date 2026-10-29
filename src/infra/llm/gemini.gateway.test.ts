@@ -114,6 +114,16 @@ test('explicit material kind controls chapter extraction without rewriting legac
   expect(planExtractionBatches(material, paragraphs, outline).book).toBe(true);
 });
 
+test('a book with a legacy unstructured outline can recover printed chapters for re-extraction', () => {
+  const content = 'Contents\n1. Introduction (34:30 mins)\n2. Modularity (28:45 mins)\n\nChapter 1. Introduction\nThe introduction explains the architect role.\n\nChapter 2. Modularity\nThe second chapter explains modularity.';
+  const material = { id: 'book', title: 'Book', content, locale: 'en-US' as const, sourceType: 'TEXT' as const, materialKind: 'BOOK' as const, createdAt: new Date().toISOString() };
+  const outline = [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: content.length, provenance: 'UNSTRUCTURED' as const }];
+  const plan = planExtractionBatches(material, indexMaterialParagraphs(content), outline);
+  expect(plan.book).toBe(true);
+  expect(plan.chapterLimits.size).toBe(2);
+  expect(plan.batches.every((batch) => batch.paragraphs.every((paragraph) => paragraph.offset >= content.indexOf('Chapter 1. Introduction')))).toBe(true);
+});
+
 test('extracts book batches separately and preserves cited offsets', async () => {
   const prompts: string[] = []
   const client = { generateStructured: async (_schema: unknown, prompt: string) => {

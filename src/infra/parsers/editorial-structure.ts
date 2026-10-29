@@ -85,7 +85,7 @@ export function derivePdfOutlineUnits(pageTexts: string[], outline: Array<{ titl
       }
     }
   }
-  const recovered = headings.length ? [] : derivePrintedChapterUnits(content);
+  const recovered = headings.length >= 2 ? [] : derivePrintedChapterUnits(content);
   const printed = recovered.length >= 2
     ? recovered.map((unit) => ({
         title: unit.title!,
@@ -94,7 +94,7 @@ export function derivePdfOutlineUnits(pageTexts: string[], outline: Array<{ titl
         pageNumber: pageStarts.findLastIndex((start) => start <= unit.startOffset) + 1,
       }))
     : printedChapterHeadings(pageTexts, pageStarts);
-  const reliable = headings.length ? headings : printed;
+  const reliable = recovered.length >= 2 ? printed : headings.length ? headings : printed;
   if (!reliable.length) return [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: content.length, provenance: 'UNSTRUCTURED' }];
   const preface: EditorialUnit[] = reliable[0]!.startOffset > 0
     ? [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: reliable[0]!.startOffset, provenance: 'UNSTRUCTURED' }]
@@ -104,6 +104,15 @@ export function derivePdfOutlineUnits(pageTexts: string[], outline: Array<{ titl
 
 /** Preserve author headings only when the source format actually marks them as headings. */
 export function deriveEditorialUnits(content: string, sourceType: SourceType): EditorialUnit[] {
+  if (sourceType === 'TEXT' || sourceType === 'TXT') {
+    const chapters = derivePrintedChapterUnits(content);
+    if (chapters.length >= 2) {
+      const preface: EditorialUnit[] = chapters[0]!.startOffset > 0
+        ? [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: chapters[0]!.startOffset, provenance: 'UNSTRUCTURED' }]
+        : [];
+      return [...preface, ...chapters.map((chapter, index) => ({ ...chapter, order: index + preface.length }))];
+    }
+  }
   if (sourceType !== 'MARKDOWN') return [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: content.length, provenance: 'UNSTRUCTURED' }];
   const tree = fromMarkdown(content);
   const headings = tree.children.flatMap((node) => {

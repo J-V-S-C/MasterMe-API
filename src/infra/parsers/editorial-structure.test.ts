@@ -34,6 +34,26 @@ test('plain text and PDF text remain one honest unit without reliable outline', 
   ]);
 });
 
+test('plain-text books use body chapter headings instead of contents entries', () => {
+  const content = [
+    'Contents',
+    '1. Preface (08:03 mins)',
+    '2. 1. Introduction (34:30 mins)',
+    '3. 2. Architectural Thinking (23:00 mins)',
+    '',
+    'Chapter 1. Introduction',
+    'The chapter explains what an architect does.',
+    'Chapter 2. Architectural Thinking',
+    'The chapter explains the work of architectural thinking.',
+  ].join('\n');
+  for (const sourceType of ['TEXT', 'TXT'] as const) {
+    const units = deriveEditorialUnits(content, sourceType);
+    expect(units.map((unit) => unit.title)).toEqual([null, 'Chapter 1. Introduction', 'Chapter 2. Architectural Thinking']);
+    expect(units[1]!.startOffset).toBe(content.indexOf('Chapter 1. Introduction'));
+    expect(units[2]!.startOffset).toBe(content.indexOf('Chapter 2. Architectural Thinking'));
+  }
+});
+
 test('PDF outline uses only headings located as standalone text on the corresponding page', () => {
   const pages = [
     'Sumário\nCapítulo um ..... 2',
@@ -79,6 +99,17 @@ test('printed chapter headings supply order when PDF bookmarks are absent', () =
   ]);
   const content = pages.join('\n');
   expect(content.slice(units[1]!.startOffset, units[1]!.endOffset).startsWith('Chapter 1. Foundations')).toBe(true);
+});
+
+test('printed chapters recover a PDF with only one matching bookmark', () => {
+  const pages = [
+    'Contents\nChapter 1. Foundations\nChapter 2. Components',
+    'Chapter 1. Foundations\nThe first chapter body.',
+    'Chapter 2. Components\nThe second chapter body.',
+  ];
+  const units = derivePdfOutlineUnits(pages, [{ title: 'Chapter 1. Foundations', level: 1 }]);
+  expect(units.map((unit) => unit.title)).toEqual([null, 'Chapter 1. Foundations', 'Chapter 2. Components']);
+  expect(units[1]!.startOffset).toBe(pages.join('\n').lastIndexOf('Chapter 1. Foundations'));
 });
 
 test('legacy PDF text prefers chapter bodies after a plain contents list', () => {

@@ -32,7 +32,7 @@ import type { PracticeFocus } from '../domain/practice-focus';
 import { focusExcerptOnChapter, passesAssessmentQuestionScreen, questionIntroducesUnsupportedTerms, sourceGroundedFallbackQuestion } from '../prompts/assessment-question';
 
 const now = (): string => new Date().toISOString();
-const PRACTICE_PROMPT_VERSION = 'practice-project-v2';
+const PRACTICE_PROMPT_VERSION = 'practice-project-v3';
 const EVALUATION_PROMPT_VERSION = 'evaluation-v2';
 type RecentLearningGap = { conceptId: string; activityType: string; diagnosis: string; createdAt: string };
 const withActivityNeeds = (performance: ConceptPerformance[], gaps: RecentLearningGap[]): ConceptPerformance[] => {
