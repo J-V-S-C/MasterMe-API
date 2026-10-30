@@ -1,12 +1,14 @@
 import { z } from 'zod';
+import { MAX_MATERIAL_TITLE_LENGTH } from '../application/material-limits';
+import { MAX_QUESTION_VARIANT, MAX_STUDY_ANSWER_LENGTH, MIN_EXPLANATION_LENGTH } from '../application/study-limits';
 
 export const Id = z.object({ id: z.uuid() });
 export const MaterialId = z.object({ materialId: z.uuid() });
 export const OutlinePatch = z.object({
   expectedRevision: z.number().int().nonnegative(),
   units: z.array(z.union([
-    z.object({ id: z.uuid(), title: z.string().trim().min(1).max(160).nullable() }),
-    z.object({ title: z.string().trim().min(1).max(160), startOffset: z.number().int().nonnegative(), endOffset: z.number().int().positive() })
+    z.object({ id: z.uuid(), title: z.string().trim().min(1).max(MAX_MATERIAL_TITLE_LENGTH).nullable() }),
+    z.object({ title: z.string().trim().min(1).max(MAX_MATERIAL_TITLE_LENGTH), startOffset: z.number().int().nonnegative(), endOffset: z.number().int().positive() })
       .refine((unit) => unit.endOffset > unit.startOffset, { path: ['endOffset'], message: 'O fim deve vir após o início.' }),
   ])).min(1).max(3000)
     .refine((units) => { const ids = units.flatMap((unit) => 'id' in unit ? [unit.id] : []); return new Set(ids).size === ids.length; }),
@@ -102,7 +104,7 @@ export const Evidence = z.object({
     'RETENTION',
   ]),
   prompt: z.string().trim().min(5).max(2000),
-  answer: z.string().trim().min(5).max(20_000),
+  answer: z.string().trim().min(5).max(MAX_STUDY_ANSWER_LENGTH),
   status: z.literal('SELF_REPORTED'),
   assisted: z.boolean().default(false),
   assistanceLevel: z.number().int().min(0).max(4).default(0),
@@ -117,7 +119,7 @@ export const Evidence = z.object({
 });
 export const ActivityAnswer = z.object({
   requestId: z.uuid(),
-  questionVariant: z.number().int().min(0).max(2).default(0),
+  questionVariant: z.number().int().min(0).max(MAX_QUESTION_VARIANT).default(0),
   conceptId: z.uuid().optional(),
   relationId: z.uuid().optional(),
   taskId: z.uuid().optional(),
@@ -129,7 +131,7 @@ export const ActivityAnswer = z.object({
     'RETENTION',
   ]),
   attemptContext: z.enum(['STUDY', 'DRILL']).default('STUDY'),
-  answer: z.string().trim().min(20).max(20_000),
+  answer: z.string().trim().min(MIN_EXPLANATION_LENGTH).max(MAX_STUDY_ANSWER_LENGTH),
   assisted: z.boolean().default(false),
   assistanceLevel: z.number().int().min(0).max(4).default(0),
   hintsUsed: z.array(z.string().trim().min(1).max(200)).max(10).default([]),
@@ -139,12 +141,15 @@ export const ActivityAnswer = z.object({
 }).refine((value) => value.hintsUsed.length === 0 || value.assisted, {
   message: 'Pistas usadas exigem atividade assistida.',
   path: ['assisted'],
+}).refine((value) => value.activityType !== 'RELATION' && !value.relationId, {
+  message: 'A avaliação de relações não está disponível.',
+  path: ['activityType'],
 }).refine((value) => !value.reviewId || value.activityType === 'RETENTION', {
   message: 'Uma revisão exige atividade de retomada.', path: ['activityType'],
 }).refine((value) => value.attemptContext !== 'DRILL' || value.activityType === 'APPLICATION', {
   message: 'Uma prática focada exige atividade de aplicação.', path: ['activityType'],
 });
-export const ActivityPromptQuery = z.object({ variant: z.coerce.number().int().min(0).max(2).default(0) });
+export const ActivityPromptQuery = z.object({ variant: z.coerce.number().int().min(0).max(MAX_QUESTION_VARIANT).default(0) });
 export const FocusedDrillQuery = z.object({ conceptId: z.uuid().optional() });
 export const Decision = z.object({
   decision: z.enum(['ACCEPTED', 'IGNORED']),

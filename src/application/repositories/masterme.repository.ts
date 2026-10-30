@@ -4,6 +4,7 @@ import type { EvidenceActivity, EvidenceStatus } from '../domain/learning-cycle'
 import type { MaterialKind, MaterialOutlineUnit, MaterialSummary, StudyMaterial, SupportedLocale } from '../domain/material';
 import type { PracticeProject } from '../domain/practice-project';
 import type { AiUsageEvent } from '../ports/llm.gateway';
+import type { QuestionBundle } from '../domain/assessment';
 
 export type AiUsageSummary = {
   totalRequests: number;
@@ -48,6 +49,7 @@ export interface MasterMeRepository {
     concepts: Concept[],
   ): Awaitable<void>;
   findConcept(id: string): Awaitable<Concept | undefined>;
+  conceptBelongsToOwner(conceptId: string, ownerId: string): Awaitable<boolean>;
   findConceptsByMaterial(materialId: string): Awaitable<Concept[]>;
   findAllConceptsByMaterial(materialId: string): Awaitable<Concept[]>;
   findRecentLearningGaps(conceptIds: string[]): Awaitable<Array<{ conceptId: string; activityType: string; diagnosis: string; createdAt: string }>>;
@@ -88,10 +90,8 @@ export interface MasterMeRepository {
   findConfidencesByConceptIds(
     conceptIds: string[],
   ): Awaitable<ConceptConfidence[]>;
-  updateConceptEdgeCaseQuestion(
-    conceptId: string,
-    question: string,
-  ): Awaitable<void>;
+  findQuestionBundle(inputHash: string): Awaitable<QuestionBundle | undefined>;
+  saveQuestionBundle(materialId: string, inputHash: string, bundle: QuestionBundle): Awaitable<void>;
   findPracticeProjectByHash(
     inputHash: string,
   ): Awaitable<PracticeProject | undefined>;

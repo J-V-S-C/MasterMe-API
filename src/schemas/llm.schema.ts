@@ -28,6 +28,7 @@ export const ExtractedFragmentSchema = z.object({
   description: z.string().min(1),
   kind: FragmentKindSchema,
   sourceExcerpt: z.string().min(1),
+  sourceOffset: z.number().int().nonnegative().optional(),
   fundamentalPremises: z.array(z.string().min(1)).min(1),
   edgeCases: z.array(z.string().min(1)).min(1),
   edgeCaseQuestion: z.string().min(1).optional(),
@@ -42,6 +43,7 @@ export const ExtractedKnowledgeSchema = z.object({
     relationType: z.enum(['REQUIRES', 'ENABLES', 'CONTRASTS', 'APPLIES_TO', 'PART_OF']),
     statement: z.string().min(5).max(500), justification: z.string().min(5).max(1000),
     sourceExcerpt: z.string().min(1),
+    sourceOffset: z.number().int().nonnegative().optional(),
   })).optional(),
 })
 export type ExtractedKnowledge = z.infer<typeof ExtractedKnowledgeSchema>
@@ -55,13 +57,6 @@ export const ExtractedFragmentResponseSchema = z.object({
   sourceParagraphId: z.string(),
   fundamentalPremises: z.array(z.string()),
   edgeCases: z.array(z.string()),
-  edgeCaseQuestion: z.string(),
-  questionText: z.string(),
-  targetPremise: z.string(),
-  expectedReasoningSteps: z.array(z.string()),
-  learningObjective: z.string(),
-  requiredIdeas: z.array(z.string()),
-  commonMisconceptions: z.array(z.string()),
 })
 export const ChunkExtractionResponseSchema = z.object({
   fragments: z.array(ExtractedFragmentResponseSchema),
@@ -83,16 +78,24 @@ export const LocalizedKnowledgeResponseSchema = z.object({
     description: z.string().min(1).max(600),
     fundamentalPremises: z.array(z.string().min(1).max(500)).min(1).max(6),
     edgeCases: z.array(z.string().min(1).max(500)).min(1).max(6),
-    edgeCaseQuestion: z.string().min(1).max(600),
-    questionText: z.string().min(1).max(600),
-    targetPremise: z.string().min(1).max(500),
-    expectedReasoningSteps: z.array(z.string().min(1).max(500)).min(2).max(4),
-    learningObjective: z.string().min(1).max(500),
-    requiredIdeas: z.array(z.string().min(1).max(500)).min(2).max(4),
-    commonMisconceptions: z.array(z.string().min(1).max(500)).max(4),
   })).min(1).max(30),
 })
 export type LocalizedKnowledgeResponse = z.infer<typeof LocalizedKnowledgeResponseSchema>
+
+export const QuestionBundleSchema = z.object({
+  explanation: QuestionSchema.extend({
+    expectedReasoningSteps: z.array(z.string().min(1)).min(2).max(4),
+    learningObjective: z.string().min(1),
+    requiredIdeas: z.array(z.string().min(1)).min(2).max(4),
+    commonMisconceptions: z.array(z.string().min(1)).max(4),
+  }),
+  reasoning: z.string().min(30).max(1000),
+  application: z.string().min(30).max(1000),
+  challenge: z.string().min(30).max(1000),
+  retention: z.string().min(30).max(1000),
+  practice: z.string().min(30).max(1000),
+})
+export type QuestionBundle = z.infer<typeof QuestionBundleSchema>
 
 export const ReducedKnowledgeResponseSchema = z.object({
   fragments: z.array(z.object({

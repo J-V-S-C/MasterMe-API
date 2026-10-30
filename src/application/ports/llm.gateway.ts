@@ -4,6 +4,7 @@ import type { PrioritizedConcept, PracticeProjectContent } from '../domain/pract
 import type { Evaluation, EdgeCaseChallenge, IsomorphicProblem } from '../domain/assessment';
 import type { MaterialOutlineUnit, StudyMaterial, SupportedLocale } from '../domain/material';
 import type { AiOperation } from '../domain/billing';
+import type { QuestionBundle } from '../domain/assessment';
 
 export type AiUsageEvent = {
   operation: AiOperation;
@@ -19,7 +20,7 @@ export type ExtractedKnowledge = {
 };
 
 export type LocalizedKnowledgeResponse = {
-  fragments: Array<{ id: string; name: string; description: string; fundamentalPremises: string[]; edgeCases: string[]; edgeCaseQuestion: string; questionText: string; targetPremise: string; expectedReasoningSteps: string[]; learningObjective: string; requiredIdeas: string[]; commonMisconceptions: string[] }>;
+  fragments: Array<{ id: string; name: string; description: string; fundamentalPremises: string[]; edgeCases: string[] }>;
 };
 
 export type ExtractionProgress = {
@@ -29,10 +30,12 @@ export type ExtractionProgress = {
 };
 
 export interface MasterMeLlmGateway {
+  generateQuestionBundle(concept: Concept, variant?: number): Promise<QuestionBundle>;
   extractKnowledge(
     material: StudyMaterial,
     onProgress?: (progress: ExtractionProgress) => Promise<void>,
     outline?: MaterialOutlineUnit[],
+    options?: { maxConcepts?: number; isBookChapter?: boolean; chapterTitle?: string },
   ): Promise<ExtractedKnowledge>;
   localizeKnowledge(
     concepts: Concept[],

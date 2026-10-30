@@ -6,7 +6,7 @@ import type { AiUsageEvent } from '../application/ports/llm.gateway'
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/
 const HTTP_BUCKETS = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10] as const
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
-const AI_OPERATIONS = new Set<AiOperation>(['EXTRACTION', 'INITIAL_EVALUATION', 'EDGE_CASE_GENERATION', 'EDGE_CASE_EVALUATION', 'PRACTICE_PROJECT', 'LOCALIZATION', 'STRESS_EVALUATION', 'ISOMORPHIC_PROBLEM'])
+const AI_OPERATIONS = new Set<AiOperation>(['EXTRACTION', 'QUESTION_SET_GENERATION', 'INITIAL_EVALUATION', 'EDGE_CASE_GENERATION', 'EDGE_CASE_EVALUATION', 'PRACTICE_PROJECT', 'LOCALIZATION', 'STRESS_EVALUATION', 'ISOMORPHIC_PROBLEM'])
 type Labels = Readonly<Record<string, string>>
 type Histogram = { count: number; sum: number; buckets: number[] }
 type QueueSnapshot = { jobs: Record<'PENDING' | 'PROCESSING' | 'FAILED', number>; oldestPendingSeconds: number; billingPending: number; billingLeased: number; aiCalls24h?: Array<{ operation: string; result: string; value: number }>; credits24h?: Array<{ operation: string; value: number }> }

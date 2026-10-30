@@ -3,23 +3,26 @@ import type { ActivityInput, EvidenceInput, FocusedDrillPreview, GoalInput, Goal
 import type { ActivityAssessmentGateway } from '../ports/activity-assessment.gateway';
 import { ConflictError } from '../errors';
 import { createHash } from 'node:crypto';
-import { buildActivityPrompt } from '../prompts/activity-prompt';
 import { suggestNextAction } from '../domain/learning-cycle';
 import { criteriaForActivity } from '../domain/activity-rubric';
 import { chooseTodayActions } from '../domain/today-policy';
+import type { QuestionBundleProvider } from '../contracts/masterme.service';
 
 export class LearningWorkspaceService {
   public constructor(
     private readonly repository: LearningWorkspaceRepository,
     private readonly assessment?: ActivityAssessmentGateway,
+    private readonly questions?: QuestionBundleProvider,
   ) {}
 
   public outline(ownerId: string, materialId: string) { return this.repository.outline(ownerId, materialId); }
   public questionBank(ownerId: string, materialId: string) { return this.repository.questionBank(ownerId, materialId); }
   public async focusedDrill(ownerId: string, materialId: string, conceptId?: string): Promise<FocusedDrillPreview> {
     const context = await this.repository.focusedDrillContext(ownerId, materialId, conceptId);
+    if (!this.questions) throw new ConflictError('Geração de perguntas indisponível.');
+    const bundle = await this.questions.getQuestionBundle(context.conceptId, context.questionVariant, ownerId);
     return { ...context, activityType: 'APPLICATION', estimatedMinutes: 10,
-      prompt: buildActivityPrompt({ activityType: 'APPLICATION', locale: context.locale, conceptName: context.conceptName, variant: context.questionVariant }),
+      prompt: bundle.practice,
       criteria: criteriaForActivity('APPLICATION', context.locale, context.criteria),
     };
   }
@@ -61,11 +64,13 @@ export class LearningWorkspaceService {
     return this.repository.decideReviewReminder(ownerId, reviewId, action, new Date(), days);
   }
   public async activityPrompts(ownerId: string, conceptId: string, variant = 0) {
-    const context = await this.repository.loadActivityContext(ownerId, { conceptId });
+    await this.repository.loadActivityContext(ownerId, { conceptId });
+    if (!this.questions) throw new ConflictError('Geração de perguntas indisponível.');
+    const bundle = await this.questions.getQuestionBundle(conceptId, variant, ownerId);
     return {
-      reasoning: buildActivityPrompt({ activityType: 'REASONING', locale: context.locale, conceptName: context.conceptName, studyQuestion: context.studyQuestion, variant }),
-      application: buildActivityPrompt({ activityType: 'APPLICATION', locale: context.locale, conceptName: context.conceptName, studyQuestion: context.studyQuestion, variant }),
-      retention: buildActivityPrompt({ activityType: 'RETENTION', locale: context.locale, conceptName: context.conceptName, studyQuestion: context.studyQuestion, variant }),
+      reasoning: bundle.reasoning,
+      application: bundle.application,
+      retention: bundle.retention,
     };
   }
   public contestEvidence(ownerId: string, evidenceId: string, reason: string) { return this.repository.contestEvidence(ownerId, evidenceId, reason); }
@@ -82,18 +87,18 @@ export class LearningWorkspaceService {
     if (!this.assessment) throw new ConflictError('Avaliação indisponível.');
     if (input.reviewId && input.activityType !== 'RETENTION') throw new ConflictError('Uma revisão exige atividade de retomada.');
     if (input.attemptContext === 'DRILL' && input.activityType !== 'APPLICATION') throw new ConflictError('Uma prática focada exige atividade de aplicação.');
-    if ((input.activityType === 'RELATION') !== Boolean(input.relationId))
-      throw new ConflictError('A atividade de relação exige uma relação verificada.');
+    if (input.activityType === 'RELATION' || input.relationId)
+      throw new ConflictError('A avaliação de relações não está disponível. Use as atividades geradas para um conceito.');
     const context = await this.repository.loadActivityContext(ownerId, input);
-    const promptInput = {
-      activityType: input.activityType,
-      locale: context.locale,
-      conceptName: context.conceptName,
-      studyQuestion: context.studyQuestion,
-      relation: context.relation,
-      variant: input.questionVariant ?? 0,
-    };
-    const prompt = buildActivityPrompt(promptInput);
+    if (!context.conceptId)
+      throw new ConflictError('A atividade precisa de um conceito.');
+    const bundle = await this.questions?.getQuestionBundle(context.conceptId, input.questionVariant ?? 0, ownerId);
+    if (!bundle)
+      throw new ConflictError('Geração de perguntas indisponível.');
+    const prompt = input.activityType === 'COMPREHENSION' ? bundle.explanation.text
+      : input.activityType === 'REASONING' ? bundle.reasoning
+      : input.activityType === 'APPLICATION' ? (input.attemptContext === 'DRILL' ? bundle.practice : bundle.application)
+      : bundle.retention;
     const criteria = criteriaForActivity(input.activityType, context.locale, context.criteria);
     const hashFor = (text: string) => createHash('sha256').update(JSON.stringify({
       ownerId,
@@ -112,11 +117,7 @@ export class LearningWorkspaceService {
       prompt: text,
       sourceExcerpt: context.sourceExcerpt,
     })).digest('hex');
-    // Older en-US requests used Portuguese fallback and wrapper text in the hash.
-    const legacyHash = context.locale === 'en-US'
-      ? hashFor(buildActivityPrompt({ ...promptInput, locale: 'pt-BR' }))
-      : undefined;
-    const claim = await this.repository.claimActivity(ownerId, input.requestId, hashFor(prompt), legacyHash);
+    const claim = await this.repository.claimActivity(ownerId, input.requestId, hashFor(prompt));
     if (claim.kind === 'REPLAY') return claim.outcome;
     try {
       const evaluation = await this.assessment.evaluateActivity({
@@ -151,7 +152,7 @@ export class LearningWorkspaceService {
         evidenceQuote: evaluation.evidenceQuote,
         missingPremises: evaluation.missingPremises,
         logicalBreak: evaluation.logicalBreak,
-        promptVersion: input.questionVariant ? `activity-v4-variant${input.questionVariant}` : 'activity-v3',
+        promptVersion: `question-bundle-v3-variant${input.questionVariant ?? 0}`,
         criteria,
         sourceExcerpt: context.sourceExcerpt,
         sourceOffset: context.sourceOffset,
