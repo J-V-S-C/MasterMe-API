@@ -1,11 +1,13 @@
 import type { ErrorRequestHandler } from 'express';
 import { z } from 'zod';
 import { AppError } from '../application/errors';
+import { MAX_UPLOAD_MIB } from '../application/material-limits';
 import { MulterError } from 'multer';
 import { normalizedRoute } from './observability';
 
 const errorStatuses: Readonly<Record<string, number>> = {
   UNAUTHENTICATED: 401,
+  AUTH_UNAVAILABLE: 503,
   NOT_FOUND: 404,
   INSUFFICIENT_DATA: 422,
   INVALID_STATE: 409,
@@ -42,6 +44,7 @@ const errorStatuses: Readonly<Record<string, number>> = {
   AI_CREDIT_LIMIT_REACHED: 429,
   PDF_TOO_MANY_PAGES: 413,
   AI_CREDIT_STATE_UNAVAILABLE: 503,
+  AI_CREDIT_OPERATION_UNSUPPORTED: 503,
 };
 
 export const errorHandler: ErrorRequestHandler = (
@@ -52,8 +55,14 @@ export const errorHandler: ErrorRequestHandler = (
 ) => {
   const requestId = res.locals.requestId ?? 'unknown';
   if (error instanceof AppError) {
+    const status = error.category === 'INVALID_INPUT' ? 400 : errorStatuses[error.code] ?? 500;
+    if (status >= 500) console.error(JSON.stringify({
+      level: 'error', requestId, method: req.method,
+      route: res.locals.routeTemplate ?? normalizedRoute(req),
+      code: error.code,
+    }));
     res
-      .status(error.category === 'INVALID_INPUT' ? 400 : errorStatuses[error.code] ?? 500)
+      .status(status)
       .json({ code: error.code, message: error.message, requestId });
     return;
   }
@@ -62,7 +71,7 @@ export const errorHandler: ErrorRequestHandler = (
     res.status(tooLarge ? 413 : 400).json({
       code: tooLarge ? 'UPLOAD_TOO_LARGE' : 'INVALID_UPLOAD',
       message: tooLarge
-        ? 'Envie um arquivo de até 8 MiB.'
+        ? `Envie um arquivo de até ${MAX_UPLOAD_MIB} MiB.`
         : 'Envie somente um arquivo válido.',
       requestId,
     });

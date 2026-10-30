@@ -1,7 +1,9 @@
 import { z } from 'zod';
+import { MAX_QUESTION_VARIANT } from '../application/study-limits';
 
 export const SupportedLocaleSchema = z.enum(['pt-BR', 'en-US']);
 export const GeneratedLocaleSchema = z.enum(['pt-BR', 'en-US', 'und']);
+export const MaterialKindSchema = z.enum(['BOOK', 'ARTICLE', 'TEXT']);
 export const FragmentKindSchema = z.enum(['AXIOM', 'NODE', 'EDGE']);
 export const MaterialSchema = z.object({
   id: z.uuid(),
@@ -9,10 +11,14 @@ export const MaterialSchema = z.object({
   content: z.string().min(1),
   locale: SupportedLocaleSchema.default('pt-BR'),
   createdAt: z.string().datetime(),
+  sourceType: z.enum(['TEXT', 'PDF', 'MARKDOWN', 'TXT']).optional(),
+  materialKind: MaterialKindSchema.optional(),
 });
 export const MaterialSummarySchema = MaterialSchema.omit({ content: true });
 export const QuestionSchema = z.object({
   text: z.string().min(1),
+  bundleVariant: z.number().int().min(0).max(MAX_QUESTION_VARIANT).optional(),
+  promptVersion: z.string().min(1).optional(),
   targetPremise: z.string().min(1),
   expectedReasoningSteps: z.array(z.string().min(1)).min(1),
   learningObjective: z.string().min(1).optional(),
@@ -44,6 +50,7 @@ export const EvaluationSchema = z.object({
   strength: z.string().min(1).optional(),
   gap: z.string().min(1).nullable().optional(),
   nextAction: z.string().min(1).optional(),
+  evidenceQuote: z.string().nullable().optional(),
 });
 export const EdgeCaseChallengeSchema = z.object({
   scenario: z.string().min(1),
@@ -57,6 +64,10 @@ export const AttemptSchema = z.object({
   stage: z.enum(['INITIAL', 'EDGE_CASE_REPLY', 'STRESS_REPLY']),
   answer: z.string().min(1),
   evaluation: EvaluationSchema,
+  assisted: z.boolean().optional(),
+  assistanceLevel: z.number().int().min(0).max(4).optional(),
+  hintsUsed: z.array(z.string().min(1).max(200)).optional(),
+  solutionRevealed: z.boolean().optional(),
   createdAt: z.string().datetime(),
 });
 export const StudySessionSchema = z.object({

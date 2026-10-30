@@ -3,19 +3,23 @@ import type { Server } from 'node:http';
 import type { IngestionService } from '../../ingestion/ingestion.service';
 import type { MasterMeService } from '../../../application/services/masterme.service';
 import { createApp } from '../../../../server';
-import { MasterMeController, IngestionController } from '../../controllers/masterme.controller';
+import { MasterMeController } from '../../controllers/masterme.controller';
+import { IngestionController } from '../../controllers/ingestion.controller';
 import { testSecurity } from './test-security';
 
 const withUploadServer = async (
   run: (baseUrl: string) => Promise<void>,
   deleteMaterial: (id: string, ownerId: string) => Promise<void> = async () => {},
+  originalPdf: (id: string, ownerId: string) => Promise<Buffer> = async () => { throw new Error('PDF should not be read'); },
+  uploadMaterial?: IngestionService['upload'],
 ): Promise<void> => {
   const study = {} as MasterMeService;
   const ingestion = {
     deleteMaterial,
-    upload: async () => {
+    originalPdf,
+    upload: uploadMaterial ?? (async () => {
       throw new Error('Upload should not be called');
-    },
+    }),
   } as unknown as IngestionService;
   const server: Server = createApp({ study: new MasterMeController(study, 100, ingestion), ingestion: new IngestionController(ingestion), security: testSecurity }).listen(0);
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -32,12 +36,21 @@ const withUploadServer = async (
 };
 
 describe('multipart upload guardrails', () => {
-  test('rejects files over 8 MiB before reaching the service', async () => {
+  test('accepts a file at the 20 MiB limit', async () => {
+    await withUploadServer(async (baseUrl) => {
+      const form = new FormData();
+      form.set('file', new Blob([new Uint8Array(20 * 1024 * 1024)], { type: 'text/plain' }), 'limit.txt');
+      const response = await fetch(`${baseUrl}/api/materials/upload`, { method: 'POST', body: form });
+      expect(response.status).toBe(202);
+    }, undefined, undefined, async () => ({ id: 'material-at-limit', title: 'limit', status: 'PENDING' }));
+  });
+
+  test('rejects files over 20 MiB before reaching the service', async () => {
     await withUploadServer(async (baseUrl) => {
       const form = new FormData();
       form.set(
         'file',
-        new Blob([new Uint8Array(8 * 1024 * 1024 + 1)], { type: 'text/plain' }),
+        new Blob([new Uint8Array(20 * 1024 * 1024 + 1)], { type: 'text/plain' }),
         'large.txt',
       );
       const response = await fetch(`${baseUrl}/api/materials/upload`, {
@@ -66,7 +79,7 @@ describe('multipart upload guardrails', () => {
       });
       expect(excessResponse.status).toBe(400);
       expect(await excessResponse.json()).toMatchObject({
-        code: 'INVALID_UPLOAD',
+        code: 'VALIDATION_ERROR',
       });
 
       const missing = new FormData();
@@ -81,6 +94,21 @@ describe('multipart upload guardrails', () => {
       });
     });
   });
+});
+
+test('original PDF route validates the id and serves only the requested PDF bytes', async () => {
+  const requested: string[] = [];
+  const bytes = Buffer.from('%PDF-1.4\nsource');
+  await withUploadServer(async (baseUrl) => {
+    const invalid = await fetch(`${baseUrl}/api/materials/not-a-uuid/file`);
+    expect(invalid.status).toBe(400);
+    const valid = await fetch(`${baseUrl}/api/materials/22222222-2222-4222-8222-222222222222/file`);
+    expect(valid.status).toBe(200);
+    expect(valid.headers.get('content-type')).toContain('application/pdf');
+    expect(valid.headers.get('cache-control')).toContain('no-store');
+    expect(Buffer.from(await valid.arrayBuffer())).toEqual(bytes);
+    expect(requested).toEqual(['22222222-2222-4222-8222-222222222222:11111111-1111-4111-8111-111111111111']);
+  }, undefined, async (id, ownerId) => { requested.push(`${id}:${ownerId}`); return bytes; });
 });
 
 

@@ -4,6 +4,7 @@ import type { MasterMeQuestion } from '../domain/assessment';
 import type { EdgeCaseChallenge, Evaluation, IsomorphicProblem } from '../domain/assessment';
 import type { PracticeProjectContent } from '../domain/practice-project';
 import type { StudyMaterial } from '../domain/material';
+import type { MaterialOutlineUnit } from '../domain/material';
 import { InMemoryMasterMeRepository } from '../../infra/repositories/in-memory/in-memory.masterme.repository';
 import type { ExtractedKnowledge } from '../../schemas/llm.schema';
 import type { MasterMeLlmGateway } from '../ports/llm.gateway';
@@ -17,6 +18,26 @@ const passed: Evaluation = {
 };
 
 class FakeLlm implements MasterMeLlmGateway {
+  public questionBundles = 0;
+  public async generateQuestionBundle(concept: Concept) {
+    this.questionBundles++;
+    return {
+      explanation: {
+        text: `How does ${concept.name} affect the mechanism described in the selected source?`,
+        targetPremise: concept.fundamentalPremises[0] ?? concept.name,
+        expectedReasoningSteps: ['Identify the mechanism.', 'Explain its effect.'],
+        learningObjective: 'Explain the source mechanism.',
+        requiredIdeas: ['Mechanism', 'Effect'],
+        commonMisconceptions: [],
+      },
+      reasoning: `What follows from ${concept.name} in the source, and why does it follow?`,
+      application: `How would you apply ${concept.name} in the situation described by the source?`,
+      challenge: `How does ${concept.name} behave at the limit described in the source?`,
+      retention: `Without the source, explain how ${concept.name} works and why it matters.`,
+      practice: `Build a small example that demonstrates ${concept.name} using the source constraints.`,
+    };
+  }
+  public lastOutline: MaterialOutlineUnit[] = [];
   public relations: NonNullable<ExtractedKnowledge['relations']> = [];
   public projects = 0;
   public initialEvaluations = 0;
@@ -27,7 +48,10 @@ class FakeLlm implements MasterMeLlmGateway {
   public edgeEvaluationGate: Promise<void> | undefined;
   public async extractKnowledge(
     _material: StudyMaterial,
+    _progress?: (progress: import('../ports/llm.gateway').ExtractionProgress) => Promise<void>,
+    outline: MaterialOutlineUnit[] = [],
   ): Promise<ExtractedKnowledge> {
+    this.lastOutline = outline;
     return {
       fragments: [
         {
@@ -73,21 +97,6 @@ class FakeLlm implements MasterMeLlmGateway {
         description: 'Descrição localizada.',
         fundamentalPremises: ['Premissa localizada.'],
         edgeCases: ['Condição-limite localizada.'],
-        edgeCaseQuestion:
-          'Como a condição-limite altera o mecanismo e qual premissa deve permanecer?',
-        questionText:
-          'Como o mecanismo preserva a premissa quando os detalhes mudam?',
-        targetPremise: 'A premissa precisa permanecer.',
-        expectedReasoningSteps: [
-          'Identificar a premissa.',
-          'Explicar o mecanismo.',
-        ],
-        learningObjective: 'Explicar o mecanismo sem depender de detalhes.',
-        requiredIdeas: [
-          'Separação entre regra e detalhe.',
-          'Efeito causal da separação.',
-        ],
-        commonMisconceptions: ['Confundir abstração com camada adicional.'],
       })),
     };
   }
@@ -164,6 +173,83 @@ const setup = async () => {
 };
 
 describe('MasterMeService — free journey', () => {
+  test('practice focus uses a recent application gap even before an initial explanation', async () => {
+    class GapRepository extends InMemoryMasterMeRepository {
+      public override findRecentLearningGaps(conceptIds: string[]) {
+        return conceptIds.slice(0, 1).map((conceptId) => ({ conceptId, activityType: 'APPLICATION', diagnosis: 'The example lacks a decision rule.', createdAt: '2026-10-27T10:00:00.000Z' }));
+      }
+    }
+    const repository = new GapRepository();
+    const service = new MasterMeService(repository, new FakeLlm());
+    const material = await service.createMaterial({ title: 'Architecture', content: 'Regras dependem de abstrações. Dependências são fornecidas externamente.' }, '00000000-0000-0000-0000-000000000001');
+    await service.extractConcepts(material.id);
+    const focus = await service.getPracticeFocus(material.id, { focusMode: 'PERFORMANCE' });
+    expect(focus.priorities).toHaveLength(1);
+    expect(focus.priorities[0]?.reason).toContain('aplicação');
+  });
+  test('lists saved sessions for a material in one request', async () => {
+    const { service, material, concepts } = await setup();
+    const session = await service.startSession(concepts[0]!.id);
+    const history = await service.getMaterialSessions(material.id);
+    expect(history.concepts.map((concept) => concept.id)).toContain(concepts[0]!.id);
+    expect(history.sessions.map((item) => item.id)).toContain(session.id);
+  });
+  test('generates one cached question bundle for explanation and other study activities', async () => {
+    const { service, llm, concepts } = await setup();
+    const conceptId = concepts[0]!.id;
+    const [first, second] = await Promise.all([
+      service.getQuestionBundle(conceptId),
+      service.getQuestionBundle(conceptId),
+    ]);
+    const session = await service.startSession(conceptId);
+    expect(first).toEqual(second);
+    expect(session.question).toMatchObject({ ...first.explanation, bundleVariant: 0, promptVersion: 'question-bundle-v3' });
+    expect(first.practice).toContain(concepts[0]!.name);
+    expect(llm.questionBundles).toBe(1);
+  });
+  test('does not generate or spend a question request for a foreign concept', async () => {
+    const { service, llm, concepts } = await setup();
+    await expect(service.startSession(concepts[0]!.id, '99999999-9999-4999-8999-999999999999'))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(llm.questionBundles).toBe(0);
+  });
+  test('passes the saved book outline to extraction', async () => {
+    const repository = new InMemoryMasterMeRepository();
+    const llm = new FakeLlm();
+    const service = new MasterMeService(repository, llm);
+    const material = await service.createMaterial({ title: 'Book', content: 'Regras dependem de abstrações. Dependências são fornecidas externamente.' }, '00000000-0000-0000-0000-000000000001');
+    const outline: MaterialOutlineUnit[] = [{ order: 0, title: 'Chapter 1. Foundations', level: 1, startOffset: 0, endOffset: material.content.length, provenance: 'HEADING' }];
+    repository.setMaterialOutline(material.id, outline);
+    await service.extractConcepts(material.id);
+    expect(llm.lastOutline).toEqual(outline);
+  });
+
+  test('keeps a topical paraphrase and retires an unanswered old template', async () => {
+    const repository = new InMemoryMasterMeRepository();
+    const service = new MasterMeService(repository, new FakeLlm());
+    const source = 'Pipeline architectures have monolithic deployments.\nChapter 12. Microkernel Architecture Style\nA microkernel has a core system and plug-in components.';
+    const material: StudyMaterial = { id: '11111111-1111-4111-8111-111111111111', title: 'Architecture', content: source, locale: 'en-US', createdAt: new Date().toISOString() };
+    repository.saveMaterial(material, '22222222-2222-4222-8222-222222222222');
+    const concept: Concept = {
+      id: '33333333-3333-4333-8333-333333333333', materialId: material.id,
+      name: 'MicrokernelArchitecture', description: 'A core and plug-in components.', kind: 'NODE',
+      sourceExcerpt: source, sourceOffset: 0, fundamentalPremises: ['A core and plug-in components.'], edgeCases: [],
+      studyQuestion: { text: 'How do add-on parts fit around a central component in this architecture?', targetPremise: 'A core works with plug-in components.', expectedReasoningSteps: ['Identify the core', 'Explain plug-in components'] },
+      generatedLocale: 'en-US', prerequisiteIds: [], nextIds: [],
+    };
+    await repository.saveConcepts([concept]);
+    const map = await service.getKnowledgeMap(material.id);
+    expect(map[0]?.concept.sourceExcerpt.startsWith('Chapter 12.')).toBe(true);
+    expect(map[0]?.concept.sourceOffset).toBe(source.indexOf('Chapter 12.'));
+    expect(map[0]?.question?.text).toBe(concept.studyQuestion?.text);
+    const session = await service.startSession(concept.id);
+    await repository.saveSession({
+      ...session,
+      question: { ...session.question, text: `Explain how ${concept.name} works and why it matters in this passage.`, promptVersion: 'question-bundle-v2' },
+    });
+    expect((await service.getKnowledgeMap(material.id))[0]?.question).toBeNull();
+  });
+
   test('persists relations only when both concepts and the excerpt belong to the material', async () => {
     const repository = new InMemoryMasterMeRepository();
     const llm = new FakeLlm();
@@ -220,6 +306,26 @@ describe('MasterMeService — free journey', () => {
     expect(updated.state).toBe('EXPLANATION_PASSED');
     expect(updated.edgeCaseStatus).toBe('NOT_REQUESTED');
     expect(updated.edgeCaseChallenge).toBeNull();
+  });
+
+  test('a new attempt keeps the approved explanation and makes both sessions available', async () => {
+    const { service, concepts, material } = await setup();
+    const conceptId = concepts[0]!.id;
+    const first = await service.startSession(conceptId);
+    await service.evaluateInitialAnswer(first.id, 'A regra permanece estável enquanto os detalhes podem variar livremente.');
+    const repeat = await service.startSession(conceptId);
+
+    await service.startSession(conceptId);
+    const fourth = await service.startSession(conceptId);
+
+    expect(repeat.id).not.toBe(first.id);
+    expect(fourth.question.bundleVariant).toBe(3);
+    expect((await service.getKnowledgeMap(material.id)).find((node) => node.concept.id === conceptId)).toMatchObject({
+      status: 'EXPLAINED',
+      lastAttempt: { evaluation: { status: 'PASSED' } },
+    });
+    expect((await service.getConceptSessions(conceptId)).map((session) => session.id)).toContain(first.id);
+    expect((await service.getConceptSessions(conceptId)).map((session) => session.id)).toContain(repeat.id);
   });
 
   test('concurrent answers claim the session before calling AI', async () => {
@@ -282,6 +388,7 @@ describe('MasterMeService — free journey', () => {
       'A regra permanece estável enquanto os detalhes podem variar livremente.',
     );
     const requested = await service.requestEdgeCase(session.id);
+    expect(llm.questionBundles).toBe(1);
     expect(
       (await service.requestEdgeCase(session.id)).edgeCaseChallenge,
     ).toEqual(requested.edgeCaseChallenge);

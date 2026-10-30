@@ -7,11 +7,10 @@ import {
   CreateMaterialBodySchema,
   IdParamsSchema,
   LocaleBodySchema,
-  UploadMaterialBodySchema,
+  MaterialKindBodySchema,
 } from '../../schemas/http.schema';
 import { getValidated } from '../../middleware/validate-request';
 import type { IngestionService } from '../ingestion/ingestion.service';
-import { AppError } from '../../application/errors';
 
 export class MasterMeController {
   public constructor(
@@ -63,6 +62,18 @@ export class MasterMeController {
     res.json({ data: await this.service.getMaterial(id) });
   };
 
+  public readonly updateMaterialKind: RequestHandler = async (_req, res) => {
+    const { id } = getValidated(res, 'params', IdParamsSchema);
+    const { materialKind } = getValidated(res, 'body', MaterialKindBodySchema);
+    res.json({
+      data: await this.service.updateMaterialKind(
+        id,
+        res.locals.userId!,
+        materialKind,
+      ),
+    });
+  };
+
   public readonly extractConcepts: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
     const concepts = await this.service.extractConcepts(id);
@@ -93,7 +104,7 @@ export class MasterMeController {
 
   public readonly startSession: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
-    const session = await this.service.startSession(id);
+    const session = await this.service.startSession(id, res.locals.userId);
     await this.publish(
       'session.created',
       { sessionId: session.id, conceptId: id },
@@ -107,10 +118,26 @@ export class MasterMeController {
     res.json({ data: await this.service.getSession(id) });
   };
 
+  public readonly getConceptSessions: RequestHandler = async (_req, res) => {
+    const { id } = getValidated(res, 'params', IdParamsSchema);
+    res.json({ data: await this.service.getConceptSessions(id) });
+  };
+
+  public readonly getMaterialSessions: RequestHandler = async (_req, res) => {
+    const { id } = getValidated(res, 'params', IdParamsSchema);
+    res.json({ data: await this.service.getMaterialSessions(id) });
+  };
+
   public readonly evaluateInitialAnswer: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
-    const { answer } = getValidated(res, 'body', AnswerBodySchema);
-    const session = await this.service.evaluateInitialAnswer(id, answer);
+    const { answer, assisted, assistanceLevel, hintsUsed, solutionRevealed } =
+      getValidated(res, 'body', AnswerBodySchema);
+    const session = await this.service.evaluateInitialAnswer(id, answer, {
+      assisted,
+      assistanceLevel,
+      hintsUsed,
+      solutionRevealed,
+    });
     await this.publish(
       'session.updated',
       { sessionId: id, conceptId: session.conceptId },
@@ -121,8 +148,14 @@ export class MasterMeController {
 
   public readonly evaluateStressReply: RequestHandler = async (_req, res) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
-    const { answer } = getValidated(res, 'body', AnswerBodySchema);
-    const session = await this.service.evaluateStressReply(id, answer);
+    const { answer, assisted, assistanceLevel, hintsUsed, solutionRevealed } =
+      getValidated(res, 'body', AnswerBodySchema);
+    const session = await this.service.evaluateStressReply(id, answer, {
+      assisted,
+      assistanceLevel,
+      hintsUsed,
+      solutionRevealed,
+    });
     await this.publish(
       'session.updated',
       { sessionId: id, conceptId: session.conceptId },
@@ -162,8 +195,14 @@ export class MasterMeController {
     res,
   ) => {
     const { id } = getValidated(res, 'params', IdParamsSchema);
-    const { answer } = getValidated(res, 'body', AnswerBodySchema);
-    const session = await this.service.evaluateEdgeCaseAnswer(id, answer);
+    const { answer, assisted, assistanceLevel, hintsUsed, solutionRevealed } =
+      getValidated(res, 'body', AnswerBodySchema);
+    const session = await this.service.evaluateEdgeCaseAnswer(id, answer, {
+      assisted,
+      assistanceLevel,
+      hintsUsed,
+      solutionRevealed,
+    });
     await this.publish(
       'session.updated',
       { sessionId: id, conceptId: session.conceptId },
@@ -252,99 +291,5 @@ export class MasterMeController {
         this.aiDailyLimit,
       ),
     });
-  };
-}
-
-export class IngestionController {
-  public constructor(private readonly ingestion: IngestionService) {}
-  public readonly upload: RequestHandler = async (req, res) => {
-    if (!req.file)
-      throw new AppError('INVALID_UPLOAD',
-        'Envie um arquivo PDF, Markdown ou TXT.',
-      );
-    const body = getValidated(res, 'body', UploadMaterialBodySchema);
-    res.status(202).json({
-      data: await this.ingestion.upload(
-        req.file,
-        body.title,
-        body.locale,
-        res.locals.userId!,
-      ),
-    });
-  };
-  public readonly deleteMaterial: RequestHandler = async (_req, res) => {
-    const { id } = getValidated(res, 'params', IdParamsSchema);
-    await this.ingestion.deleteMaterial(id, res.locals.userId!);
-    res.status(204).end();
-  };
-  public readonly status: RequestHandler = async (_req, res) => {
-    const { id } = getValidated(res, 'params', IdParamsSchema);
-    res.set('cache-control', 'no-store');
-    res.json({ data: await this.ingestion.status(id) });
-  };
-  public readonly events: RequestHandler = async (req, res) => {
-    const cursor = req.header('last-event-id') ?? req.query.after;
-    let after =
-      cursor === undefined
-        ? await this.ingestion.latestEventId(res.locals.userId!)
-        : Number(cursor);
-    let closed = false;
-    let unsubscribe = () => {};
-    let flush = Promise.resolve();
-    const send = () => {
-      flush = flush
-        .then(async () => {
-          if (closed) return;
-          for (const event of await this.ingestion.events(
-            Number.isSafeInteger(after) ? after : 0,
-            res.locals.userId!,
-          )) {
-            after = Number(event.id);
-            res.write(
-              `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.payload)}\n\n`,
-            );
-          }
-        })
-        .catch(() => {
-          console.error(
-            JSON.stringify({
-              level: 'error',
-              operation: 'sse-flush',
-              code: 'SSE_FLUSH_FAILED',
-            }),
-          );
-        });
-    };
-    unsubscribe = await this.ingestion.subscribe(res.locals.userId!, send);
-    res
-      .status(200)
-      .set({
-        'content-type': 'text/event-stream',
-        'cache-control': 'no-cache, no-transform',
-        connection: 'keep-alive',
-        'x-accel-buffering': 'no',
-      })
-      .flushHeaders();
-    res.write('retry: 2000\n: connected\n\n');
-    send();
-    const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15_000);
-    req.on('close', () => {
-      closed = true;
-      unsubscribe();
-      clearInterval(heartbeat);
-    });
-  };
-  public readonly extract: RequestHandler = async (_req, res) => {
-    const { id } = getValidated(res, 'params', IdParamsSchema);
-    res
-      .status(202)
-      .json({ data: await this.ingestion.enqueue(id, res.locals.userId!) });
-  };
-  public readonly cancelExtraction: RequestHandler = async (_req, res) => {
-    const { id } = getValidated(res, 'params', IdParamsSchema);
-    res.json({ data: await this.ingestion.cancel(id, res.locals.userId!) });
-  };
-  public readonly overview: RequestHandler = async (_req, res) => {
-    res.json({ data: await this.ingestion.overview(res.locals.userId!) });
   };
 }

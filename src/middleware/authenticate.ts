@@ -20,6 +20,8 @@ export const authenticate: RequestHandler = async (req, res, next) => {
       issuer: fromSupabaseUrl(supabaseUrl),
     },
   );
+  if (error?.status && error.status >= 500)
+    return next(new AppError('AUTH_UNAVAILABLE', 'Não foi possível verificar a sessão. Tente novamente.'));
   if (error || !data?.userClaims?.id)
     return next(
       new AppError('UNAUTHENTICATED',

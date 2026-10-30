@@ -1,17 +1,36 @@
 import type { Concept, ConceptConfidence, ConceptRelation } from '../../../application/domain/concept';
-import type { Evaluation, IsomorphicProblem, StudySession } from '../../../application/domain/assessment';
-import type { MaterialSummary, StudyMaterial, SupportedLocale } from '../../../application/domain/material';
+import type { AnswerAssistance, Evaluation, IsomorphicProblem, StudySession } from '../../../application/domain/assessment';
+import type { EvidenceActivity, EvidenceStatus } from '../../../application/domain/learning-cycle';
+import { decideReview } from '../../../application/domain/review-policy';
+import type { MaterialKind, MaterialOutlineUnit, MaterialSummary, StudyMaterial, SupportedLocale } from '../../../application/domain/material';
 import type { PracticeProject } from '../../../application/domain/practice-project';
 import type { AiUsageEvent } from '../../../application/ports/llm.gateway';
 import type { MasterMeRepository, AiUsageSummary } from '../../../application/repositories/masterme.repository';
+import { deriveEditorialUnits } from '../../parsers/editorial-structure';
+import type { QuestionBundle } from '../../../schemas/llm.schema';
 
 export class InMemoryMasterMeRepository implements MasterMeRepository {
   private readonly materials = new Map<string, StudyMaterial>();
+  private readonly materialOutlines = new Map<string, MaterialOutlineUnit[]>();
   private readonly concepts = new Map<string, Concept>();
   private readonly relations = new Map<string, ConceptRelation>();
   private readonly sessions = new Map<string, StudySession>();
   private readonly evaluations = new Map<string, Evaluation>();
   private readonly isomorphicProblems = new Map<string, IsomorphicProblem>();
+  private readonly questionBundles = new Map<string, QuestionBundle>();
+
+  public conceptBelongsToOwner(conceptId: string, ownerId: string): boolean {
+    const concept = this.concepts.get(conceptId);
+    return Boolean(concept && this.materialOwners.get(concept.materialId) === ownerId);
+  }
+
+  public findQuestionBundle(inputHash: string): QuestionBundle | undefined {
+    return this.questionBundles.get(inputHash);
+  }
+
+  public saveQuestionBundle(_materialId: string, inputHash: string, bundle: QuestionBundle): void {
+    if (!this.questionBundles.has(inputHash)) this.questionBundles.set(inputHash, bundle);
+  }
   private readonly confidences = new Map<string, ConceptConfidence>();
   private readonly practiceProjects = new Map<string, PracticeProject>();
   private readonly practiceHashes = new Map<string, string>();
@@ -20,6 +39,7 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
   > = [];
   private readonly dailyUsage = new Map<string, number>();
   private readonly materialOwners = new Map<string, string>();
+  private readonly reviewSchedules = new Map<string, { intervalDays: number; reviewCount: number; dueAt: Date }>();
   private readonly pendingSessionOperations = new Map<
     string,
     { operationHash: string; leaseToken: string }
@@ -34,10 +54,27 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
     return this.materials.get(id);
   }
 
+  public findMaterialOutline(id: string): MaterialOutlineUnit[] {
+    const material = this.materials.get(id);
+    return this.materialOutlines.get(id) ?? (material ? deriveEditorialUnits(material.content, material.sourceType ?? 'TEXT') : []);
+  }
+
+  public setMaterialOutline(id: string, outline: MaterialOutlineUnit[]): void {
+    this.materialOutlines.set(id, outline);
+  }
+
   public async findAllMaterials(ownerId: string): Promise<MaterialSummary[]> {
     return Array.from(this.materials.values())
       .filter((material) => this.materialOwners.get(material.id) === ownerId)
       .map(({ content: _content, ...summary }) => summary);
+  }
+
+  public updateMaterialKind(id: string, ownerId: string, kind: MaterialKind): StudyMaterial | undefined {
+    const material = this.materials.get(id);
+    if (!material || this.materialOwners.get(id) !== ownerId) return undefined;
+    const updated = { ...material, materialKind: kind };
+    this.materials.set(id, updated);
+    return updated;
   }
 
   public saveConcepts(
@@ -72,6 +109,35 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
     return [...this.concepts.values()].filter(
       (concept) => concept.materialId === materialId,
     );
+  }
+  public findAllConceptsByMaterial(materialId: string): Concept[] {
+    return this.findConceptsByMaterial(materialId);
+  }
+  public findRecentLearningGaps(_conceptIds: string[]): Array<{ conceptId: string; activityType: string; diagnosis: string; createdAt: string }> {
+    return [];
+  }
+
+  public scheduleReview(input: {
+    conceptId: string;
+    activityType: EvidenceActivity;
+    status: EvidenceStatus;
+    assistance: AnswerAssistance;
+    at: Date;
+  }): void {
+    const previous = this.reviewSchedules.get(input.conceptId);
+    const decision = decideReview({
+      status: input.status,
+      activityType: input.activityType,
+      assisted: input.assistance.assisted,
+      solutionRevealed: input.assistance.solutionRevealed,
+      at: input.at,
+      previous,
+    });
+    if (decision) this.reviewSchedules.set(input.conceptId, {
+      intervalDays: decision.intervalDays,
+      reviewCount: decision.reviewCount,
+      dueAt: decision.dueAt,
+    });
   }
 
   public saveSession(session: StudySession): void {
@@ -170,14 +236,6 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
     return [...this.confidences.values()].filter((item) =>
       ids.has(item.conceptId),
     );
-  }
-  public updateConceptEdgeCaseQuestion(
-    conceptId: string,
-    question: string,
-  ): void {
-    const concept = this.concepts.get(conceptId);
-    if (concept)
-      this.concepts.set(conceptId, { ...concept, edgeCaseQuestion: question });
   }
   public findPracticeProjectByHash(
     inputHash: string,

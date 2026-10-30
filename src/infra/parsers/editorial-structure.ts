@@ -1,4 +1,5 @@
 import { fromMarkdown } from 'mdast-util-from-markdown';
+import { MIN_RELIABLE_BOOK_OUTLINE_UNITS } from '../../application/study-limits';
 
 export type SourceType = 'TEXT' | 'TXT' | 'MARKDOWN' | 'PDF';
 export interface EditorialUnit {
@@ -7,12 +8,68 @@ export interface EditorialUnit {
   level: number;
   startOffset: number;
   endOffset: number;
-  provenance: 'HEADING' | 'PDF_OUTLINE' | 'UNSTRUCTURED';
+  provenance: 'HEADING' | 'PDF_OUTLINE' | 'UNSTRUCTURED' | 'STUDENT';
   pageNumber?: number;
 }
 
+const CONTENTS_SCAN_CHARS = 20_000;
+const SAME_HEADING_OFFSET_TOLERANCE = 150;
+
+function printedChapterHeadings(pageTexts: string[], pageStarts: number[]): Array<{ title: string; level: number; startOffset: number; pageNumber: number }> {
+  const headings: Array<{ title: string; level: number; startOffset: number; pageNumber: number }> = [];
+  let lastChapter = 0;
+  for (const [pageIndex, page] of pageTexts.entries()) {
+    const lines = page.split('\n');
+    const candidates: Array<{ chapter: number; title: string; lineOffset: number }> = [];
+    let lineOffset = 0;
+    for (const [index, line] of lines.entries()) {
+      const match = line.trim().match(/^(?:chapter|cap[ií]tulo)\s+(\d{1,3})(?:[.:\s-]+)(.+)$/i);
+      if (match && !/\.{2,}|\s\d{1,4}$/.test(match[2]!) && match[2]!.length <= 110) {
+        candidates.push({ chapter: Number(match[1]), title: line.trim(), lineOffset: lineOffset + line.indexOf(line.trim()) });
+      } else if (/^(?:chapter|cap[ií]tulo)\s+\d{1,3}[.:]?$/i.test(line.trim()) && lines[index + 1]?.trim()) {
+        const chapter = Number(line.match(/\d{1,3}/)![0]);
+        candidates.push({ chapter, title: `${line.trim()} ${lines[index + 1]!.trim()}`, lineOffset: lineOffset + line.indexOf(line.trim()) });
+      }
+      lineOffset += line.length + 1;
+    }
+    // A contents page normally lists several chapters; it is a guide, not the chapter body.
+    if (candidates.length !== 1) continue;
+    const candidate = candidates[0]!;
+    if (candidate.chapter <= lastChapter) continue;
+    headings.push({ title: candidate.title, level: 1, startOffset: pageStarts[pageIndex]! + candidate.lineOffset, pageNumber: pageIndex + 1 });
+    lastChapter = candidate.chapter;
+  }
+  return headings;
+}
+
+/** Recover chapter boundaries from stored PDF text when an older upload has no saved outline. */
+export function derivePrintedChapterUnits(content: string): EditorialUnit[] {
+  const candidates = Array.from(content.matchAll(/^[ \t]*((?:Chapter|Cap[ií]tulo)[ \t]+(\d{1,3})(?:[.: \t-]+([^\n]+)|[ \t]*\n[ \t]*([^\n]+)))/gim)).flatMap((match) => {
+    const title = match[1]!.trim();
+    const tail = (match[3] ?? match[4] ?? '').trim();
+    if (!tail || tail.length > 110 || /\.{2,}|\s\d{1,4}$|[;{}_*<>]/.test(tail) || /^ptg$/i.test(tail)) return [];
+    return [{ chapter: Number(match[2]), title, topic: tail, startOffset: match.index + match[0].indexOf(match[1]!) }];
+  });
+  // When a contents list exists, require a printed chapter to agree with it.
+  // Code samples can contain plausible "Chapter N" lines with unrelated titles.
+  const listed = candidates.filter((candidate) => {
+    const words = candidate.topic.trim().split(/\s+/).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+    return new RegExp(`\\b${candidate.chapter}\\s*[.:-]?\\s*${words}\\b`, 'i').test(content.slice(0, Math.min(candidate.startOffset, CONTENTS_SCAN_CHARS)));
+  });
+  const bodyHeadings = listed.length >= 2 ? listed : candidates;
+  const runs: typeof candidates[] = [];
+  for (const candidate of bodyHeadings) {
+    const run = runs.at(-1);
+    if (!run || candidate.chapter <= run.at(-1)!.chapter) runs.push([candidate]);
+    else if (candidate.chapter > run.at(-1)!.chapter) run.push(candidate);
+  }
+  const best = runs.filter((run) => run.length >= 2).sort((left, right) => (right.at(-1)!.startOffset - right[0]!.startOffset) - (left.at(-1)!.startOffset - left[0]!.startOffset))[0];
+  if (!best) return [];
+  return best.map((heading, index) => ({ order: index, title: heading.title, level: 1, startOffset: heading.startOffset, endOffset: best[index + 1]?.startOffset ?? content.length, provenance: 'HEADING' }));
+}
+
 /** PDF bookmarks are trusted as titles only when the title is found on its own line in extracted page text. */
-export function derivePdfOutlineUnits(pageTexts: string[], outline: Array<{ title: string; level: number }>): EditorialUnit[] {
+export function derivePdfOutlineUnits(pageTexts: string[], outline: Array<{ title: string; level: number; pageNumber?: number }>): EditorialUnit[] {
   const content = pageTexts.join('\n');
   const pageStarts: number[] = [];
   let offset = 0;
@@ -23,7 +80,26 @@ export function derivePdfOutlineUnits(pageTexts: string[], outline: Array<{ titl
     const title = item.title.trim();
     if (!title || item.level < 1 || item.level > 6) continue;
     let found = false;
-    for (let pageIndex = minimumPage; pageIndex < pageTexts.length && !found; pageIndex++) {
+    const fromPage = item.pageNumber ? item.pageNumber - 1 : minimumPage;
+    const throughPage = item.pageNumber ? Math.min(item.pageNumber + 1, pageTexts.length) : pageTexts.length;
+    for (let pageIndex = fromPage; pageIndex < throughPage && !found; pageIndex++) {
+      if (!pageTexts[pageIndex]) continue;
+      const numbered = title.match(/^(\d{1,3})\s+(.+)$/);
+      const pageText = pageTexts[pageIndex]!;
+      if (numbered && item.pageNumber) {
+        const normalizedPage = pageText.replace(/\s+/g, ' ').toLocaleLowerCase();
+        const normalizedTitle = numbered[2]!.replace(/\s+/g, ' ').toLocaleLowerCase();
+        const marker = new RegExp(`chapter\\s+${numbered[1]}\\b`, 'i').exec(pageText);
+        if (marker && normalizedPage.includes(normalizedTitle)) {
+          const startOffset = pageStarts[pageIndex]! + marker.index;
+          if (!headings.length || startOffset > headings.at(-1)!.startOffset) {
+            headings.push({ title, level: item.level, startOffset, pageNumber: pageIndex + 1 });
+            minimumPage = pageIndex;
+            found = true;
+            continue;
+          }
+        }
+      }
       let lineOffset = 0;
       for (const line of pageTexts[pageIndex]!.split('\n')) {
         if (line.trim().toLocaleLowerCase() === title.toLocaleLowerCase()) {
@@ -39,15 +115,40 @@ export function derivePdfOutlineUnits(pageTexts: string[], outline: Array<{ titl
       }
     }
   }
-  if (!headings.length) return [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: content.length, provenance: 'UNSTRUCTURED' }];
-  const preface: EditorialUnit[] = headings[0]!.startOffset > 0
-    ? [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: headings[0]!.startOffset, provenance: 'UNSTRUCTURED' }]
+  const flatBookmarks = headings.length >= 2 && new Set(headings.map((heading) => heading.level)).size === 1;
+  const recovered = headings.length < 2 || flatBookmarks && headings.length < MIN_RELIABLE_BOOK_OUTLINE_UNITS ? derivePrintedChapterUnits(content) : [];
+  const printed = recovered.length >= 2
+    ? recovered.map((unit) => ({
+        title: unit.title!,
+        level: unit.level,
+        startOffset: unit.startOffset,
+        pageNumber: pageStarts.findLastIndex((start) => start <= unit.startOffset) + 1,
+      }))
+    : printedChapterHeadings(pageTexts, pageStarts);
+  const reliable = recovered.length >= 2 ? printed : headings.length >= MIN_RELIABLE_BOOK_OUTLINE_UNITS
+    ? [...headings, ...derivePrintedChapterUnits(content).filter((unit) => !headings.some((heading) => Math.abs(heading.startOffset - unit.startOffset) < SAME_HEADING_OFFSET_TOLERANCE)).map((unit) => ({
+        title: unit.title!, level: 1, startOffset: unit.startOffset,
+        pageNumber: pageStarts.findLastIndex((start) => start <= unit.startOffset) + 1,
+      }))].sort((left, right) => left.startOffset - right.startOffset)
+    : headings.length ? headings : printed;
+  if (!reliable.length) return [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: content.length, provenance: 'UNSTRUCTURED' }];
+  const preface: EditorialUnit[] = reliable[0]!.startOffset > 0
+    ? [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: reliable[0]!.startOffset, provenance: 'UNSTRUCTURED' }]
     : [];
-  return [...preface, ...headings.map((heading, index) => ({ ...heading, order: index + preface.length, endOffset: headings[index + 1]?.startOffset ?? content.length, provenance: 'PDF_OUTLINE' as const }))];
+  return [...preface, ...reliable.map((heading, index) => ({ ...heading, order: index + preface.length, endOffset: reliable[index + 1]?.startOffset ?? content.length, provenance: recovered.length >= 2 ? 'HEADING' as const : headings.length ? 'PDF_OUTLINE' as const : 'HEADING' as const }))];
 }
 
 /** Preserve author headings only when the source format actually marks them as headings. */
 export function deriveEditorialUnits(content: string, sourceType: SourceType): EditorialUnit[] {
+  if (sourceType === 'TEXT' || sourceType === 'TXT') {
+    const chapters = derivePrintedChapterUnits(content);
+    if (chapters.length >= 2) {
+      const preface: EditorialUnit[] = chapters[0]!.startOffset > 0
+        ? [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: chapters[0]!.startOffset, provenance: 'UNSTRUCTURED' }]
+        : [];
+      return [...preface, ...chapters.map((chapter, index) => ({ ...chapter, order: index + preface.length }))];
+    }
+  }
   if (sourceType !== 'MARKDOWN') return [{ order: 0, title: null, level: 0, startOffset: 0, endOffset: content.length, provenance: 'UNSTRUCTURED' }];
   const tree = fromMarkdown(content);
   const headings = tree.children.flatMap((node) => {

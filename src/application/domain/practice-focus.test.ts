@@ -44,6 +44,15 @@ const performance: ConceptPerformance[] = concepts.map((item, index) => ({
 }));
 
 describe('PracticeFocusService', () => {
+  test('keeps overview manageable and removes repeated concept names', () => {
+    const many = Array.from({ length: 12 }, (_, index) => ({
+      ...concept(String(index), index === 8 ? 'Topic 2' : `Topic ${index}`),
+      sourceOffset: index * 100,
+    }));
+    const priorities = new PracticeFocusService().select('OVERVIEW', many, undefined, [], []).priorities;
+    expect(priorities).toHaveLength(5);
+    expect(new Set(priorities.map((item) => item.name.toLocaleLowerCase())).size).toBe(5);
+  });
   test('sorts overview and manual selections by name', () =>
     expect(
       new PracticeFocusService()

@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
 import type { Environment } from '../../config/environment';
 import { IngestionService, LocalMaterialStorage } from '../../infra/ingestion/ingestion.service';
-import { IngestionController } from '../../infra/controllers/masterme.controller';
+import { IngestionController } from '../../infra/controllers/ingestion.controller';
 
 export function makeIngestionService(pool: Pool, environment: Environment): IngestionService {
   return new IngestionService(pool, new LocalMaterialStorage(environment.MATERIAL_STORAGE_PATH));
