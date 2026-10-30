@@ -1,21 +1,22 @@
 # MasterMe — Backend
 
-MasterMe is a personal learning environment for self-taught students of programming and technical subjects. The backend turns books, articles, and notes into navigable concepts, evaluates whether a student can explain and apply them, and keeps the next study action grounded in evidence.
+**The service that turns study material and student answers into a trustworthy learning record.**
 
-This repository contains the HTTP API, the asynchronous extraction worker, the PostgreSQL schema, the AI gateway, and the billing integration. The frontend lives in a separate repository.
+MasterMe helps people studying programming and other technical subjects on their own. Reading a book or article can feel like understanding, even when its ideas are hard to explain later. It is also difficult to decide what to study next when material, tasks, and weak spots are scattered. MasterMe keeps the original source beside concept-specific questions, records what the learner actually answered, and suggests a small next action with a reason. A passed answer is evidence for that attempt, not a claim that the person has mastered the subject.
 
-For a nontechnical overview and the browser journey, start with the [project README](../README.md). This document then explains the backend design, complete API routes, local setup, and operations. The book-first journey still has open end-to-end and release acceptance work recorded in the [backlog](../backlog.md); an available route alone does not establish that the whole journey has passed acceptance.
+This repository contains the **backend**: the API used by the web app, a background worker for long-running material processing, the database schema, AI integration, and the rules for study evidence, planning, access, and credits. The [web interface is a separate repository](https://github.com/J-V-S-C/MasterMe-Front). This README stands alone: start with the story below, then use the architecture, route catalogue, and runbook for implementation detail.
 
-- **API:** <https://masterme-api.duckdns.org>
-- **Health:** <https://masterme-api.duckdns.org/health>
-- **Frontend:** <https://github.com/J-V-S-C/MasterMe-Front>
-- **Local OpenAPI UI:** <http://localhost:3333/docs> (disabled in production)
+- **Running API:** <https://masterme-api.duckdns.org>
+- **Health endpoint:** <https://masterme-api.duckdns.org/health>
+- **Web app:** <https://masterme-frontend.joaovictorcortabitart.workers.dev>
+- **Local API documentation:** <http://localhost:3333/docs> when running in development; disabled in production.
 
 ## Contents
 
 - [The problem](#the-problem)
 - [The solution](#the-solution)
 - [What a student can do](#what-a-student-can-do)
+- [Why processing has its own worker](#why-processing-has-its-own-worker)
 - [Engineering highlights](#engineering-highlights)
 - [Stack](#stack)
 - [System architecture](#system-architecture)
@@ -33,68 +34,41 @@ For a nontechnical overview and the browser journey, start with the [project REA
 - [MVP limits and non-goals](#mvp-limits-and-non-goals)
 - [Documentation](#documentation)
 
----
-
 ## The problem
 
-Reading feels like learning. Recognizing a paragraph, highlighting it, or completing a chapter can create the illusion of understanding without producing knowledge the student can explain, apply to a new problem, or recall weeks later.
+A highlight or a finished chapter says what someone read; it does not show what they can explain, apply, or recall. Most study tools leave the reader to connect their material, practice attempts, and schedule by hand. If an AI assistant simply supplies an answer, the learner can also miss the chance to retrieve and reason through the idea themselves.
 
-Self-taught students face a second problem: too many materials and no clear answer to “what should I study next?”. A library alone does not answer that question, and a chat interface that explains everything for them removes the retrieval effort that makes learning durable.
-
-MasterMe addresses both problems:
-
-1. **Evidence instead of the illusion of understanding.** The student must explain a concept in their own words. The answer is diagnosed against the source, not against the model's opinion.
-2. **Continuity instead of an infinite pile of material.** Reading position, chapters, evidence, confidence, review dates, tasks, and available time feed a bounded recommendation for what to do now.
-
-The product does not claim to measure global mastery. Declared confidence, a passed explanation, a completed task, and a delayed recall attempt are separate kinds of evidence.
+MasterMe addresses these problems by connecting **the source**, **a question about that source**, **the learner's own answer**, and **a possible next action**. It preserves different kinds of evidence separately. Confidence is a self-report; task completion says work was done; an approved explanation says one answer met its criteria; a later recall attempt says something about retention. None becomes a global mastery score.
 
 ## The solution
 
-MasterMe is a full-stack, source-grounded study workspace:
+Imagine uploading a chapter about a design pattern. The backend stores the chapter and starts processing it. It finds concepts and passages in the chapter, then the learner chooses one and receives a custom question. When they answer, MasterMe returns a short diagnosis: what was correct, what is missing or inconsistent, and what to try next. The answer, question version, cited passage, and any help used stay in the learner's history. A later review or practice task can point back to that evidence.
 
-- **Ingestion** accepts pasted text, PDF, Markdown, and TXT. Extraction runs asynchronously in a separate worker and produces concepts with descriptions, source excerpts, premises, and typed relationships.
-- **Study** keeps the author's structure, shows the original passage, and asks concept-specific questions. Answers are evaluated as `PASSED`, `INCOMPLETE`, or `LOGICAL_BREAK` with a diagnosis and a next step.
-- **Practice** ranks weak concepts deterministically before calling the model, then generates a Practice Project with objective, deliverables, constraints, and a first step. The project is a proposal; it is not executed or graded.
-- **Planning** turns due reviews, observed gaps, unfinished chapters, explicit priorities, and available minutes into a small set of explainable actions. The student accepts, edits, or ignores each suggestion.
-- **Billing and credits** protect provider cost with atomic per-user and global reservations. Each real generation attempt costs one internal credit; cache hits do not.
+The backend has five jobs:
+
+| Job | Why it matters to the learner |
+| --- | --- |
+| Keep the material and its location | The learner can check a question or diagnosis against the original passage and, for a book, its chapter order. |
+| Process large material in the background | Uploading does not hold the browser open while a book is parsed and concepts are extracted. Progress and retries are visible. |
+| Generate and evaluate study work | AI writes concept-specific questions and diagnoses answers using the saved source and criteria. The learner writes the answer. |
+| Keep an honest learning history | Earlier answers, assistance, challenges, and review attempts remain distinct; reprocessing material does not silently erase them. |
+| Protect accounts and provider cost | The server checks ownership, reserves AI credits, and controls billing. A browser response cannot grant access or mark itself correct. |
 
 ## What a student can do
 
-| Capability | What the student gets |
-| --- | --- |
-| Import | Paste text or upload PDF, Markdown, or TXT, with progress, cancellation, and recovery. |
-| Explore | A concept map with source excerpts, premises, and informative relationships. Edges never lock content. |
-| Explain | A concept-specific question, a written answer, and a structured diagnosis grounded in the material. |
-| Test an edge case | An optional scenario after an approved explanation, evaluated separately. |
-| Declare confidence | A 1–5 self-report per concept, editable and removable. |
-| Practice | A focused drill or a generated Practice Project, with deterministic focus and visible reasons. |
-| Plan | Tasks, goals, plans spanning materials, a board, a calendar, availability, and a Today view. |
-| Review | A conservative review schedule that expands after successful retrieval and resets after a gap. |
-| Track | Evidence history, performance, contestations, and revisit suggestions, without a global mastery score. |
+1. **Import material:** paste text or upload a PDF, Markdown, or TXT file. An extraction job reports its stages and can be cancelled. PDFs need selectable text; OCR is not included.
+2. **Study a concept:** read its original passage, answer an explanation question, and optionally try reasoning, application, recall, or an edge case. Questions are generated for the particular concept, not filled into a generic template.
+3. **Review feedback:** see `PASSED`, `INCOMPLETE`, or `LOGICAL_BREAK` with a diagnosis. These labels judge the submitted answer, not the whole subject. An AI diagnosis can be contested.
+4. **Plan work:** save tasks, goals, availability, and review dates. Today suggestions have reasons and require the learner to decide whether to act on them.
+5. **Practice:** preview a gap, try a focused drill, or request a Practice Project brief. MasterMe does not run or grade a submitted project solution.
 
-### Student journey
+These actions are optional paths. A student can request a Practice Project after extraction without passing an explanation first. The browser screens for these actions are in the frontend repository; the [API reference](#api-reference) below lists the backend routes that support them.
 
-```text
-add material
-  → asynchronous extraction
-  → concepts, source excerpts, relationships, chapter outline
-  ├─ read the original source
-  ├─ explain a concept
-  │    ├─ diagnosis: PASSED / INCOMPLETE / LOGICAL_BREAK
-  │    ├─ optional edge-case test
-  │    └─ optional reasoning, application, or recall activity
-  ├─ declare confidence
-  ├─ focused drill on an observed gap
-  └─ Practice Project
-       ├─ automatic focus from available evidence
-       └─ manual selection of up to five concepts
+## Why processing has its own worker
 
-evidence + reviews + tasks + availability
-  → Today suggestion (at most three, with a reason)
-  → student accepts, edits, or ignores
-```
+A web request should answer promptly. Extracting a long PDF may take much longer, and the person may close the tab, lose the connection, or cancel. The API therefore records a **job** in PostgreSQL and responds while a separate **worker** performs the parsing and AI calls. A **queue** is the list of jobs waiting for that worker. It is a database table here, so the project does not need another queue server.
 
-No branch is a prerequisite for another. A passed explanation does not unlock content, and failing an edge case does not revoke the explanation.
+The worker claims available jobs with database locks, renews each claim during long calls, and saves progress. If the process stops, another claim can resume the work; chapter checkpoints prevent already completed chapters from being repeated. Progress is also saved as **events**. The API streams those events to the browser through server-sent events (SSE), and the browser can reconnect or poll if the stream drops. Events are for progress and recovery; they are not a separate store for PDF content. Source files and study records remain in their own storage and database tables.
 
 ---
 
@@ -103,7 +77,7 @@ No branch is a prerequisite for another. A passed explanation does not unlock co
 These are the parts of the backend that are most useful to discuss in a technical interview.
 
 - **PostgreSQL job queue without extra infrastructure.** Jobs are claimed with `FOR UPDATE SKIP LOCKED`, protected by renewable leases, a heartbeat, bounded concurrency, delayed retries, and cooperative cancellation. Late provider results cannot overwrite a cancelled job.
-- **Untrusted AI output.** Gemini is called through the official `@google/genai` SDK with JSON-schema-constrained output. The response is parsed, revalidated with Zod, and checked against source excerpts and concept references before persistence.
+- **Untrusted AI output.** Gemini is called through the official `@google/genai` SDK with JSON-schema-constrained output. The response is parsed and revalidated with Zod. Extraction also checks source excerpts and concept references; a schema alone cannot prove that a generated question is pedagogically good.
 - **Deterministic product logic outside the model.** Practice focus, performance, review intervals, Today ranking, and credit accounting are deterministic and testable. The model writes text; it does not choose what the student should study.
 - **Source provenance end to end.** Concepts keep UTF-16 offsets into the original text. Editorial units keep chapter order and page locations. Re-extraction creates a new active version without deleting the sessions, evidence, or projects tied to the previous one.
 - **Realtime with recovery.** SSE uses PostgreSQL `LISTEN/NOTIFY` for low-latency wake-up and a persisted event table with `Last-Event-ID` replay. There is no per-client polling loop.
@@ -173,7 +147,7 @@ HTTP (Express, Zod, controllers)
 | --- | --- | --- |
 | PostgreSQL as the job queue | Jobs, leases, study data, and events already share one transactional store. No second broker to operate. | Database load and lower ceiling than a dedicated queue; acceptable at current scale. |
 | Deterministic ranking before the LLM | Focus must be explainable, reproducible, and testable without provider access. | Product rules live in code and must evolve with evidence, not prompt tweaks. |
-| Structured output plus local validation | Model output is untrusted data. A valid JSON shape is not a valid domain result. | Extra schema, repair, and source-grounding code on every AI path. |
+| Structured output plus local validation | Model output is untrusted data. Schemas and source-anchor checks catch structural mistakes, while question quality still needs evaluation. | Extra validation and repair code; semantic accuracy is not guaranteed by a schema. |
 | Versioned, additive extraction | Re-extraction must not erase sessions, evidence, or projects. | Historical concepts and jobs accumulate; cleanup requires an explicit decision. |
 | SSE with a persisted event log | Progress must survive reconnects and multiple tabs. | One extra `LISTEN` connection and an event table. |
 | API owns auth and ownership | The frontend must never be the authority for access or balances. | Every resource read repeats an ownership check. |
@@ -210,7 +184,7 @@ scripts/              validation, baseline, and benchmark scripts
 
 ## Ingestion
 
-Ingestion is the only asynchronous product flow. It is deliberately separated from the request lifecycle: uploading returns `202`, the worker does the expensive work, and the browser follows progress through SSE with polling as a fallback.
+Material ingestion is the main long-running learner flow. It is separated from the request lifecycle: uploading returns `202`, the worker does the expensive work, and the browser follows progress through SSE with polling as a fallback.
 
 ### Pipeline
 
@@ -296,7 +270,7 @@ Model output is treated as untrusted:
 3. The response is parsed as JSON and revalidated with Zod.
 4. Source excerpts are checked against the original material.
 5. References to nonexistent concepts are rejected.
-6. Invalid output is never treated as a successful domain result.
+6. Structurally invalid output is never treated as a successful domain result. These checks do not establish that every generated question is semantically correct; a question can also paraphrase its source without sharing its words.
 
 Extraction, question-set generation, evaluation, edge-case generation, localization, and project generation have separate prompts, schemas, and token budgets. Provider failures are classified for retries and user-facing errors without exposing raw payloads.
 
@@ -778,10 +752,4 @@ This README is both the product showcase and the human-readable API reference fo
 
 When code and documentation disagree, code, tests, migrations, and OpenAPI are the source of truth. Any route addition, change, or removal must update both `src/docs/openapi.ts` and the matching table in this README in the same change, including authentication, AI-credit cost, and asynchronous behavior.
 
-Related documents in the main workspace:
-
-- `agents.md` — engineering conventions and workflow.
-- `prd.md` — permanent product behavior contract.
-- `scope.md` — scope boundaries and direction.
-- `backlog.md` — acceptance, priority, and status.
-- `PROJECT_CASE_STUDY.md` — résumé and interview narrative with dated historical measurements; updated only on the owner's explicit request.
+This repository can be read independently. The [frontend repository](https://github.com/J-V-S-C/MasterMe-Front) documents the browser journey, interface structure, and its deployment. The API contract and operational commands above live with the backend code.
