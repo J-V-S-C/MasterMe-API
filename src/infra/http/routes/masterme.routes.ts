@@ -1,5 +1,6 @@
 import { Router, type RequestHandler } from 'express';
-import type { MasterMeController, IngestionController } from '../../controllers/masterme.controller';
+import type { MasterMeController } from '../../controllers/masterme.controller';
+import type { IngestionController } from '../../controllers/ingestion.controller';
 import { validateRequest } from '../../../middleware/validate-request';
 import {
   AnswerBodySchema,
@@ -12,12 +13,23 @@ import {
   UploadMaterialBodySchema,
 } from '../../../schemas/http.schema';
 import multer from 'multer';
+import { MAX_UPLOAD_BYTES } from '../../../application/material-limits';
 import {
   aiBurstRateLimit,
   uploadConcurrencyLimit,
   uploadDailyRateLimit,
   uploadRateLimit,
 } from '../../../middleware/rate-limit';
+
+const uploadMultipartLimits = {
+  fileSize: MAX_UPLOAD_BYTES,
+  files: 1,
+  fields: 3,
+  parts: 4,
+  fieldSize: 200,
+  fieldNameSize: 32,
+  headerPairs: 20,
+} as const;
 
 export const createMasterMeRouter = (
   controller: MasterMeController,
@@ -28,20 +40,13 @@ export const createMasterMeRouter = (
   const router = Router();
   const upload = multer({
     storage: multer.memoryStorage(),
-    limits: {
-      fileSize: 16 * 1024 * 1024,
-      files: 1,
-      fields: 3,
-      parts: 4,
-      fieldSize: 200,
-      fieldNameSize: 32,
-      headerPairs: 20,
-    },
+    limits: uploadMultipartLimits,
   });
   router.use(...security);
   if (files) {
     router.get('/events', files.events);
     router.get('/materials/:id/file', validateRequest({ params: IdParamsSchema }), files.originalPdf);
+    router.get('/materials/:id/extract/preview', validateRequest({ params: IdParamsSchema }), files.extractionPreview);
     router.delete('/materials/:id', validateRequest({ params: IdParamsSchema }), files.deleteMaterial);
     router.get('/processing/overview', files.overview);
     router.post(
@@ -158,6 +163,7 @@ export const createMasterMeRouter = (
   router.get('/materials/:id/sessions', validateRequest({ params: IdParamsSchema }), controller.getMaterialSessions);
   router.post(
     '/concepts/:id/sessions',
+    aiBurstRateLimit,
     validateRequest({ params: IdParamsSchema }),
     controller.startSession,
   );

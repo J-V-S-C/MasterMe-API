@@ -78,9 +78,10 @@ describe('learning workspace routes', () => {
     const calls: unknown[][] = [];
     await withServer({ activityPrompts: async (owner, concept, variant) => { calls.push([owner, concept, variant]); return { reasoning: 'R', application: 'A', retention: 'T' }; } }, async (baseUrl) => {
       const path = `${baseUrl}/concepts/${requestId}/activity-prompts`;
-      expect((await fetch(`${path}?variant=3`)).status).toBe(400);
-      expect((await fetch(`${path}?variant=1`)).status).toBe(200);
-      expect(calls).toEqual([[ownerId, requestId, 1]]);
+      expect((await fetch(`${path}?variant=10001`, { method: 'POST' })).status).toBe(400);
+      expect((await fetch(`${path}?variant=1`, { method: 'POST' })).status).toBe(200);
+      expect((await fetch(`${path}?variant=3`, { method: 'POST' })).status).toBe(200);
+      expect(calls).toEqual([[ownerId, requestId, 1], [ownerId, requestId, 3]]);
     });
   });
   test('returns the owner-scoped question bank for a material', async () => {
@@ -95,8 +96,8 @@ describe('learning workspace routes', () => {
     const calls: unknown[][] = [];
     await withServer({ focusedDrill: async (owner, material, concept) => { calls.push([owner, material, concept]); return { materialId: material, conceptId: concept ?? requestId, conceptName: 'Concept', objectiveId: null, objectiveText: 'Explain concept', observedGap: null, sourceExcerpt: 'Source.', sourceOffset: 0, criteria: [], locale: 'en-US', previousEvidenceId: null, questionVariant: 0, activityType: 'APPLICATION', prompt: 'Apply concept.', estimatedMinutes: 10 }; } }, async (baseUrl) => {
       const path = `${baseUrl}/materials/${materialId}/drill`;
-      expect((await fetch(`${path}?conceptId=invalid`)).status).toBe(400);
-      expect((await fetch(`${path}?conceptId=${requestId}`)).status).toBe(200);
+      expect((await fetch(`${path}?conceptId=invalid`, { method: 'POST' })).status).toBe(400);
+      expect((await fetch(`${path}?conceptId=${requestId}`, { method: 'POST' })).status).toBe(200);
       expect(calls).toEqual([[ownerId, materialId, requestId]]);
     });
   });

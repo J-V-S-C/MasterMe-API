@@ -1,11 +1,25 @@
 export type EvaluationStatus = 'PASSED' | 'LOGICAL_BREAK' | 'INCOMPLETE';
 export interface MasterMeQuestion {
   text: string;
+  bundleVariant?: number;
+  promptVersion?: string;
   targetPremise: string;
   expectedReasoningSteps: string[];
   learningObjective?: string;
   requiredIdeas?: string[];
   commonMisconceptions?: string[];
+}
+export interface QuestionBundle {
+  explanation: MasterMeQuestion & {
+    learningObjective: string;
+    requiredIdeas: string[];
+    commonMisconceptions: string[];
+  };
+  reasoning: string;
+  application: string;
+  challenge: string;
+  retention: string;
+  practice: string;
 }
 export interface ConceptPerformance {
   conceptId: string;

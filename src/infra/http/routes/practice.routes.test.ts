@@ -20,6 +20,16 @@ const passed: Evaluation = {
   feedback: 'Correto.',
 };
 class ApiFakeLlm implements MasterMeLlmGateway {
+  public async generateQuestionBundle(_concept: Concept): Promise<import('../../../schemas/llm.schema').QuestionBundle> {
+    return {
+      explanation: { text: 'Como o contrato protege a política quando os detalhes variam?', targetPremise: 'Detalhes variam.', expectedReasoningSteps: ['Identificar a política.', 'Explicar a substituição.'], learningObjective: 'Explicar o contrato.', requiredIdeas: ['Política estável', 'Detalhe substituível'], commonMisconceptions: [] },
+      reasoning: 'Por que o contrato reduz dependência dos detalhes neste material?',
+      application: 'Como aplicar este contrato a uma pequena integração descrita no material?',
+      challenge: 'Como o contrato se comporta quando não há variação útil dos detalhes?',
+      retention: 'Sem consultar o material, explique como o contrato separa política e detalhe.',
+      practice: 'Construa uma pequena integração que receba o detalhe por contrato.',
+    };
+  }
   public async extractKnowledge(): Promise<ExtractedKnowledge> {
     throw new Error('Not used.');
   }
@@ -75,7 +85,7 @@ const setup = async (
   const service = new MasterMeService(repository, new ApiFakeLlm());
   const material = await service.createMaterial(
     { title: 'Material', content: 'Trecho técnico.' },
-    '00000000-0000-0000-0000-000000000001',
+    '11111111-1111-4111-8111-111111111111',
   );
   const concept: Concept = {
     id: '11111111-1111-4111-8111-111111111111',

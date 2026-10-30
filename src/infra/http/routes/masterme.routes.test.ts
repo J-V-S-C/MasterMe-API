@@ -17,6 +17,9 @@ import { MasterMeController } from '../../controllers/masterme.controller';
 import { testSecurity } from './test-security';
 
 class EmptyFakeLlm implements MasterMeLlmGateway {
+  public async generateQuestionBundle(_concept: Concept): Promise<import('../../../schemas/llm.schema').QuestionBundle> {
+    throw new Error('Not used in this test.');
+  }
   public async extractKnowledge(
     _material: StudyMaterial,
   ): Promise<ExtractedKnowledge> {

@@ -7,6 +7,7 @@ import type { PracticeProject } from '../../../application/domain/practice-proje
 import type { AiUsageEvent } from '../../../application/ports/llm.gateway';
 import type { MasterMeRepository, AiUsageSummary } from '../../../application/repositories/masterme.repository';
 import { deriveEditorialUnits } from '../../parsers/editorial-structure';
+import type { QuestionBundle } from '../../../schemas/llm.schema';
 
 export class InMemoryMasterMeRepository implements MasterMeRepository {
   private readonly materials = new Map<string, StudyMaterial>();
@@ -16,6 +17,20 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
   private readonly sessions = new Map<string, StudySession>();
   private readonly evaluations = new Map<string, Evaluation>();
   private readonly isomorphicProblems = new Map<string, IsomorphicProblem>();
+  private readonly questionBundles = new Map<string, QuestionBundle>();
+
+  public conceptBelongsToOwner(conceptId: string, ownerId: string): boolean {
+    const concept = this.concepts.get(conceptId);
+    return Boolean(concept && this.materialOwners.get(concept.materialId) === ownerId);
+  }
+
+  public findQuestionBundle(inputHash: string): QuestionBundle | undefined {
+    return this.questionBundles.get(inputHash);
+  }
+
+  public saveQuestionBundle(_materialId: string, inputHash: string, bundle: QuestionBundle): void {
+    if (!this.questionBundles.has(inputHash)) this.questionBundles.set(inputHash, bundle);
+  }
   private readonly confidences = new Map<string, ConceptConfidence>();
   private readonly practiceProjects = new Map<string, PracticeProject>();
   private readonly practiceHashes = new Map<string, string>();
@@ -221,14 +236,6 @@ export class InMemoryMasterMeRepository implements MasterMeRepository {
     return [...this.confidences.values()].filter((item) =>
       ids.has(item.conceptId),
     );
-  }
-  public updateConceptEdgeCaseQuestion(
-    conceptId: string,
-    question: string,
-  ): void {
-    const concept = this.concepts.get(conceptId);
-    if (concept)
-      this.concepts.set(conceptId, { ...concept, edgeCaseQuestion: question });
   }
   public findPracticeProjectByHash(
     inputHash: string,

@@ -1,6 +1,84 @@
 import { describe, expect, test } from 'bun:test'
 import { batchIndexedParagraphs, GeminiMasterMeGateway, indexMaterialParagraphs, planExtractionBatches, relationNamesInExcerpt, splitMaterialForExtraction } from './gemini.gateway'
 import type { GeminiStructuredClient } from './gemini-structured.client'
+import type { Concept } from '../../application/domain/concept'
+
+test('generates all concept questions in one billed provider request', async () => {
+  const calls: Array<{ operation: string; maxOutputTokens: number; maxModelAttempts?: number }> = [];
+  const prompts: string[] = [];
+  const client = { generateStructured: async (_schema: unknown, prompt: string, options: { operation: string; maxOutputTokens: number; maxModelAttempts?: number }) => {
+    calls.push(options);
+    prompts.push(prompt);
+    return {
+      explanation: { text: 'How does the caller provide a dependency to the component, and why?', targetPremise: 'Caller provides a dependency.', expectedReasoningSteps: ['Identify caller', 'Explain provision'], learningObjective: 'Explain provision.', requiredIdeas: ['Caller', 'Provision'], commonMisconceptions: [] },
+      reasoning: 'Why does the caller provide the dependency in this passage?',
+      application: 'How would a caller provide the dependency in a small example?',
+      challenge: 'How would dependency provision work if the caller were missing?',
+      retention: 'Without the passage, explain how the caller supplies dependencies.',
+      practice: 'Build a small example where the caller supplies the dependency.',
+    };
+  } } as unknown as GeminiStructuredClient;
+  const concept: Concept = { id: '11111111-1111-4111-8111-111111111111', materialId: '22222222-2222-4222-8222-222222222222', name: 'Dependency provision', description: 'The caller provides a dependency.', kind: 'NODE', sourceExcerpt: 'The caller provides a dependency to the component.', fundamentalPremises: ['The caller provides it.'], edgeCases: ['The caller cannot provide it.'], generatedLocale: 'en-US', prerequisiteIds: [], nextIds: [] };
+  const bundle = await new GeminiMasterMeGateway(client).generateQuestionBundle(concept);
+  expect(bundle.practice).toContain('Build');
+  expect(calls).toEqual([{ operation: 'QUESTION_SET_GENERATION', maxOutputTokens: 2500, maxModelAttempts: 1 }]);
+  expect(prompts[0]).toContain('Do not state the mechanism, steps, conditions, or conclusion');
+  expect(prompts[0]).toContain('give a small concrete situation');
+  expect(prompts[0]).toContain('ask for the key ideas from memory without restating them');
+});
+
+test('a weak optional question does not block a valid initial study question', async () => {
+  const client = { generateStructured: async () => ({
+    explanation: { text: 'How does the caller provide a dependency to the component, and why?', targetPremise: 'Caller provides a dependency.', expectedReasoningSteps: ['Identify caller', 'Explain provision'], learningObjective: 'Explain provision.', requiredIdeas: ['Caller', 'Provision'], commonMisconceptions: [] },
+    reasoning: 'What is the meaning of this dependency?',
+    application: 'How would a caller provide the dependency in a small example?',
+    challenge: 'How would dependency provision work if the caller were missing?',
+    retention: 'Without the passage, explain how the caller supplies dependencies.',
+    practice: 'Build a small example where the caller supplies the dependency.',
+  }) } as unknown as GeminiStructuredClient;
+  const concept: Concept = { id: '11111111-1111-4111-8111-111111111111', materialId: '22222222-2222-4222-8222-222222222222', name: 'Dependency provision', description: 'The caller provides a dependency.', kind: 'NODE', sourceExcerpt: 'The caller provides a dependency to the component.', fundamentalPremises: ['The caller provides it.'], edgeCases: ['The caller cannot provide it.'], generatedLocale: 'en-US', prerequisiteIds: [], nextIds: [] };
+  const bundle = await new GeminiMasterMeGateway(client).generateQuestionBundle(concept);
+  expect(bundle.explanation.text).toContain('caller provide a dependency');
+});
+
+test('keeps a custom question that paraphrases the source', async () => {
+  let calls = 0;
+  const client = { generateStructured: async () => {
+    calls += 1;
+    return {
+      explanation: { text: 'How does the component get the resource it needs from the calling code?', targetPremise: 'Caller provides a dependency.', expectedReasoningSteps: ['Identify caller', 'Explain provision'], learningObjective: 'Explain provision.', requiredIdeas: ['Caller', 'Provision'], commonMisconceptions: [] },
+      reasoning: 'Why does the caller provide the dependency in this passage?',
+      application: 'How would a caller provide the dependency in a small example?',
+      challenge: 'How would dependency provision work if the caller were missing?',
+      retention: 'Without the passage, explain how the caller supplies dependencies.',
+      practice: 'Build a small example where the caller supplies the dependency.',
+    };
+  } } as unknown as GeminiStructuredClient;
+  const concept: Concept = { id: '11111111-1111-4111-8111-111111111111', materialId: '22222222-2222-4222-8222-222222222222', name: 'Dependency provision', description: 'The caller provides a dependency.', kind: 'NODE', sourceExcerpt: 'The caller provides a dependency to the component.', fundamentalPremises: ['The caller provides it.'], edgeCases: ['The caller cannot provide it.'], generatedLocale: 'en-US', prerequisiteIds: [], nextIds: [] };
+  const bundle = await new GeminiMasterMeGateway(client).generateQuestionBundle(concept);
+  expect(bundle.explanation.text).toBe('How does the component get the resource it needs from the calling code?');
+  expect(bundle.explanation.targetPremise).toBe('Caller provides a dependency.');
+  expect(calls).toBe(1);
+});
+
+test('checkpointed book chapters keep the same small concept budget', async () => {
+  const prompts: string[] = [];
+  const client = { generateStructured: async (_schema: unknown, prompt: string) => {
+    prompts.push(prompt);
+    const id = prompt.match(/\[(P\d+)\]/)?.[1] ?? 'P0001';
+    return { fragments: Array.from({ length: 7 }, (_, index) => ({
+      name: index === 6 ? 'Creational Patterns' : `Central idea ${index + 1}`, description: 'An idea supported by the chapter.', kind: 'NODE', sourceParagraphId: id,
+      fundamentalPremises: ['The chapter supports this idea.'], edgeCases: ['A boundary of the idea.'], prerequisiteNames: [],
+    })), relations: [] };
+  } } as unknown as GeminiStructuredClient;
+  const material = { id: 'book', title: 'Patterns', content: 'Chapter 3\nCreational Patterns\nCreational patterns govern the process of object creation.', locale: 'en-US' as const, materialKind: 'ARTICLE' as const, createdAt: new Date().toISOString() };
+  const result = await new GeminiMasterMeGateway(client).extractKnowledge(material, undefined, [], { maxConcepts: 3, isBookChapter: true, chapterTitle: 'Chapter 3 Creational Patterns' });
+  expect(result.fragments).toHaveLength(3);
+  expect(result.fragments.map((fragment) => fragment.name)).toContain('Creational Patterns');
+  expect(result.fragments.every((fragment) => fragment.studyQuestion === undefined && fragment.edgeCaseQuestion === undefined)).toBe(true);
+  expect(prompts[0]).toContain('Chapter 3 Creational Patterns');
+  expect(prompts[0]?.toLowerCase()).toContain('não produza perguntas');
+});
 
 describe('splitMaterialForExtraction', () => {
   test('preserves all content and prefers paragraph boundaries', () => {
@@ -124,6 +202,23 @@ test('a book with a legacy unstructured outline can recover printed chapters for
   expect(plan.batches.every((batch) => batch.paragraphs.every((paragraph) => paragraph.offset >= content.indexOf('Chapter 1. Introduction')))).toBe(true);
 });
 
+test('a flat PDF pattern index yields chapter-sized concept limits instead of one unit per pattern', () => {
+  const content = [
+    'Contents\n3 Creational Patterns 81\nAbstract Factory 87\nBuilder 97\n4 Structural Patterns 137\nAdapter 139\nBridge 151',
+    'Chapter 3\nCreational Patterns\nCreational patterns separate object creation from use. Abstract Factory and Builder are examples of different creation needs.',
+    'Chapter 4\nStructural Patterns\nStructural patterns compose classes and objects. Adapter and Bridge illustrate distinct composition choices.',
+  ].join('\n\n');
+  const outline = ['Abstract Factory', 'Builder', 'Adapter', 'Bridge'].map((title, order) => ({
+    order, title, level: 1, startOffset: content.indexOf(title, content.indexOf('Chapter 3')),
+    endOffset: content.length, provenance: 'PDF_OUTLINE' as const,
+  }));
+  const plan = planExtractionBatches({ id: 'book', title: 'Patterns', content, locale: 'en-US', materialKind: 'BOOK', sourceType: 'PDF', createdAt: new Date().toISOString() }, indexMaterialParagraphs(content), outline);
+  expect(plan.book).toBe(true);
+  expect(plan.chapterLimits.size).toBe(2);
+  expect([...plan.chapterLimits.values()].every((limit) => limit <= 3)).toBe(true);
+  expect(plan.batches.every((batch) => batch.paragraphs.every((paragraph) => paragraph.offset >= content.indexOf('Chapter 3')))).toBe(true);
+});
+
 test('extracts book batches separately and preserves cited offsets', async () => {
   const prompts: string[] = []
   const client = { generateStructured: async (_schema: unknown, prompt: string) => {
@@ -148,7 +243,13 @@ test('extracts book batches separately and preserves cited offsets', async () =>
   expect(progress.at(-1)).toEqual({ stage: 'REDUCING', totalChunks: 2, completedChunks: 2 })
   expect(result.fragments.length).toBe(2)
   expect(result.fragments[0]?.sourceExcerpt).toBe('First passage.')
+  expect(result.fragments[0]?.sourceOffset).toBe(0)
   expect(result.fragments[1]?.sourceExcerpt).toBe('x'.repeat(1_600))
+  expect(result.fragments[1]?.sourceOffset).toBeGreaterThanOrEqual(material.content.indexOf('x'))
+  const second = result.fragments[1];
+  if (!second || second.sourceOffset === undefined) throw new Error('Second cited fragment is missing its offset.');
+  expect(material.content.slice(second.sourceOffset, second.sourceOffset + 1_600))
+    .toBe(second.sourceExcerpt)
   expect(material.content.includes(result.fragments[1]!.sourceExcerpt)).toBe(true)
 })
 

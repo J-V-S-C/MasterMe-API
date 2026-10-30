@@ -34,7 +34,7 @@ export const startApi = (environment: Environment): void => {
     pool,
     billing: billing.controller,
     paymentsEnabled: Boolean(environment.INFINITEPAY_HANDLE),
-    workspace: makeLearningWorkspaceFactory(pool, study.gateway).controller,
+    workspace: makeLearningWorkspaceFactory(pool, study.gateway, study.service).controller,
     metrics,
     metricsToken: environment.METRICS_BEARER_TOKEN,
     dbTimeoutMs: environment.OBSERVABILITY_DB_TIMEOUT_MS,

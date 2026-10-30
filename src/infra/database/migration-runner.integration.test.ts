@@ -1,5 +1,5 @@
 import { afterAll, expect, spyOn, test } from 'bun:test';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Pool, type PoolClient } from 'pg';
@@ -20,6 +20,23 @@ import { z } from 'zod';
 import { createLearningWorkspaceRouter } from '../http/routes/learning-workspace.routes';
 import { LearningWorkspaceController } from '../controllers/learning-workspace.controller';
 import { errorHandler } from '../../middleware/error-handler';
+
+const generatedQuestions = {
+  explanation: {
+    text: 'How does the cited passage explain this concept?',
+    targetPremise: 'The source describes the mechanism.',
+    expectedReasoningSteps: ['Identify the mechanism', 'Explain the consequence'],
+    learningObjective: 'Explain the cited concept.',
+    requiredIdeas: ['Mechanism', 'Consequence'],
+    commonMisconceptions: [],
+  },
+  reasoning: 'What follows from the mechanism in the source?',
+  application: 'How would this mechanism apply to the cited case?',
+  challenge: 'What changes when a stated condition does not hold?',
+  retention: 'What can you recall about the cited mechanism?',
+  practice: 'Use the cited mechanism in a small example.',
+};
+const questionProvider = { getQuestionBundle: async () => generatedQuestions };
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 if (process.env.MIGRATION_TEST_REQUIRED === 'true' && !databaseUrl) {
@@ -107,7 +124,7 @@ integrationTest('book chapter checkpoints survive failure and retry without dupl
     await client.query("INSERT INTO material_units(id,material_id,ordinal,title,level,start_offset,end_offset,provenance) VALUES ($1,$3,0,'Chapter 1',1,0,$4,'HEADING'),($2,$3,1,'Chapter 2',1,$4,$5,'HEADING')", [firstUnit, secondUnit, materialId, split, content.length]);
     await client.query("INSERT INTO processing_jobs(id,material_id,type,status,stage) VALUES ($1,$2,'EXTRACT','PROCESSING','EXTRACTING')", [jobId, materialId]);
     await repository.saveConcepts([concept('77777777-7777-4777-8777-777777777777', 'Cause', 'Cause produces effect.', content.indexOf('Cause produces effect.'))], [], jobId, firstUnit);
-    expect((await repository.findConceptsByMaterial(materialId)).map((item) => item.name)).toEqual(['Cause']);
+    expect((await repository.findConceptsByMaterial(materialId)).map((item) => item.name)).toEqual([]);
     expect((await client.query('SELECT status FROM processing_jobs WHERE id=$1', [jobId])).rows[0].status).toBe('PROCESSING');
     await expect(ingestion.status(materialId, stranger)).rejects.toThrow('Material');
     await expect(ingestion.enqueue(materialId, stranger)).rejects.toThrow('Material');
@@ -118,9 +135,54 @@ integrationTest('book chapter checkpoints survive failure and retry without dupl
     expect((await client.query('SELECT count(*)::int AS count FROM processing_job_units WHERE job_id=$1', [jobId])).rows[0].count).toBe(1);
     await client.query("UPDATE processing_jobs SET status='PROCESSING' WHERE id=$1", [jobId]);
     await repository.saveConcepts([concept('88888888-8888-4888-8888-888888888888', 'Consequence', 'Effect follows cause.', content.indexOf('Effect follows cause.'))], [], jobId, secondUnit);
-    expect((await repository.findConceptsByMaterial(materialId)).map((item) => item.name)).toEqual(['Cause', 'Consequence']);
+    expect((await repository.findConceptsByMaterial(materialId)).map((item) => item.name)).toEqual([]);
     expect((await client.query('SELECT count(*)::int AS count FROM processing_job_units WHERE job_id=$1', [jobId])).rows[0].count).toBe(2);
+    await client.query("UPDATE processing_jobs SET status='DONE' WHERE id=$1", [jobId]);
+    await client.query("UPDATE study_materials SET processing_status='READY',active_extraction_job_id=$2 WHERE id=$1", [materialId, jobId]);
+    const fresh = await ingestion.enqueue(materialId, owner);
+    expect(fresh).toMatchObject({ stage: 'QUEUED', progressPercent: 0 });
+    if (!('id' in fresh)) throw new Error('Fresh extraction job has no ID.');
+    expect(fresh.id).not.toBe(jobId);
+    expect((await repository.findConceptsByMaterial(materialId)).map((item) => item.name)).toEqual(['Cause', 'Consequence']);
   } finally {
+    client.release();
+  }
+});
+
+integrationTest('repairing a PDF text index preserves the original file and older concept source', async () => {
+  if (!pool) throw new Error('Integration pool is unavailable');
+  const client = await pool.connect();
+  const directory = await mkdtemp(join(tmpdir(), 'masterme-source-repair-'));
+  const storage = new LocalMaterialStorage(directory);
+  const ingestion = new IngestionService(pool, storage);
+  const repository = new PostgresMasterMeRepository(pool);
+  const owner = '11111111-1111-4111-8111-111111111111';
+  const materialId = '22222222-2222-4222-8222-222222222222';
+  const jobId = '33333333-3333-4333-8333-333333333333';
+  const oldContent = 'An earlier, incomplete source passage.';
+  const original = await readFile(new URL('../../../test-fixtures/phase2/outlined-book.pdf', import.meta.url));
+  const storageKey = await storage.save(materialId, 'outlined-book.pdf', original);
+  try {
+    await resetDatabase(client);
+    await runMigrations(client, await projectMigrations());
+    await client.query('INSERT INTO auth.users(id) VALUES ($1)', [owner]);
+    await client.query("INSERT INTO study_materials(id,title,content,created_at,owner_id,source_type,mime_type,storage_key,material_kind,processing_status) VALUES ($1,'Book',$2,now(),$3,'PDF','application/pdf',$4,'BOOK','PROCESSING')", [materialId, oldContent, owner, storageKey]);
+    await client.query("INSERT INTO material_units(id,material_id,ordinal,title,level,start_offset,end_offset,provenance) VALUES ('44444444-4444-4444-8444-444444444444',$1,0,'Old section',1,0,$2,'HEADING')", [materialId, oldContent.length]);
+    await client.query("INSERT INTO processing_jobs(id,material_id,type,status,stage) VALUES ($1,$2,'EXTRACT','PROCESSING','EXTRACTING')", [jobId, materialId]);
+    await repository.saveConcepts([{ id: '55555555-5555-4555-8555-555555555555', materialId, name: 'Old concept', description: oldContent, kind: 'NODE', sourceExcerpt: oldContent, sourceOffset: 0, fundamentalPremises: [oldContent], edgeCases: [oldContent], generatedLocale: 'en-US', prerequisiteIds: [], nextIds: [] }], [], jobId);
+    const preview = await ingestion.extractionPreview(materialId, owner);
+    expect(preview.repairsTextIndex).toBe(true);
+    expect(preview.estimatedCredits).toBeGreaterThanOrEqual(1);
+    await expect(ingestion.extractionPreview(materialId, '99999999-9999-4999-8999-999999999999')).rejects.toThrow('Material');
+    await ingestion.repairPdfIndex(materialId, owner);
+    expect(await storage.read(storageKey)).toEqual(original);
+    expect((await repository.findMaterial(materialId))!.content.length).toBeGreaterThan(oldContent.length);
+    expect((await repository.findConceptsByMaterial(materialId)).map((concept) => concept.name)).toEqual(['Old concept']);
+    const snapshot = await client.query<{ content: string; outline: Array<{ title: string }> }>('SELECT content,outline FROM material_source_snapshots WHERE extraction_job_id=$1', [jobId]);
+    expect(snapshot.rows[0]?.content).toBe(oldContent);
+    expect(snapshot.rows[0]?.outline[0]?.title).toBe('Old section');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
     client.release();
   }
 });
@@ -205,7 +267,7 @@ integrationTest(
           feedback: 'Faltou explicar a causa.',
         };
       },
-    });
+    }, questionProvider);
     try {
       await resetDatabase(client);
       await runMigrations(client, await projectMigrations());
@@ -339,7 +401,7 @@ integrationTest(
       expect(await repository.evidence(ownerA, materialA)).toHaveLength(1);
       expect(await repository.evidence(ownerB, materialA)).toHaveLength(0);
       expect((await repository.evidence(ownerA, materialA))[0]).toMatchObject({
-        prompt_version: 'activity-v3',
+        prompt_version: 'question-bundle-v3-variant0',
         criteria: ['Explique o mecanismo ou as condições essenciais do conceito com base no trecho.', 'Causa'],
         hints_used: [],
         previous_evidence_id: null,
@@ -347,7 +409,7 @@ integrationTest(
       const bank = await repository.questionBank(ownerA, materialA);
       const objective = bank.find((item) => item.conceptId === conceptA);
       expect(objective?.questions).toHaveLength(1);
-      expect(objective?.questions[0]).toMatchObject({ promptVersion: 'activity-v3', sourceExcerpt: 'A causa produz o efeito.' });
+      expect(objective?.questions[0]).toMatchObject({ promptVersion: 'question-bundle-v3-variant0', sourceExcerpt: 'A causa produz o efeito.' });
       expect((await repository.evidence(ownerA, materialA))[0]?.question_version_id).toBe(objective?.questions[0]?.id);
       await expect(repository.questionBank(ownerB, materialA)).rejects.toThrow('Material');
       const drill = await repository.focusedDrillContext(ownerA, materialA);
@@ -661,7 +723,7 @@ integrationTest('real HTTP and PostgreSQL complete a plan, diagnosis, suggestion
       evaluations += 1;
       return { status: 'INCOMPLETE', missingPremises: ['Cause'], logicalBreak: null, feedback: 'Explain the cause.' };
     },
-  });
+  }, questionProvider);
   const app = express();
   app.use(express.json());
   app.use('/api/learning', createLearningWorkspaceRouter(new LearningWorkspaceController(workspace), (req, res, next) => {

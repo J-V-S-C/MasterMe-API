@@ -3,21 +3,23 @@ import type { Server } from 'node:http';
 import type { IngestionService } from '../../ingestion/ingestion.service';
 import type { MasterMeService } from '../../../application/services/masterme.service';
 import { createApp } from '../../../../server';
-import { MasterMeController, IngestionController } from '../../controllers/masterme.controller';
+import { MasterMeController } from '../../controllers/masterme.controller';
+import { IngestionController } from '../../controllers/ingestion.controller';
 import { testSecurity } from './test-security';
 
 const withUploadServer = async (
   run: (baseUrl: string) => Promise<void>,
   deleteMaterial: (id: string, ownerId: string) => Promise<void> = async () => {},
   originalPdf: (id: string, ownerId: string) => Promise<Buffer> = async () => { throw new Error('PDF should not be read'); },
+  uploadMaterial?: IngestionService['upload'],
 ): Promise<void> => {
   const study = {} as MasterMeService;
   const ingestion = {
     deleteMaterial,
     originalPdf,
-    upload: async () => {
+    upload: uploadMaterial ?? (async () => {
       throw new Error('Upload should not be called');
-    },
+    }),
   } as unknown as IngestionService;
   const server: Server = createApp({ study: new MasterMeController(study, 100, ingestion), ingestion: new IngestionController(ingestion), security: testSecurity }).listen(0);
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -34,12 +36,21 @@ const withUploadServer = async (
 };
 
 describe('multipart upload guardrails', () => {
-  test('rejects files over 16 MiB before reaching the service', async () => {
+  test('accepts a file at the 20 MiB limit', async () => {
+    await withUploadServer(async (baseUrl) => {
+      const form = new FormData();
+      form.set('file', new Blob([new Uint8Array(20 * 1024 * 1024)], { type: 'text/plain' }), 'limit.txt');
+      const response = await fetch(`${baseUrl}/api/materials/upload`, { method: 'POST', body: form });
+      expect(response.status).toBe(202);
+    }, undefined, undefined, async () => ({ id: 'material-at-limit', title: 'limit', status: 'PENDING' }));
+  });
+
+  test('rejects files over 20 MiB before reaching the service', async () => {
     await withUploadServer(async (baseUrl) => {
       const form = new FormData();
       form.set(
         'file',
-        new Blob([new Uint8Array(16 * 1024 * 1024 + 1)], { type: 'text/plain' }),
+        new Blob([new Uint8Array(20 * 1024 * 1024 + 1)], { type: 'text/plain' }),
         'large.txt',
       );
       const response = await fetch(`${baseUrl}/api/materials/upload`, {

@@ -52,6 +52,7 @@ services:
       EXTRACTION_MAX_CONCEPTS: ${EXTRACTION_MAX_CONCEPTS:?Defina EXTRACTION_MAX_CONCEPTS em .env.development}
       MATERIAL_STORAGE_PATH: ${MATERIAL_STORAGE_PATH:?Defina MATERIAL_STORAGE_PATH em .env.development}
       EXTRACTION_CONCURRENCY: ${EXTRACTION_CONCURRENCY:?Defina EXTRACTION_CONCURRENCY em .env.development}
+      EXTRACTION_REQUESTS_PER_MINUTE: ${EXTRACTION_REQUESTS_PER_MINUTE:-3}
       AI_DAILY_REQUEST_LIMIT: ${AI_DAILY_REQUEST_LIMIT:?Defina AI_DAILY_REQUEST_LIMIT em .env.development}
       AI_CREDITS_ENABLED: ${AI_CREDITS_ENABLED:?Defina AI_CREDITS_ENABLED em .env.development}
       AI_GLOBAL_DAILY_CREDIT_LIMIT: ${AI_GLOBAL_DAILY_CREDIT_LIMIT:?Defina AI_GLOBAL_DAILY_CREDIT_LIMIT em .env.development}
@@ -64,6 +65,7 @@ services:
       - "127.0.0.1:${PORT:?Defina PORT em .env.development}:${PORT:?Defina PORT em .env.development}"
     volumes:
       - material_uploads:/app/data/materials
+      - ./prisma/migrations:/app/prisma/migrations:ro
       - ./server.ts:/app/server.ts:ro
       - ./src/application:/app/src/application:ro
       - ./src/config:/app/src/config:ro

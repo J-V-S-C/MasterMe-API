@@ -17,6 +17,7 @@ export type PracticeFocus = {
 
 const ACTIVE_NEED_THRESHOLD = 0.25;
 const AUTOMATIC_FOCUS_LIMIT = 3;
+const OVERVIEW_FOCUS_LIMIT = 5;
 
 export class PracticeFocusService {
   public select(
@@ -34,7 +35,13 @@ export class PracticeFocusService {
     const byPerformance = new Map(performance.map((item) => [item.conceptId, item]));
 
     if (mode === 'OVERVIEW' || mode === 'MANUAL') {
-      const selected = [...scoped].sort(this.byName);
+      const unique = mode === 'OVERVIEW'
+        ? [...new Map(scoped.map((concept) => [concept.name.trim().toLocaleLowerCase(), concept])).values()]
+        : scoped;
+      const ordered = unique.sort((left, right) => (left.sourceOffset ?? 0) - (right.sourceOffset ?? 0) || this.byName(left, right));
+      const selected = mode === 'OVERVIEW' && ordered.length > OVERVIEW_FOCUS_LIMIT
+        ? Array.from({ length: OVERVIEW_FOCUS_LIMIT }, (_, index) => ordered[Math.floor(index * ordered.length / OVERVIEW_FOCUS_LIMIT)]!)
+        : ordered;
       return this.result(selected, () => mode === 'OVERVIEW' ? 'visão geral do material' : 'selecionado manualmente', {});
     }
     if (mode === 'CONFIDENCE') {

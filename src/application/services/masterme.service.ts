@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Concept, ConceptRelation, ConceptConfidence } from '../domain/concept';
-import type { MasterMeQuestion } from '../domain/assessment';
 import type { AnswerAssistance, ConceptPerformance, EdgeCaseChallenge, IsomorphicProblem, StudySession } from '../domain/assessment';
 import type { MaterialKind, MaterialSummary, StudyMaterial, SupportedLocale } from '../domain/material';
 import type { PracticeProject } from '../domain/practice-project';
@@ -23,15 +22,17 @@ import {
   UnprocessableEntityError,
 } from '../errors';
 import type { ExtractionProgress, MasterMeLlmGateway } from '../ports/llm.gateway';
-import { generateTemplateQuestion } from '../prompts/masterme-template';
+import type { QuestionBundle } from '../domain/assessment';
+import { MAX_BOOK_CONCEPTS_PER_CHAPTER, MAX_QUESTION_VARIANT } from '../study-limits';
 import {
   InvalidPracticeFocusError,
   PracticeFocusService,
 } from '../domain/practice-focus';
 import type { PracticeFocus } from '../domain/practice-focus';
-import { focusExcerptOnChapter, passesAssessmentQuestionScreen, questionIntroducesUnsupportedTerms, sourceGroundedFallbackQuestion } from '../prompts/assessment-question';
+import { focusExcerptOnChapter, passesAssessmentQuestionScreen } from '../prompts/assessment-question';
 
 const now = (): string => new Date().toISOString();
+const QUESTION_BUNDLE_VERSION = 'question-bundle-v3';
 const PRACTICE_PROMPT_VERSION = 'practice-project-v3';
 const EVALUATION_PROMPT_VERSION = 'evaluation-v2';
 type RecentLearningGap = { conceptId: string; activityType: string; diagnosis: string; createdAt: string };
@@ -41,10 +42,10 @@ const withActivityNeeds = (performance: ConceptPerformance[], gaps: RecentLearni
 };
 
 export class MasterMeService {
+  private readonly pendingQuestionBundles = new Map<string, Promise<QuestionBundle>>();
   public constructor(
     private readonly repository: MasterMeRepository,
     private readonly llm: MasterMeLlmGateway,
-    private readonly generateQuestion = generateTemplateQuestion,
     private readonly focus = new PracticeFocusService(),
   ) {}
 
@@ -83,15 +84,18 @@ export class MasterMeService {
     onProgress?: (progress: ExtractionProgress) => Promise<void>,
     shouldPersist: () => Promise<boolean> = async () => true,
     processingJobId?: string,
-    unit?: { id: string; startOffset: number; endOffset: number },
+    unit?: { id: string; title: string; startOffset: number; endOffset: number; maxConcepts?: number },
   ): Promise<Concept[]> {
     const material = await this.getMaterial(materialId);
     const outline = unit ? [] : await this.repository.findMaterialOutline(materialId);
     const extractionMaterial = unit ? { ...material, content: material.content.slice(unit.startOffset, unit.endOffset), materialKind: 'ARTICLE' as const } : material;
+    const chapterConceptLimit = unit
+      ? unit.maxConcepts ?? Math.min(MAX_BOOK_CONCEPTS_PER_CHAPTER, Math.max(1, Math.ceil(extractionMaterial.content.length / 6_000)))
+      : undefined;
     const extracted = await this.llm.extractKnowledge(extractionMaterial, async (progress) => {
       if (!(await shouldPersist())) throw new ConflictError('A extração foi cancelada.');
       await onProgress?.(progress);
-    }, outline);
+    }, outline, unit ? { maxConcepts: chapterConceptLimit, isBookChapter: true, chapterTitle: unit.title } : undefined);
     if (!(await shouldPersist()))
       throw new ConflictError('A extração foi cancelada.');
     if (unit) {
@@ -227,29 +231,14 @@ export class MasterMeService {
         throw new ConflictError(
           'A localização omitiu um conceito do material.',
         );
-      const studyQuestion = passesAssessmentQuestionScreen(
-        content.questionText,
-        content.requiredIdeas,
-      )
-        ? {
-            text: content.questionText,
-            targetPremise: content.targetPremise,
-            expectedReasoningSteps: content.expectedReasoningSteps,
-            learningObjective: content.learningObjective,
-            requiredIdeas: content.requiredIdeas,
-            commonMisconceptions: content.commonMisconceptions,
-          }
-        : undefined;
       return {
         ...concept,
         name: content.name,
         description: content.description,
         fundamentalPremises: content.fundamentalPremises,
         edgeCases: content.edgeCases,
-        edgeCaseQuestion: passesAssessmentQuestionScreen(content.edgeCaseQuestion)
-          ? content.edgeCaseQuestion
-          : undefined,
-        studyQuestion,
+        edgeCaseQuestion: undefined,
+        studyQuestion: undefined,
         generatedLocale: locale,
       };
     });
@@ -306,40 +295,66 @@ export class MasterMeService {
             ? 'REVIEW'
             : 'READY';
       const focused = focusExcerptOnChapter(concept.sourceExcerpt, concept.name);
+      const retiredTemplate = session?.question.promptVersion === 'question-bundle-v2' && session.attempts.length === 0 && (
+        session.question.text === `Explain how ${concept.name} works and why it matters in this passage.` ||
+        session.question.text === `Explique como ${concept.name} funciona e por que é importante neste trecho.`
+      );
       return {
         concept: focused.offsetDelta ? { ...concept, sourceExcerpt: focused.text, sourceOffset: concept.sourceOffset === undefined ? undefined : concept.sourceOffset + focused.offsetDelta } : concept,
         status,
         edgeCaseStatus: latestEdge.get(concept.id)?.edgeCaseStatus ?? 'NOT_REQUESTED',
         lastAttempt,
-        question: this.questionForConcept(
-          concept,
-          concepts,
-          0,
-          session?.question,
-        ),
+        question: retiredTemplate ? null : (session?.question ?? (concept.studyQuestion && passesAssessmentQuestionScreen(concept.studyQuestion.text, concept.studyQuestion.requiredIdeas)
+          ? concept.studyQuestion : null)),
       };
     });
   }
 
-  public async startSession(conceptId: string): Promise<StudySession> {
+  public async startSession(conceptId: string, ownerId?: string): Promise<StudySession> {
+    if (ownerId && !(await this.repository.conceptBelongsToOwner(conceptId, ownerId)))
+      this.throwNotFound('Conceito');
     const concept =
       (await this.repository.findConcept(conceptId)) ??
       this.throwNotFound('Conceito');
-    const concepts = await this.repository.findConceptsByMaterial(
-      concept.materialId,
-    );
     const previous = await this.repository.findSessionsByConceptIds([
       conceptId,
     ]);
+    const variant = previous.length;
+    if (variant > MAX_QUESTION_VARIANT)
+      throw new ConflictError('O limite de novas perguntas para este conceito foi atingido.');
+    const questions = await this.getQuestionBundle(conceptId, variant, ownerId);
     const timestamp = now();
     const session = StudySessionAggregate.start({
       id: randomUUID(),
       conceptId,
-      question: this.questionForConcept(concept, concepts, previous.length),
+      question: { ...questions.explanation, bundleVariant: variant, promptVersion: QUESTION_BUNDLE_VERSION },
       at: timestamp,
     }).snapshot();
     await this.repository.saveSession(session);
     return session;
+  }
+
+  public async getQuestionBundle(conceptId: string, variant = 0, ownerId?: string): Promise<QuestionBundle> {
+    if (ownerId && !(await this.repository.conceptBelongsToOwner(conceptId, ownerId)))
+      this.throwNotFound('Conceito');
+    const concept = (await this.repository.findConcept(conceptId)) ?? this.throwNotFound('Conceito');
+    const inputHash = createHash('sha256').update(JSON.stringify({
+      version: QUESTION_BUNDLE_VERSION, conceptId, variant,
+      name: concept.name, description: concept.description,
+      sourceExcerpt: concept.sourceExcerpt, locale: concept.generatedLocale,
+    })).digest('hex');
+    const cached = await this.repository.findQuestionBundle(inputHash);
+    if (cached) return cached;
+    const pending = this.pendingQuestionBundles.get(inputHash);
+    if (pending) return pending;
+    const generation = (async () => {
+      const bundle = await this.llm.generateQuestionBundle(concept, variant);
+      await this.repository.saveQuestionBundle(concept.materialId, inputHash, bundle);
+      return (await this.repository.findQuestionBundle(inputHash)) ?? bundle;
+    })();
+    this.pendingQuestionBundles.set(inputHash, generation);
+    try { return await generation; }
+    finally { this.pendingQuestionBundles.delete(inputHash); }
   }
 
   public async getSession(id: string): Promise<StudySession> {
@@ -430,26 +445,15 @@ export class MasterMeService {
       sessionVersion: session.version,
     });
     return this.mutateSession(session, operationHash, async (claimed) => {
-      const challenge: EdgeCaseChallenge =
-        concept.edgeCaseQuestion &&
-        passesAssessmentQuestionScreen(concept.edgeCaseQuestion)
-          ? {
-              scenario: concept.edgeCases[0] ?? concept.sourceExcerpt,
-              edgeCaseTested:
-                concept.edgeCases[0] ??
-                concept.fundamentalPremises[0] ??
-                concept.name,
-              question: concept.edgeCaseQuestion,
-            }
-          : await this.llm.generateEdgeCaseChallenge(concept);
-      const usefulChallenge = passesAssessmentQuestionScreen(challenge.question)
-        ? challenge
-        : this.edgeCaseFallback(concept);
-      if (concept.edgeCaseQuestion !== usefulChallenge.question)
-        await this.repository.updateConceptEdgeCaseQuestion(
-          concept.id,
-          usefulChallenge.question,
-        );
+      const bundle = await this.getQuestionBundle(concept.id, claimed.question.bundleVariant ?? 0);
+      const challenge: EdgeCaseChallenge = {
+        scenario: concept.edgeCases[0] ?? concept.sourceExcerpt,
+        edgeCaseTested: concept.edgeCases[0] ?? concept.fundamentalPremises[0] ?? concept.name,
+        question: bundle.challenge,
+      };
+      if (!passesAssessmentQuestionScreen(challenge.question))
+        throw new UnprocessableEntityError('A pergunta gerada não passou na validação. Tente gerar novamente.');
+      const usefulChallenge = challenge;
       const current = StudySessionAggregate.rehydrate(claimed);
       this.applySessionRule(() =>
         current.requestEdgeCase(usefulChallenge, now()),
@@ -796,20 +800,6 @@ export class MasterMeService {
     return this.repository.getAiUsageToday(ownerId, dailyLimit);
   }
 
-  private questionForConcept(
-    concept: Concept,
-    concepts: Concept[],
-    sessionNumber: number,
-    persisted?: MasterMeQuestion,
-  ): MasterMeQuestion {
-    const source = focusExcerptOnChapter(concept.sourceExcerpt, concept.name).text;
-    const explanation = `${concept.name.replace(/([a-z])([A-Z])/g, '$1 $2')} ${concept.description} ${concept.fundamentalPremises.join(' ')}`;
-    const isSupported = (text: string) => !questionIntroducesUnsupportedTerms(text, source) && !questionIntroducesUnsupportedTerms(text, explanation);
-    if (persisted && isSupported(persisted.text)) return persisted;
-    if (concept.studyQuestion && isSupported(concept.studyQuestion.text)) return concept.studyQuestion;
-    if (persisted || concept.studyQuestion) return sourceGroundedFallbackQuestion(concept.name, concept.generatedLocale === 'en-US' ? 'en-US' : 'pt-BR');
-    return this.generateQuestion(concept, concepts, sessionNumber);
-  }
   private async requireConcept(id: string): Promise<Concept> {
     return (
       (await this.repository.findConcept(id)) ?? this.throwNotFound('Conceito')
@@ -895,15 +885,6 @@ export class MasterMeService {
   private throwNotFound(resource: string): never {
     throw new NotFoundError(resource);
   }
-  private edgeCaseFallback(concept: Concept): EdgeCaseChallenge {
-    const scenario = concept.edgeCases[0] ?? concept.sourceExcerpt;
-    const question =
-      concept.generatedLocale === 'en-US'
-        ? `How does the scenario "${scenario}" change the mechanism of ${concept.name}, and which condition must still be preserved?`
-        : `Como o cenário “${scenario}” altera o mecanismo de ${concept.name}, e qual condição ainda precisa ser preservada?`;
-    return { scenario, edgeCaseTested: scenario, question };
-  }
-
   private async isomorphicContext(materialId: string) {
     const concepts = await this.getConcepts(materialId);
     const sessions = await this.repository.findSessionsByConceptIds(

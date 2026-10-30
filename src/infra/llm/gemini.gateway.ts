@@ -13,18 +13,36 @@ import {
   EdgeCaseChallengeSchema,
   PracticeProjectContentSchema,
   LocalizedKnowledgeResponseSchema,
+  QuestionBundleSchema,
+  type QuestionBundle,
   type ExtractedKnowledge,
   type LocalizedKnowledgeResponse,
 } from '../../schemas/llm.schema';
 import type { ExtractionProgress, MasterMeLlmGateway } from '../../application/ports/llm.gateway';
-import { focusExcerptOnChapter, passesAssessmentQuestionScreen, questionIntroducesUnsupportedTerms, sourceGroundedFallbackQuestion } from '../../application/prompts/assessment-question';
+import { focusExcerptOnChapter } from '../../application/prompts/assessment-question';
 import { derivePrintedChapterUnits } from '../parsers/editorial-structure';
+import { MAX_BOOK_CONCEPTS_PER_CHAPTER, MIN_RELIABLE_BOOK_OUTLINE_UNITS } from '../../application/study-limits';
 import type { ActivityAssessmentGateway } from '../../application/ports/activity-assessment.gateway';
 
 const asJson = (value: unknown): string => JSON.stringify(value);
 const EXTRACTION_CHUNK_SIZE = 12_000;
 const MAX_EVIDENCE_SPAN_CHARS = 1_600;
 const MAX_EXTRACTION_PROMPT_CHARS = 100_000;
+const lowLevelCatalogName = /(?:\bparticipant\b|\bcollaboration\b|^(?:client|subject|invoker|receiver|originator|caretaker|contents|element|handler|subsystem|real\s*subject|concrete\w*|\w+exp))$/i;
+const canonicalTopicName = (value: string): string => value
+  .replace(/^(?:chapter|cap[ií]tulo)\s+\d+[.:\s-]*/i, '')
+  .replace(/([a-z])([A-Z])/g, '$1 $2')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLocaleLowerCase().replace(/\b(pattern|padrao)\b/g, '')
+  .replace(/[^a-z0-9]+/g, ' ').trim();
+const selectCentralCandidates = <T extends { name: string }>(candidates: T[], limit: number, chapterTitle?: string): T[] => {
+  if (candidates.length <= limit) return candidates;
+  const theme = chapterTitle ? canonicalTopicName(chapterTitle) : '';
+  const lead = theme ? candidates.find((candidate) => canonicalTopicName(candidate.name) === theme) : undefined;
+  if (!lead) return Array.from({ length: limit }, (_, index) => candidates[Math.floor(index * candidates.length / limit)]!);
+  const others = candidates.filter((candidate) => candidate !== lead);
+  return [lead, ...Array.from({ length: limit - 1 }, (_, index) => others[Math.floor(index * others.length / (limit - 1))]!)];
+};
 const localeName = (locale: SupportedLocale): string =>
   locale === 'pt-BR' ? 'português do Brasil' : 'English (United States)';
 export const indexMaterialParagraphs = (
@@ -96,9 +114,11 @@ export const batchIndexedParagraphs = <T extends { id: string; text: string }>(
 type IndexedParagraph = ReturnType<typeof indexMaterialParagraphs>[number];
 type PlannedBatch = { paragraphs: IndexedParagraph[]; conceptLimit: number; editorialGuide: string; chapterIndex: number | null };
 
-export function planExtractionBatches(material: StudyMaterial, paragraphs: IndexedParagraph[], outline: MaterialOutlineUnit[] = [], maxConcepts = 12): { book: boolean; batches: PlannedBatch[]; chapterLimits: Map<number, number> } {
+export function planExtractionBatches(material: StudyMaterial, paragraphs: IndexedParagraph[], outline: MaterialOutlineUnit[] = [], maxConcepts = 12): { book: boolean; batches: PlannedBatch[]; chapterLimits: Map<number, number>; chapterTitles: Map<number, string> } {
   const saved = outline.filter((unit) => unit.title?.trim() && unit.provenance !== 'UNSTRUCTURED');
-  const reliable = (saved.length >= 2 ? saved : material.sourceType === 'PDF' || material.materialKind === 'BOOK' ? derivePrintedChapterUnits(material.content) : saved).sort((a, b) => a.startOffset - b.startOffset);
+  const printed = material.sourceType === 'PDF' || material.materialKind === 'BOOK' ? derivePrintedChapterUnits(material.content) : [];
+  const flatOutline = saved.length >= 2 && new Set(saved.map((unit) => unit.level)).size === 1;
+  const reliable = (flatOutline && saved.length < MIN_RELIABLE_BOOK_OUTLINE_UNITS && printed.length >= 2 ? printed : saved.length >= 2 ? saved : printed.length >= 2 ? printed : saved).sort((a, b) => a.startOffset - b.startOffset);
   const numbered = reliable.filter((unit) => /^(?:chapter|cap[ií]tulo)\s+\d+/i.test(unit.title!));
   const chapterLevel = [...new Set(reliable.map((unit) => unit.level))].sort((a, b) => a - b)
     .find((level) => reliable.filter((unit) => unit.level === level).length >= 2) ?? Infinity;
@@ -109,10 +129,11 @@ export function planExtractionBatches(material: StudyMaterial, paragraphs: Index
   ));
   if (!book) {
     const batches = batchIndexedParagraphs(paragraphs);
-    return { book: false, chapterLimits: new Map(), batches: batches.map((batch) => ({ paragraphs: batch, conceptLimit: batches.length === 1 ? maxConcepts : Math.max(1, Math.ceil(maxConcepts / batches.length)), editorialGuide: '', chapterIndex: null })) };
+    return { book: false, chapterLimits: new Map(), chapterTitles: new Map(), batches: batches.map((batch) => ({ paragraphs: batch, conceptLimit: batches.length === 1 ? maxConcepts : Math.max(1, Math.ceil(maxConcepts / batches.length)), editorialGuide: '', chapterIndex: null })) };
   }
   const batches: PlannedBatch[] = [];
   const chapterLimits = new Map<number, number>();
+  const chapterTitles = new Map<number, string>();
   for (const [chapterIndex, chapter] of chapters.entries()) {
     const end = chapters[chapterIndex + 1]?.startOffset ?? material.content.length;
     const chapterParagraphs = paragraphs.filter((paragraph) => paragraph.offset >= chapter.startOffset && paragraph.offset < end);
@@ -120,11 +141,12 @@ export function planExtractionBatches(material: StudyMaterial, paragraphs: Index
     const sections = reliable.filter((unit) => unit.startOffset > chapter.startOffset && unit.startOffset < end);
     const guide = [chapter.title!, ...sections.map((unit) => unit.title!)].slice(0, 40).join('\n');
     const chunked = batchIndexedParagraphs(chapterParagraphs);
-    const chapterLimit = Math.min(maxConcepts, 8, Math.max(1, sections.length || Math.ceil(chapterParagraphs.reduce((sum, paragraph) => sum + paragraph.text.length, 0) / 6_000)));
+    const chapterLimit = Math.min(maxConcepts, MAX_BOOK_CONCEPTS_PER_CHAPTER, Math.max(1, Math.ceil(chapterParagraphs.reduce((sum, paragraph) => sum + paragraph.text.length, 0) / 6_000)));
     chapterLimits.set(chapterIndex, chapterLimit);
+    chapterTitles.set(chapterIndex, chapter.title!);
     for (const batch of chunked) batches.push({ paragraphs: batch, conceptLimit: Math.max(1, Math.ceil(chapterLimit / chunked.length)), editorialGuide: guide, chapterIndex });
   }
-  return { book: true, batches, chapterLimits };
+  return { book: true, batches, chapterLimits, chapterTitles };
 }
 
 export const splitMaterialForExtraction = (
@@ -179,6 +201,30 @@ export const relationNamesInExcerpt = (fromName: string, toName: string, excerpt
 export class GeminiMasterMeGateway
   implements MasterMeLlmGateway, ActivityAssessmentGateway
 {
+  public async generateQuestionBundle(concept: Concept, variant = 0): Promise<QuestionBundle> {
+    const excerpt = focusExcerptOnChapter(concept.sourceExcerpt, concept.name).text;
+    const locale = concept.generatedLocale === 'en-US' ? 'en-US' : 'pt-BR';
+    const prompt = [
+      `Create six distinct source-grounded study questions in ${localeName(locale)} for the same concept.`,
+      'The question text must test the learner, not teach the answer. Do not copy or paraphrase the DESCRIPTION or PREMISES into a question. Do not state the mechanism, steps, conditions, or conclusion that the learner should supply. Put those details only in targetPremise, expectedReasoningSteps, requiredIdeas, and commonMisconceptions.',
+      'Explanation: ask the learner to reconstruct how or why the concept works from the passage. Name the topic and the problem or outcome, but leave the causal steps for the learner. A question that says how a pattern uses a particular mechanism to achieve its goal gives away the answer.',
+      'Reasoning: ask for an inference or limitation that follows from the passage; do not supply the inference.',
+      'Application: give a small concrete situation and ask what the learner would do and why. Do not tell the learner which implementation step ensures the result.',
+      'Challenge: test a meaningful edge or failure case. Retention: ask for the key ideas from memory without restating them. Practice: request a focused construction or investigation.',
+      'Each question must be specific to the concept, answerable from the cited source, concise, and different from the others. Different wording from the source is welcome when the meaning stays faithful. Never use a generic question template, ask only for a definition, invent details, or require knowledge absent from the source.',
+      'The explanation object must include text, targetPremise, expectedReasoningSteps (2-4), learningObjective, requiredIdeas (2-4), and commonMisconceptions.',
+      `Question set variation: ${variant}.`,
+      `CONCEPT: ${concept.name}`,
+      `DESCRIPTION: ${concept.description}`,
+      `PREMISES: ${asJson(concept.fundamentalPremises)}`,
+      `SOURCE: ${excerpt}`,
+    ].join('\n');
+    return this.client.generateStructured(
+      QuestionBundleSchema,
+      prompt,
+      { operation: 'QUESTION_SET_GENERATION', maxOutputTokens: 2500, maxModelAttempts: 1 },
+    );
+  }
   public constructor(
     private readonly client: GeminiStructuredClient,
     private readonly maxConcepts = 12,
@@ -188,9 +234,11 @@ export class GeminiMasterMeGateway
     material: StudyMaterial,
     onProgress?: (progress: ExtractionProgress) => Promise<void>,
     outline: MaterialOutlineUnit[] = [],
+    options: { maxConcepts?: number; isBookChapter?: boolean; chapterTitle?: string } = {},
   ): Promise<ExtractedKnowledge> {
     const paragraphs = indexMaterialParagraphs(material.content, MAX_EVIDENCE_SPAN_CHARS, outline.map((unit) => unit.startOffset));
-    const plan = planExtractionBatches(material, paragraphs, outline, this.maxConcepts);
+    const conceptLimit = options.maxConcepts ?? this.maxConcepts;
+    const plan = planExtractionBatches(material, paragraphs, outline, conceptLimit);
     const batches = plan.batches;
     await onProgress?.({
       stage: 'PREPARING',
@@ -208,8 +256,8 @@ export class GeminiMasterMeGateway
         batch.paragraphs,
         material.locale,
         batch.conceptLimit,
-        plan.book || batches.length > 1,
-        batch.editorialGuide,
+        options.isBookChapter || plan.book || batches.length > 1,
+        options.chapterTitle ? [options.chapterTitle, batch.editorialGuide].filter(Boolean).join('\n') : batch.editorialGuide,
       ), ids: new Set(batch.paragraphs.map((paragraph) => paragraph.id)), chapterIndex: batch.chapterIndex });
     }
     await onProgress?.({
@@ -221,57 +269,27 @@ export class GeminiMasterMeGateway
     const paragraphById = new Map(paragraphs.map((paragraph) => [paragraph.id, paragraph]));
     const candidates = responses.flatMap(({ response, ids, chapterIndex }) => response.fragments.filter((fragment) => ids.has(fragment.sourceParagraphId.trim().toUpperCase())).map((fragment) => ({ ...fragment, chapterIndex })));
     const validCandidates = this.uniqueFragments(candidates)
+      .filter((fragment) => !(plan.book || options.isBookChapter) || !lowLevelCatalogName.test(fragment.name.replace(/([a-z])([A-Z])/g, '$1 $2').trim()))
       .flatMap((fragment) => {
         const source = paragraphById.get(
           fragment.sourceParagraphId.trim().toUpperCase(),
         );
         return source ? [{ ...fragment, sourceExcerpt: source.text, sourceOffset: source.offset }] : [];
       })
-    const chapterCounts = new Map<number, number>();
     const selected = plan.book
-      ? validCandidates.filter((fragment) => {
-          const index = fragment.chapterIndex;
-          if (index === null) return false;
-          const count = chapterCounts.get(index) ?? 0;
-          if (count >= (plan.chapterLimits.get(index) ?? 0)) return false;
-          chapterCounts.set(index, count + 1);
-          return true;
+      ? [...plan.chapterLimits].flatMap(([chapterIndex, limit]) => {
+          const chapterCandidates = validCandidates.filter((fragment) => fragment.chapterIndex === chapterIndex);
+          return selectCentralCandidates(chapterCandidates, limit, plan.chapterTitles.get(chapterIndex));
         })
-      : validCandidates.length <= this.maxConcepts
-        ? validCandidates
-        : Array.from({ length: this.maxConcepts }, (_, index) =>
-            validCandidates[Math.floor(index * validCandidates.length / this.maxConcepts)]!);
+      : selectCentralCandidates(validCandidates, conceptLimit, options.chapterTitle);
     const fragments = selected
       .map(
         ({
           sourceParagraphId: _sourceParagraphId,
-          questionText,
-          targetPremise,
-          expectedReasoningSteps,
-          learningObjective,
-          requiredIdeas,
-          commonMisconceptions,
           chapterIndex: _chapterIndex,
           ...fragment
         }) => ({
           ...fragment,
-          edgeCaseQuestion: passesAssessmentQuestionScreen(
-            fragment.edgeCaseQuestion,
-          )
-            ? fragment.edgeCaseQuestion
-            : undefined,
-          studyQuestion: passesAssessmentQuestionScreen(questionText, requiredIdeas) &&
-            !questionIntroducesUnsupportedTerms(questionText, focusExcerptOnChapter(fragment.sourceExcerpt, fragment.name).text) &&
-            !questionIntroducesUnsupportedTerms(questionText, `${fragment.name.replace(/([a-z])([A-Z])/g, '$1 $2')} ${fragment.description} ${fragment.fundamentalPremises.join(' ')}`)
-            ? {
-                text: questionText,
-                targetPremise,
-                expectedReasoningSteps,
-                learningObjective,
-                requiredIdeas,
-                commonMisconceptions,
-              }
-            : sourceGroundedFallbackQuestion(fragment.name, material.locale),
           prerequisiteNames: fragment.prerequisiteNames ?? [],
         }),
       );
@@ -335,7 +353,7 @@ export class GeminiMasterMeGateway
       .join('\n\n');
     return this.client.generateStructured(
       SinglePassKnowledgeResponseSchema,
-      `Você analisa ${isPartOfBook ? 'uma parte de um material técnico maior' : 'um material técnico'} de engenharia de software. Produza TODOS os campos gerados em ${localeName(locale)}, mesmo quando o material estiver em outro idioma; preserve termos técnicos no idioma original entre parênteses quando isso ajudar. Extraia no máximo ${conceptLimit} conceitos centrais que estejam EXPLICITAMENTE nesta parte. ${editorialGuide ? 'Use o sumário editorial abaixo para distribuir conceitos pelas seções substantivas deste capítulo, mas nunca trate títulos isolados como evidência: descrições, perguntas e critérios devem vir do conteúdo citado por sourceParagraphId. Não invente um conceito só para preencher um título.' : ''} Priorize os conceitos que desbloqueiam a compreensão dos demais e descarte detalhes repetidos. Para cada conceito, retorne nome curto e único, descrição didática de duas ou três frases curtas (até 500 caracteres), kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, premissas fundamentais, casos de borda e prerequisiteNames contendo somente nomes de outros conceitos retornados. Escreva a descrição como um professor paciente: explique em linguagem simples o que o conceito significa, como funciona e os termos necessários para entender a pergunta; use um exemplo concreto somente se estiver sustentado pelo trecho. Evite definições circulares, jargão sem explicação e fatos de fora do trecho. Retorne uma questionText que teste uma única ideia importante por mecanismo, causalidade ou aplicação e que possa ser respondida integralmente com o trecho de origem e a descrição. Toda entidade, termo de comparação e condição exigida na pergunta ou em requiredIdeas deve estar explicitamente explicada nesse trecho. Se o trecho apenas apresentar um estilo ou enumerar componentes, pergunte somente sobre essas afirmações; não invente o funcionamento de um registro, despacho dinâmico, exemplo de domínio ou benefício que apareça em outra parte do material. Se o trecho não explicar os dois lados de uma comparação (por exemplo, características arquiteturais e requisitos funcionais), não faça essa comparação; pergunte sobre o conceito sustentado. Não atribua benefícios, riscos ou condições ausentes desse trecho. Nunca pergunte apenas definição, tradução ou valor de retorno. Retorne targetPremise, expectedReasoningSteps com 2 a 4 passos, learningObjective em uma frase, requiredIdeas com 2 a 4 critérios essenciais e commonMisconceptions. edgeCaseQuestion deve exigir raciocínio sobre uma condição-limite, não mera lembrança. Em relations, inclua apenas ligações cuja proposição e justificativa sejam sustentadas diretamente por um único sourceParagraphId do material indexado que mencione os dois conceitos; use fromName e toName exatamente como em fragments, relationType REQUIRES/ENABLES/CONTRASTS/APPLIES_TO/PART_OF, statement e justification. Se o texto não sustentar uma ligação, retorne relations vazio. Não invente IDs, conteúdo ou relações.${editorialGuide ? `\n\nSUMÁRIO EDITORIAL (guia, não evidência):\n${editorialGuide}` : ''}\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
+      `Você extrai um índice curto dos assuntos CENTRAIS de ${isPartOfBook ? 'um capítulo de livro' : 'um material técnico'} em ${localeName(locale)}. O sumário editorial orienta a escolha dos temas, mas a evidência deve vir do texto indexado. Retorne no máximo ${conceptLimit} conceitos; menos é melhor quando o capítulo é coeso. Em livros, dê prioridade ao tema do próprio capítulo (por exemplo, "Creational Patterns" ou "Structural Patterns") e a no máximo dois mecanismos realmente indispensáveis para compreendê-lo. Se um capítulo lista dezenas de padrões, participantes, classes ou exemplos, NÃO crie um conceito para cada item. Exclua títulos de seção genéricos, papéis como Client/Participant/Subject, nomes de classes e detalhes de implementação, salvo se forem o objetivo central do capítulo. Não repita nomes ou sinônimos entre conceitos. Para cada conceito, retorne nome legível, descrição de até 500 caracteres, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, premissas fundamentais, casos de borda e prerequisiteNames apenas entre os nomes retornados. Não produza perguntas nesta tarefa: elas são geradas separadamente quando o estudante abre o conceito. Descrições e premissas devem ser sustentadas pelo trecho indicado, não pelo título isolado. Em relations, inclua apenas ligações com proposição e justificativa sustentadas por um único sourceParagraphId que mencione os dois conceitos. Se não houver evidência, retorne relations vazio. Não invente IDs, conteúdo ou relações.${editorialGuide ? `\n\nSUMÁRIO EDITORIAL (guia, não evidência):\n${editorialGuide}` : ''}\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
       { operation: 'EXTRACTION', maxOutputTokens: 6000 },
     );
   }
@@ -350,12 +368,10 @@ export class GeminiMasterMeGateway
       description: concept.description,
       fundamentalPremises: concept.fundamentalPremises,
       edgeCases: concept.edgeCases,
-      edgeCaseQuestion: concept.edgeCaseQuestion ?? '',
-      studyQuestion: concept.studyQuestion ?? null,
     }));
     return this.client.generateStructured(
       LocalizedKnowledgeResponseSchema,
-      `Localize os campos gerados abaixo para ${localeName(locale)}. Preserve exatamente cada id, a quantidade de itens e o significado técnico. Não traduza IDs e não acrescente fatos. Mantenha nomes técnicos conhecidos no idioma original entre parênteses quando útil. As perguntas devem exigir mecanismo ou aplicação, nunca apenas definição ou valor de retorno. Retorne todos os campos do schema.\nCONCEITOS: ${asJson(content)}`,
+      `Localize nomes, descrições, premissas e casos de borda para ${localeName(locale)}. Preserve exatamente cada id, a quantidade de itens e o significado técnico. Não traduza IDs e não acrescente fatos. Perguntas são geradas em outra tarefa; não produza perguntas aqui.\nCONCEITOS: ${asJson(content)}`,
       { operation: 'LOCALIZATION', maxOutputTokens: 5000 },
     );
   }
@@ -363,7 +379,7 @@ export class GeminiMasterMeGateway
   private uniqueFragments<T extends { name: string }>(fragments: T[]): T[] {
     const names = new Set<string>();
     return fragments.filter((fragment) => {
-      const name = fragment.name.trim().toLocaleLowerCase();
+      const name = canonicalTopicName(fragment.name);
       if (!name || names.has(name)) return false;
       names.add(name);
       return true;

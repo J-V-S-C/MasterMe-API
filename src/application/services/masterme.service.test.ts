@@ -18,6 +18,25 @@ const passed: Evaluation = {
 };
 
 class FakeLlm implements MasterMeLlmGateway {
+  public questionBundles = 0;
+  public async generateQuestionBundle(concept: Concept) {
+    this.questionBundles++;
+    return {
+      explanation: {
+        text: `How does ${concept.name} affect the mechanism described in the selected source?`,
+        targetPremise: concept.fundamentalPremises[0] ?? concept.name,
+        expectedReasoningSteps: ['Identify the mechanism.', 'Explain its effect.'],
+        learningObjective: 'Explain the source mechanism.',
+        requiredIdeas: ['Mechanism', 'Effect'],
+        commonMisconceptions: [],
+      },
+      reasoning: `What follows from ${concept.name} in the source, and why does it follow?`,
+      application: `How would you apply ${concept.name} in the situation described by the source?`,
+      challenge: `How does ${concept.name} behave at the limit described in the source?`,
+      retention: `Without the source, explain how ${concept.name} works and why it matters.`,
+      practice: `Build a small example that demonstrates ${concept.name} using the source constraints.`,
+    };
+  }
   public lastOutline: MaterialOutlineUnit[] = [];
   public relations: NonNullable<ExtractedKnowledge['relations']> = [];
   public projects = 0;
@@ -78,21 +97,6 @@ class FakeLlm implements MasterMeLlmGateway {
         description: 'Descrição localizada.',
         fundamentalPremises: ['Premissa localizada.'],
         edgeCases: ['Condição-limite localizada.'],
-        edgeCaseQuestion:
-          'Como a condição-limite altera o mecanismo e qual premissa deve permanecer?',
-        questionText:
-          'Como o mecanismo preserva a premissa quando os detalhes mudam?',
-        targetPremise: 'A premissa precisa permanecer.',
-        expectedReasoningSteps: [
-          'Identificar a premissa.',
-          'Explicar o mecanismo.',
-        ],
-        learningObjective: 'Explicar o mecanismo sem depender de detalhes.',
-        requiredIdeas: [
-          'Separação entre regra e detalhe.',
-          'Efeito causal da separação.',
-        ],
-        commonMisconceptions: ['Confundir abstração com camada adicional.'],
       })),
     };
   }
@@ -190,6 +194,25 @@ describe('MasterMeService — free journey', () => {
     expect(history.concepts.map((concept) => concept.id)).toContain(concepts[0]!.id);
     expect(history.sessions.map((item) => item.id)).toContain(session.id);
   });
+  test('generates one cached question bundle for explanation and other study activities', async () => {
+    const { service, llm, concepts } = await setup();
+    const conceptId = concepts[0]!.id;
+    const [first, second] = await Promise.all([
+      service.getQuestionBundle(conceptId),
+      service.getQuestionBundle(conceptId),
+    ]);
+    const session = await service.startSession(conceptId);
+    expect(first).toEqual(second);
+    expect(session.question).toMatchObject({ ...first.explanation, bundleVariant: 0, promptVersion: 'question-bundle-v3' });
+    expect(first.practice).toContain(concepts[0]!.name);
+    expect(llm.questionBundles).toBe(1);
+  });
+  test('does not generate or spend a question request for a foreign concept', async () => {
+    const { service, llm, concepts } = await setup();
+    await expect(service.startSession(concepts[0]!.id, '99999999-9999-4999-8999-999999999999'))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(llm.questionBundles).toBe(0);
+  });
   test('passes the saved book outline to extraction', async () => {
     const repository = new InMemoryMasterMeRepository();
     const llm = new FakeLlm();
@@ -201,7 +224,7 @@ describe('MasterMeService — free journey', () => {
     expect(llm.lastOutline).toEqual(outline);
   });
 
-  test('replaces an unsupported registry question while keeping the cited chapter in view', async () => {
+  test('keeps a topical paraphrase and retires an unanswered old template', async () => {
     const repository = new InMemoryMasterMeRepository();
     const service = new MasterMeService(repository, new FakeLlm());
     const source = 'Pipeline architectures have monolithic deployments.\nChapter 12. Microkernel Architecture Style\nA microkernel has a core system and plug-in components.';
@@ -211,16 +234,20 @@ describe('MasterMeService — free journey', () => {
       id: '33333333-3333-4333-8333-333333333333', materialId: material.id,
       name: 'MicrokernelArchitecture', description: 'A core and plug-in components.', kind: 'NODE',
       sourceExcerpt: source, sourceOffset: 0, fundamentalPremises: ['A core and plug-in components.'], edgeCases: [],
-      studyQuestion: { text: 'Explain how the microkernel architecture style uses a plug-in registry to invoke specialized electronic device assessment components dynamically.', targetPremise: 'A registry invokes components.', expectedReasoningSteps: ['Find registry', 'Invoke components'] },
+      studyQuestion: { text: 'How do add-on parts fit around a central component in this architecture?', targetPremise: 'A core works with plug-in components.', expectedReasoningSteps: ['Identify the core', 'Explain plug-in components'] },
       generatedLocale: 'en-US', prerequisiteIds: [], nextIds: [],
     };
     await repository.saveConcepts([concept]);
     const map = await service.getKnowledgeMap(material.id);
     expect(map[0]?.concept.sourceExcerpt.startsWith('Chapter 12.')).toBe(true);
     expect(map[0]?.concept.sourceOffset).toBe(source.indexOf('Chapter 12.'));
-    expect(map[0]?.question.text).toContain('selected passage');
+    expect(map[0]?.question?.text).toBe(concept.studyQuestion?.text);
     const session = await service.startSession(concept.id);
-    expect(session.question.text).toBe(map[0]!.question.text);
+    await repository.saveSession({
+      ...session,
+      question: { ...session.question, text: `Explain how ${concept.name} works and why it matters in this passage.`, promptVersion: 'question-bundle-v2' },
+    });
+    expect((await service.getKnowledgeMap(material.id))[0]?.question).toBeNull();
   });
 
   test('persists relations only when both concepts and the excerpt belong to the material', async () => {
@@ -288,7 +315,11 @@ describe('MasterMeService — free journey', () => {
     await service.evaluateInitialAnswer(first.id, 'A regra permanece estável enquanto os detalhes podem variar livremente.');
     const repeat = await service.startSession(conceptId);
 
+    await service.startSession(conceptId);
+    const fourth = await service.startSession(conceptId);
+
     expect(repeat.id).not.toBe(first.id);
+    expect(fourth.question.bundleVariant).toBe(3);
     expect((await service.getKnowledgeMap(material.id)).find((node) => node.concept.id === conceptId)).toMatchObject({
       status: 'EXPLAINED',
       lastAttempt: { evaluation: { status: 'PASSED' } },
@@ -357,6 +388,7 @@ describe('MasterMeService — free journey', () => {
       'A regra permanece estável enquanto os detalhes podem variar livremente.',
     );
     const requested = await service.requestEdgeCase(session.id);
+    expect(llm.questionBundles).toBe(1);
     expect(
       (await service.requestEdgeCase(session.id)).edgeCaseChallenge,
     ).toEqual(requested.edgeCaseChallenge);

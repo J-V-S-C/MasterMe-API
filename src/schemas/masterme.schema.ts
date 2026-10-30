@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_QUESTION_VARIANT } from '../application/study-limits';
 
 export const SupportedLocaleSchema = z.enum(['pt-BR', 'en-US']);
 export const GeneratedLocaleSchema = z.enum(['pt-BR', 'en-US', 'und']);
@@ -16,6 +17,8 @@ export const MaterialSchema = z.object({
 export const MaterialSummarySchema = MaterialSchema.omit({ content: true });
 export const QuestionSchema = z.object({
   text: z.string().min(1),
+  bundleVariant: z.number().int().min(0).max(MAX_QUESTION_VARIANT).optional(),
+  promptVersion: z.string().min(1).optional(),
   targetPremise: z.string().min(1),
   expectedReasoningSteps: z.array(z.string().min(1)).min(1),
   learningObjective: z.string().min(1).optional(),

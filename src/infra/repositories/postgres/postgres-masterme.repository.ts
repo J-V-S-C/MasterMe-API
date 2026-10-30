@@ -23,11 +23,35 @@ import type {
   MasterMeRepository,
 } from '../../../application/repositories/masterme.repository';
 import { ConflictError } from '../../../application/errors';
+import { QuestionBundleSchema, type QuestionBundle } from '../../../schemas/llm.schema';
 
 const DatabaseDateSchema = z.coerce.date();
 
 export class PostgresMasterMeRepository implements MasterMeRepository {
   public constructor(private readonly pool: Pool) {}
+
+  public async conceptBelongsToOwner(conceptId: string, ownerId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      'SELECT 1 FROM concepts c JOIN study_materials m ON m.id=c.material_id WHERE c.id=$1 AND m.owner_id=$2',
+      [conceptId, ownerId],
+    );
+    return Boolean(result.rows[0]);
+  }
+
+  public async findQuestionBundle(inputHash: string): Promise<QuestionBundle | undefined> {
+    const result = await this.pool.query(
+      "SELECT payload FROM generated_artifacts WHERE kind='QUESTION_BUNDLE' AND input_hash=$1",
+      [inputHash],
+    );
+    return result.rows[0] ? QuestionBundleSchema.parse(result.rows[0].payload) : undefined;
+  }
+
+  public async saveQuestionBundle(materialId: string, inputHash: string, bundle: QuestionBundle): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO generated_artifacts (material_id,kind,input_hash,payload) VALUES ($1,'QUESTION_BUNDLE',$2,$3) ON CONFLICT (kind,input_hash) DO NOTHING",
+      [materialId, inputHash, JSON.stringify(bundle)],
+    );
+  }
 
   public async saveMaterial(
     material: StudyMaterial,
@@ -178,7 +202,6 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
       }
       if (processingJobId && unitId) {
         await client.query('INSERT INTO processing_job_units(job_id,unit_id) VALUES ($1,$2)', [processingJobId, unitId]);
-        await client.query('UPDATE study_materials SET active_extraction_job_id=$2,processing_error=NULL WHERE id=$1', [concepts[0]!.materialId, processingJobId]);
       } else if (processingJobId) {
         await client.query(
           "UPDATE processing_jobs SET status='DONE',stage='READY',progress_percent=100,finished_at=now(),updated_at=now() WHERE id=$1",
@@ -452,15 +475,6 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
         createdAt: DatabaseDateSchema.parse(row.created_at).toISOString(),
         updatedAt: DatabaseDateSchema.parse(row.updated_at).toISOString(),
       }),
-    );
-  }
-  public async updateConceptEdgeCaseQuestion(
-    conceptId: string,
-    question: string,
-  ): Promise<void> {
-    await this.pool.query(
-      'UPDATE concepts SET edge_case_question=$1 WHERE id=$2',
-      [question, conceptId],
     );
   }
   public async findPracticeProjectByHash(
