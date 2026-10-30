@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
 import type { Environment } from '../../config/environment';
-import { GeminiStructuredClient } from './gemini-structured.client';
+import { GeminiStructuredClient, classifyProviderError, isDailyQuotaError, isMinuteRateLimitError } from './gemini-structured.client';
 import type { AiOperation } from '../../application/domain/billing';
 import type { AiUsageEvent } from '../../application/ports/llm.gateway';
 import { withAiUsageOwner } from '../context/ai-usage-context';
@@ -96,7 +96,7 @@ describe('GeminiStructuredClient', () => {
     expect(
       await withAiUsageOwner('11111111-1111-4111-8111-111111111111', () =>
         client.generateStructured(schema, 'prompt', {
-          operation: 'EXTRACTION',
+          operation: 'INITIAL_EVALUATION',
           maxOutputTokens: 100,
         }),
       ),
@@ -202,11 +202,114 @@ describe('GeminiStructuredClient', () => {
 
     await withAiUsageOwner('11111111-1111-4111-8111-111111111111', () =>
       client.generateStructured(schema, 'prompt', {
-        operation: 'EXTRACTION',
+        operation: 'INITIAL_EVALUATION',
         maxOutputTokens: 100,
       }),
     );
 
-    expect(reservations).toEqual(['EXTRACTION', 'EXTRACTION']);
+    expect(reservations).toEqual(['INITIAL_EVALUATION', 'INITIAL_EVALUATION']);
+  });
+
+  test('does not spend a fallback attempt on a per-minute limit', async () => {
+    const calls: string[] = [];
+    const generator = {
+      generateContent: async ({ model }: { model: string }) => {
+        calls.push(model);
+        throw new Error('429 Too Many Requests: GenerateRequestsPerMinutePerProjectPerModel-FreeTier');
+      },
+    } as unknown as ConstructorParameters<typeof GeminiStructuredClient>[2];
+    const client = new GeminiStructuredClient(environment, undefined, generator);
+    await expect(client.generateStructured(schema, 'prompt', {
+      operation: 'INITIAL_EVALUATION',
+      maxOutputTokens: 100,
+    })).rejects.toThrow('429');
+    expect(calls).toEqual(['gemini-primary']);
+  });
+
+  test('separates per-minute, per-day and token quotas from provider bodies', () => {
+    const minute = new Error(JSON.stringify({
+      error: {
+        code: 429,
+        status: 'RESOURCE_EXHAUSTED',
+        details: [{
+          retryDelay: '37s',
+          violations: [{
+            quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+            quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier',
+          }],
+        }],
+      },
+    }));
+    expect(classifyProviderError(minute)).toMatchObject({
+      kind: 'minute',
+      retryAfterMs: 42_000,
+    });
+
+    const daily = new Error(JSON.stringify({
+      error: {
+        code: 429,
+        status: 'RESOURCE_EXHAUSTED',
+        details: [{
+          violations: [{
+            quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+            quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+          }],
+        }],
+      },
+    }));
+    expect(classifyProviderError(daily).kind).toBe('day');
+    expect(isDailyQuotaError(daily)).toBe(true);
+    expect(isMinuteRateLimitError(minute)).toBe(true);
+  });
+
+  test('classifies a wrapped cause instead of losing it as availability', () => {
+    const wrapped = new Error('Gemini quota or availability exhausted for all configured models', {
+      cause: new Error('429 GenerateRequestsPerDayPerProjectPerModel-FreeTier'),
+    });
+    expect(classifyProviderError(wrapped).kind).toBe('day');
+  });
+
+  test('does not spend a fallback attempt on a per-day limit either', async () => {
+    const calls: string[] = [];
+    const generator = {
+      generateContent: async ({ model }: { model: string }) => {
+        calls.push(model);
+        throw new Error(JSON.stringify({
+          error: {
+            code: 429,
+            status: 'RESOURCE_EXHAUSTED',
+            details: [{
+              violations: [{
+            quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+            quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+          }],
+            }],
+          },
+        }));
+      },
+    } as unknown as ConstructorParameters<typeof GeminiStructuredClient>[2];
+    const client = new GeminiStructuredClient(environment, undefined, generator);
+    await expect(client.generateStructured(schema, 'prompt', {
+      operation: 'INITIAL_EVALUATION',
+      maxOutputTokens: 100,
+    })).rejects.toThrow('RESOURCE_EXHAUSTED');
+    expect(calls).toEqual(['gemini-primary']);
+  });
+
+  test('falls back when the model is unavailable', async () => {
+    const calls: string[] = [];
+    const generator = {
+      generateContent: async ({ model }: { model: string }) => {
+        calls.push(model);
+        if (model === 'gemini-primary') throw Object.assign(new Error('503 Service Unavailable'), { status: 503 });
+        return { text: '{"value":"ok"}' };
+      },
+    } as unknown as ConstructorParameters<typeof GeminiStructuredClient>[2];
+    const client = new GeminiStructuredClient(environment, undefined, generator);
+    expect(await client.generateStructured(schema, 'prompt', {
+      operation: 'INITIAL_EVALUATION',
+      maxOutputTokens: 100,
+    })).toEqual({ value: 'ok' });
+    expect(calls).toEqual(['gemini-primary', 'gemini-backup']);
   });
 });

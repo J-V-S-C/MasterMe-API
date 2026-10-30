@@ -13,3 +13,7 @@ test('application and retention use distinct criteria while retaining source pre
   expect(retention[0]).toContain('Retome');
   expect(application[1]).toBe(retention[1]);
 });
+
+test('reasoning asks the student to acknowledge missing support in a short excerpt', () => {
+  expect(criteriaForActivity('REASONING', 'en-US', [])[0]).toContain('what it does not establish');
+});

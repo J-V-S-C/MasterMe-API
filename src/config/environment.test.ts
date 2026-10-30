@@ -12,6 +12,11 @@ describe('billing configuration', () => {
     expect(parseEnvironment({ ...required, NODE_ENV: 'production', PUBLIC_APP_URL: 'https://masterme.example' }).AI_GLOBAL_DAILY_CREDIT_LIMIT).toBe(500)
   })
 
+  test('defaults extraction pacing below the provider RPM limits', () => {
+    expect(parseEnvironment(required).EXTRACTION_REQUESTS_PER_MINUTE).toBe(3)
+    expect(() => parseEnvironment({ ...required, EXTRACTION_REQUESTS_PER_MINUTE: '6' })).toThrow()
+  })
+
   test('parses false for the kill switch without unsafe string coercion', () => {
     expect(parseEnvironment({ ...required, AI_CREDITS_ENABLED: 'false' }).AI_CREDITS_ENABLED).toBe(false)
     expect(parseEnvironment({ ...required, AI_CREDITS_ENABLED: 'true' }).AI_CREDITS_ENABLED).toBe(true)

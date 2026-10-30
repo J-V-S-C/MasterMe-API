@@ -6,7 +6,7 @@ const EnvironmentSchema = z.object({
   MODEL_NAME: z.string().min(1).default('gemini-3.5-flash-lite'),
   GEMINI_MODEL_FALLBACKS: z
     .string()
-    .default('gemini-3.5-flash')
+    .default('gemini-3.6-flash')
     .transform((value) => [...new Set(value.split(',').map((model) => model.trim()).filter(Boolean))]),
   EXTRACTION_MAX_CONCEPTS: z.coerce.number().int().min(1).max(30).default(12),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3333),
@@ -15,6 +15,7 @@ const EnvironmentSchema = z.object({
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(10).default(3),
   MATERIAL_STORAGE_PATH: z.string().min(1).default('/app/data/materials'),
   EXTRACTION_CONCURRENCY: z.coerce.number().int().min(1).max(6).default(1),
+  EXTRACTION_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(4).default(3),
   AI_DAILY_REQUEST_LIMIT: z.coerce.number().int().min(1).max(100_000).default(100),
   AI_CREDITS_ENABLED: z.preprocess(
     (value) => value === undefined ? true : value === true || value === 'true' || value === '1',

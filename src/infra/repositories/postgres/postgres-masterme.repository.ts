@@ -1,8 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { z } from 'zod';
 import type { Concept, ConceptConfidence, ConceptRelation } from '../../../application/domain/concept';
-import type { Evaluation, IsomorphicProblem, StudySession } from '../../../application/domain/assessment';
-import type { MaterialSummary, StudyMaterial, SupportedLocale } from '../../../application/domain/material';
+import type { AnswerAssistance, Evaluation, IsomorphicProblem, StudySession } from '../../../application/domain/assessment';
+import type { EvidenceActivity, EvidenceStatus } from '../../../application/domain/learning-cycle';
+import { decideReview } from '../../../application/domain/review-policy';
+import type { MaterialKind, MaterialOutlineUnit, MaterialSummary, StudyMaterial, SupportedLocale } from '../../../application/domain/material';
 import type { PracticeProject } from '../../../application/domain/practice-project';
 import {
   ConceptConfidenceSchema,
@@ -20,18 +23,42 @@ import type {
   MasterMeRepository,
 } from '../../../application/repositories/masterme.repository';
 import { ConflictError } from '../../../application/errors';
+import { QuestionBundleSchema, type QuestionBundle } from '../../../schemas/llm.schema';
 
 const DatabaseDateSchema = z.coerce.date();
 
 export class PostgresMasterMeRepository implements MasterMeRepository {
   public constructor(private readonly pool: Pool) {}
 
+  public async conceptBelongsToOwner(conceptId: string, ownerId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      'SELECT 1 FROM concepts c JOIN study_materials m ON m.id=c.material_id WHERE c.id=$1 AND m.owner_id=$2',
+      [conceptId, ownerId],
+    );
+    return Boolean(result.rows[0]);
+  }
+
+  public async findQuestionBundle(inputHash: string): Promise<QuestionBundle | undefined> {
+    const result = await this.pool.query(
+      "SELECT payload FROM generated_artifacts WHERE kind='QUESTION_BUNDLE' AND input_hash=$1",
+      [inputHash],
+    );
+    return result.rows[0] ? QuestionBundleSchema.parse(result.rows[0].payload) : undefined;
+  }
+
+  public async saveQuestionBundle(materialId: string, inputHash: string, bundle: QuestionBundle): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO generated_artifacts (material_id,kind,input_hash,payload) VALUES ($1,'QUESTION_BUNDLE',$2,$3) ON CONFLICT (kind,input_hash) DO NOTHING",
+      [materialId, inputHash, JSON.stringify(bundle)],
+    );
+  }
+
   public async saveMaterial(
     material: StudyMaterial,
     ownerId: string,
   ): Promise<void> {
     await this.pool.query(
-      'INSERT INTO study_materials (id, title, content, locale, created_at, owner_id) VALUES ($1, $2, $3, $4, $5, $6)',
+      'INSERT INTO study_materials (id, title, content, locale, created_at, owner_id, material_kind) VALUES ($1, $2, $3, $4, $5, $6, $7)',
       [
         material.id,
         material.title,
@@ -39,13 +66,14 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
         material.locale,
         material.createdAt,
         ownerId,
+        material.materialKind ?? 'TEXT',
       ],
     );
   }
 
   public async findMaterial(id: string): Promise<StudyMaterial | undefined> {
     const result = await this.pool.query(
-      'SELECT id, title, content, locale, created_at FROM study_materials WHERE id = $1',
+      'SELECT id, title, content, locale, created_at, source_type, material_kind FROM study_materials WHERE id = $1',
       [id],
     );
     const row = result.rows[0];
@@ -56,12 +84,30 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
       content: row.content,
       locale: row.locale,
       createdAt: DatabaseDateSchema.parse(row.created_at).toISOString(),
+      sourceType: row.source_type,
+      ...(row.material_kind ? { materialKind: row.material_kind } : {}),
     });
+  }
+
+  public async findMaterialOutline(id: string): Promise<MaterialOutlineUnit[]> {
+    const result = await this.pool.query(
+      'SELECT ordinal,title,level,start_offset,end_offset,provenance,page_number FROM material_units WHERE material_id=$1 ORDER BY ordinal',
+      [id],
+    );
+    return result.rows.map((row) => ({
+      order: row.ordinal,
+      title: row.title,
+      level: row.level,
+      startOffset: row.start_offset,
+      endOffset: row.end_offset,
+      provenance: row.provenance,
+      pageNumber: row.page_number ?? undefined,
+    }));
   }
 
   public async findAllMaterials(ownerId: string): Promise<MaterialSummary[]> {
     const result = await this.pool.query(
-      'SELECT id, title, locale, created_at FROM study_materials WHERE owner_id=$1 ORDER BY created_at ASC, id ASC',
+      'SELECT id, title, locale, created_at, source_type, material_kind FROM study_materials WHERE owner_id=$1 ORDER BY created_at ASC, id ASC',
       [ownerId],
     );
     return result.rows.map((row) =>
@@ -70,14 +116,28 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
         title: row.title,
         locale: row.locale,
         createdAt: DatabaseDateSchema.parse(row.created_at).toISOString(),
+        sourceType: row.source_type,
+        ...(row.material_kind ? { materialKind: row.material_kind } : {}),
       }),
     );
+  }
+
+  public async updateMaterialKind(id: string, ownerId: string, kind: MaterialKind): Promise<StudyMaterial | undefined> {
+    const owned = await this.pool.query('SELECT 1 FROM study_materials WHERE id=$1 AND owner_id=$2', [id, ownerId]);
+    if (!owned.rows[0]) return undefined;
+    const result = await this.pool.query(
+      "UPDATE study_materials SET material_kind=$3 WHERE id=$1 AND owner_id=$2 AND NOT EXISTS(SELECT 1 FROM processing_jobs WHERE material_id=$1 AND status='PROCESSING') RETURNING id",
+      [id, ownerId, kind],
+    );
+    if (!result.rows.length) throw new ConflictError('Cancele a extração em andamento antes de alterar o tipo do material.');
+    return this.findMaterial(id);
   }
 
   public async saveConcepts(
     concepts: Concept[],
     relations: ConceptRelation[] = [],
     processingJobId?: string,
+    unitId?: string,
   ): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -89,6 +149,12 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
         );
         if (job.rows[0]?.status !== 'PROCESSING' || job.rows[0].material_id !== concepts[0]?.materialId)
           throw new ConflictError('A extração foi cancelada.');
+        if (unitId) {
+          const unit = await client.query('SELECT 1 FROM material_units WHERE id=$1 AND material_id=$2', [unitId, concepts[0]!.materialId]);
+          if (!unit.rows[0]) throw new ConflictError('O capítulo não pertence ao material.');
+          const completed = await client.query('SELECT 1 FROM processing_job_units WHERE job_id=$1 AND unit_id=$2', [processingJobId, unitId]);
+          if (completed.rows[0]) { await client.query('COMMIT'); return; }
+        }
       }
       for (const concept of concepts) {
         await client.query(
@@ -111,6 +177,10 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
             concept.sourceOffset ?? null,
           ],
         );
+        await client.query(
+          'INSERT INTO learning_objectives(id,material_id,concept_id,objective_text,source_excerpt,source_offset,extraction_job_id,generator_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+          [randomUUID(), concept.materialId, concept.id, concept.studyQuestion?.learningObjective?.trim() || concept.description, concept.sourceExcerpt, concept.sourceOffset ?? null, processingJobId ?? null, 'objective-v1'],
+        );
       }
       for (const relation of relations) {
         await client.query(
@@ -130,7 +200,9 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
           ],
         );
       }
-      if (processingJobId) {
+      if (processingJobId && unitId) {
+        await client.query('INSERT INTO processing_job_units(job_id,unit_id) VALUES ($1,$2)', [processingJobId, unitId]);
+      } else if (processingJobId) {
         await client.query(
           "UPDATE processing_jobs SET status='DONE',stage='READY',progress_percent=100,finished_at=now(),updated_at=now() WHERE id=$1",
           [processingJobId],
@@ -194,13 +266,80 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
   }
   public async findConceptsByMaterial(materialId: string): Promise<Concept[]> {
     const result = await this.pool.query(
-      'SELECT c.* FROM concepts c JOIN study_materials m ON m.id=c.material_id WHERE c.material_id=$1 AND c.extraction_job_id IS NOT DISTINCT FROM m.active_extraction_job_id',
+      'SELECT c.* FROM concepts c JOIN study_materials m ON m.id=c.material_id WHERE c.material_id=$1 AND c.extraction_job_id IS NOT DISTINCT FROM m.active_extraction_job_id ORDER BY c.source_offset NULLS LAST,c.name',
       [materialId],
     );
     return result.rows.flatMap((row) => {
       const concept = this.toConcept(row);
       return concept ? [concept] : [];
     });
+  }
+  public async findAllConceptsByMaterial(materialId: string): Promise<Concept[]> {
+    const result = await this.pool.query('SELECT * FROM concepts WHERE material_id=$1 ORDER BY source_offset NULLS LAST,name', [materialId]);
+    return result.rows.flatMap((row) => {
+      const concept = this.toConcept(row);
+      return concept ? [concept] : [];
+    });
+  }
+  public async findRecentLearningGaps(conceptIds: string[]): Promise<Array<{ conceptId: string; activityType: string; diagnosis: string; createdAt: string }>> {
+    if (!conceptIds.length) return [];
+    const result = await this.pool.query(
+      `SELECT concept_id,activity_type,diagnosis,created_at FROM (
+         SELECT DISTINCT ON (concept_id,activity_type) concept_id,activity_type,diagnosis,created_at,status,id
+         FROM learning_evidence WHERE concept_id=ANY($1::uuid[]) AND status IN ('PASSED','INCOMPLETE','LOGICAL_BREAK','CONTESTED')
+         ORDER BY concept_id,activity_type,created_at DESC,id DESC
+       ) latest WHERE status IN ('INCOMPLETE','LOGICAL_BREAK')
+         AND NOT EXISTS (SELECT 1 FROM evidence_contestations WHERE evidence_id=latest.id)
+       ORDER BY created_at DESC LIMIT 500`,
+      [conceptIds],
+    );
+    return result.rows.map((row) => ({ conceptId: row.concept_id, activityType: row.activity_type, diagnosis: row.diagnosis, createdAt: DatabaseDateSchema.parse(row.created_at).toISOString() }));
+  }
+  public async scheduleReview(input: {
+    conceptId: string;
+    activityType: EvidenceActivity;
+    status: EvidenceStatus;
+    assistance: AnswerAssistance;
+    at: Date;
+  }): Promise<void> {
+    const concept = await this.pool.query(
+      `SELECT c.material_id, m.owner_id, rs.interval_days, rs.review_count
+         FROM concepts c
+         JOIN study_materials m ON m.id=c.material_id
+         LEFT JOIN review_schedules rs
+           ON rs.owner_id=m.owner_id AND rs.concept_id=c.id AND rs.activity_type='RETENTION'
+        WHERE c.id=$1`,
+      [input.conceptId],
+    );
+    const row = concept.rows[0];
+    if (!row) return;
+    const decision = decideReview({
+      status: input.status,
+      activityType: input.activityType,
+      assisted: input.assistance.assisted,
+      solutionRevealed: input.assistance.solutionRevealed,
+      at: input.at,
+      previous: row.interval_days === null || row.interval_days === undefined
+        ? null
+        : {
+            intervalDays: Number(row.interval_days),
+            reviewCount: Number(row.review_count ?? 0),
+          },
+    });
+    if (!decision) return;
+    const id = randomUUID();
+    await this.pool.query(
+      `INSERT INTO review_schedules
+         (id,owner_id,material_id,concept_id,activity_type,due_at,interval_days,review_count,status,updated_at)
+       VALUES ($1,$2,$3,$4,'RETENTION',$5,$6,$7,'SCHEDULED',now())
+       ON CONFLICT (owner_id,concept_id,activity_type) DO UPDATE SET
+         due_at=EXCLUDED.due_at,
+         interval_days=EXCLUDED.interval_days,
+         review_count=EXCLUDED.review_count,
+         status='SCHEDULED',
+         updated_at=now()`,
+      [id, row.owner_id, row.material_id, input.conceptId, decision.dueAt, decision.intervalDays, decision.reviewCount],
+    );
   }
   public async saveSession(session: StudySession): Promise<void> {
     await this.pool.query(
@@ -336,15 +475,6 @@ export class PostgresMasterMeRepository implements MasterMeRepository {
         createdAt: DatabaseDateSchema.parse(row.created_at).toISOString(),
         updatedAt: DatabaseDateSchema.parse(row.updated_at).toISOString(),
       }),
-    );
-  }
-  public async updateConceptEdgeCaseQuestion(
-    conceptId: string,
-    question: string,
-  ): Promise<void> {
-    await this.pool.query(
-      'UPDATE concepts SET edge_case_question=$1 WHERE id=$2',
-      [question, conceptId],
     );
   }
   public async findPracticeProjectByHash(

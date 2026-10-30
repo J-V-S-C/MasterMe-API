@@ -420,8 +420,15 @@ export class PostgresBillingRepository implements BillingRepository {
       throw new AppError('AI_PERIOD_CREDIT_LIMIT_REACHED',
         'Seu saldo de créditos do período foi atingido.',
       );
+    if (outcome === 'INVALID_OPERATION') {
+      console.error(JSON.stringify({ level: 'error', operation: 'reserve-ai-credits', code: 'AI_CREDIT_OPERATION_UNSUPPORTED', aiOperation: operation, outcome }));
+      throw new AppError('AI_CREDIT_OPERATION_UNSUPPORTED',
+        'Esta operação de IA ainda não está disponível. Tente novamente mais tarde.',
+      );
+    }
+    console.error(JSON.stringify({ level: 'error', operation: 'reserve-ai-credits', code: 'AI_CREDIT_STATE_UNAVAILABLE', aiOperation: operation, outcome }));
     throw new AppError('AI_CREDIT_STATE_UNAVAILABLE',
-      'Não foi possível reservar créditos para esta operação.',
+      'Não foi possível confirmar os créditos agora. Tente novamente mais tarde.',
     );
   }
 

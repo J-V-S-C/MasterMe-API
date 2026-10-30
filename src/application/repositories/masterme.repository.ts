@@ -1,8 +1,10 @@
 import type { Concept, ConceptConfidence, ConceptRelation } from '../domain/concept';
-import type { Evaluation, IsomorphicProblem, StudySession } from '../domain/assessment';
-import type { MaterialSummary, StudyMaterial, SupportedLocale } from '../domain/material';
+import type { AnswerAssistance, Evaluation, IsomorphicProblem, StudySession } from '../domain/assessment';
+import type { EvidenceActivity, EvidenceStatus } from '../domain/learning-cycle';
+import type { MaterialKind, MaterialOutlineUnit, MaterialSummary, StudyMaterial, SupportedLocale } from '../domain/material';
 import type { PracticeProject } from '../domain/practice-project';
 import type { AiUsageEvent } from '../ports/llm.gateway';
+import type { QuestionBundle } from '../domain/assessment';
 
 export type AiUsageSummary = {
   totalRequests: number;
@@ -32,11 +34,14 @@ type Awaitable<T> = T | Promise<T>;
 export interface MasterMeRepository {
   saveMaterial(material: StudyMaterial, ownerId: string): Awaitable<void>;
   findMaterial(id: string): Awaitable<StudyMaterial | undefined>;
+  findMaterialOutline(id: string): Awaitable<MaterialOutlineUnit[]>;
   findAllMaterials(ownerId: string): Promise<MaterialSummary[]>;
+  updateMaterialKind(id: string, ownerId: string, kind: MaterialKind): Awaitable<StudyMaterial | undefined>;
   saveConcepts(
     concepts: Concept[],
     relations?: ConceptRelation[],
     processingJobId?: string,
+    unitId?: string,
   ): Awaitable<void>;
   saveConceptLocalizations(
     materialId: string,
@@ -44,7 +49,17 @@ export interface MasterMeRepository {
     concepts: Concept[],
   ): Awaitable<void>;
   findConcept(id: string): Awaitable<Concept | undefined>;
+  conceptBelongsToOwner(conceptId: string, ownerId: string): Awaitable<boolean>;
   findConceptsByMaterial(materialId: string): Awaitable<Concept[]>;
+  findAllConceptsByMaterial(materialId: string): Awaitable<Concept[]>;
+  findRecentLearningGaps(conceptIds: string[]): Awaitable<Array<{ conceptId: string; activityType: string; diagnosis: string; createdAt: string }>>;
+  scheduleReview(input: {
+    conceptId: string;
+    activityType: EvidenceActivity;
+    status: EvidenceStatus;
+    assistance: AnswerAssistance;
+    at: Date;
+  }): Awaitable<void>;
   saveSession(session: StudySession): Awaitable<void>;
   findSession(id: string): Awaitable<StudySession | undefined>;
   findSessionsByConceptIds(conceptIds: string[]): Awaitable<StudySession[]>;
@@ -75,10 +90,8 @@ export interface MasterMeRepository {
   findConfidencesByConceptIds(
     conceptIds: string[],
   ): Awaitable<ConceptConfidence[]>;
-  updateConceptEdgeCaseQuestion(
-    conceptId: string,
-    question: string,
-  ): Awaitable<void>;
+  findQuestionBundle(inputHash: string): Awaitable<QuestionBundle | undefined>;
+  saveQuestionBundle(materialId: string, inputHash: string, bundle: QuestionBundle): Awaitable<void>;
   findPracticeProjectByHash(
     inputHash: string,
   ): Awaitable<PracticeProject | undefined>;

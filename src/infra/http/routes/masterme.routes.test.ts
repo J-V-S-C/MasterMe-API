@@ -17,6 +17,9 @@ import { MasterMeController } from '../../controllers/masterme.controller';
 import { testSecurity } from './test-security';
 
 class EmptyFakeLlm implements MasterMeLlmGateway {
+  public async generateQuestionBundle(_concept: Concept): Promise<import('../../../schemas/llm.schema').QuestionBundle> {
+    throw new Error('Not used in this test.');
+  }
   public async extractKnowledge(
     _material: StudyMaterial,
   ): Promise<ExtractedKnowledge> {
@@ -166,6 +169,24 @@ describe('guided study routes', () => {
       const payload: unknown = await response.json();
       expect(payload).toMatchObject({ code: 'VALIDATION_ERROR' });
     });
+  });
+
+  test('material kind correction validates input and keeps ownership', async () => {
+    const repository = new InMemoryMasterMeRepository();
+    const service = new MasterMeService(repository, new EmptyFakeLlm());
+    const own = await service.createMaterial({ title: 'Reading', content: 'A source passage with enough content.' }, '11111111-1111-4111-8111-111111111111');
+    const foreign = await service.createMaterial({ title: 'Private', content: 'Another source passage with enough content.' }, '22222222-2222-4222-8222-222222222222');
+    await withServer(async (baseUrl) => {
+      const update = (id: string, materialKind: string) => fetch(`${baseUrl}/api/materials/${id}/kind`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ materialKind }),
+      });
+      expect((await update(own.id, 'COURSE')).status).toBe(400);
+      expect((await update(foreign.id, 'BOOK')).status).toBe(404);
+      const response = await update(own.id, 'BOOK');
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ data: { id: own.id, materialKind: 'BOOK' } });
+      expect(repository.findMaterial(foreign.id)?.materialKind).toBe('TEXT');
+    }, repository);
   });
 
   test('retrieves an isomorphic problem by material without generating another', async () => {

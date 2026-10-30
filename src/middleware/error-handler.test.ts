@@ -12,6 +12,8 @@ describe('errorHandler', () => {
       [new AppError('PAYMENT_AMOUNT_MISMATCH', 'Invalid amount', 'INVALID_INPUT'), 400],
       [new AppError('AI_CREDIT_LIMIT_REACHED', 'Credits exhausted'), 429],
       [new AppError('BILLING_NOT_CONFIGURED', 'Unavailable'), 503],
+      [new AppError('AUTH_UNAVAILABLE', 'Session verification unavailable'), 503],
+      [new AppError('AI_CREDIT_OPERATION_UNSUPPORTED', 'Operation unavailable'), 503],
       [new AppError('UNRECOGNIZED_ERROR', 'Unknown'), 500],
     ]
     for (const [error, expectedStatus] of cases) {
@@ -39,7 +41,7 @@ describe('errorHandler', () => {
     errorHandler(new MulterError('LIMIT_FILE_SIZE'), { method: 'POST', path: '/api/materials' } as Request, response, (() => undefined) as NextFunction)
 
     expect(statusCode).toBe(413)
-    expect(payload).toEqual({ code: 'UPLOAD_TOO_LARGE', message: 'Envie um arquivo de até 8 MiB.', requestId: 'request-1' })
+    expect(payload).toEqual({ code: 'UPLOAD_TOO_LARGE', message: 'Envie um arquivo de até 20 MiB.', requestId: 'request-1' })
   })
 
   test('maps webhook JSON size limit to a stable 413', () => {

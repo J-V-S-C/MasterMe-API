@@ -49,6 +49,73 @@ const json = (method: string, body: object): RequestInit => ({
 });
 
 describe('learning workspace routes', () => {
+  test('validates Today availability and forwards the account and timezone', async () => {
+    const calls: unknown[][] = [];
+    await withServer({
+      today: async (owner, date, timezone, minutes) => { calls.push([owner, date, timezone, minutes]); return { availableMinutes: minutes ?? 30, actions: [] }; },
+    }, async (baseUrl) => {
+      const path = `${baseUrl}/today?date=2026-10-28&timezone=America%2FSao_Paulo`;
+      expect((await fetch(`${path}&availableMinutes=0`)).status).toBe(400);
+      const response = await fetch(`${path}&availableMinutes=30`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toContain('no-store');
+      expect(calls).toEqual([[ownerId, '2026-10-28', 'America/Sao_Paulo', 30]]);
+    });
+  });
+  test('validates a review reminder decision before changing the schedule', async () => {
+    const calls: unknown[][] = [];
+    await withServer({
+      decideReviewReminder: async (owner, id, action, days) => { calls.push([owner, id, action, days]); return { id, status: 'SCHEDULED' }; },
+    }, async (baseUrl) => {
+      const path = `${baseUrl}/reviews/${requestId}/reminder`;
+      expect((await fetch(path, json('POST', { action: 'POSTPONE', days: 0 }))).status).toBe(400);
+      expect((await fetch(path, json('POST', { action: 'SKIP', days: 1 }))).status).toBe(400);
+      expect((await fetch(path, json('POST', { action: 'POSTPONE', days: 1 }))).status).toBe(200);
+      expect(calls).toEqual([[ownerId, requestId, 'POSTPONE', 1]]);
+    });
+  });
+  test('validates question variants before requesting a concept prompt', async () => {
+    const calls: unknown[][] = [];
+    await withServer({ activityPrompts: async (owner, concept, variant) => { calls.push([owner, concept, variant]); return { reasoning: 'R', application: 'A', retention: 'T' }; } }, async (baseUrl) => {
+      const path = `${baseUrl}/concepts/${requestId}/activity-prompts`;
+      expect((await fetch(`${path}?variant=10001`, { method: 'POST' })).status).toBe(400);
+      expect((await fetch(`${path}?variant=1`, { method: 'POST' })).status).toBe(200);
+      expect((await fetch(`${path}?variant=3`, { method: 'POST' })).status).toBe(200);
+      expect(calls).toEqual([[ownerId, requestId, 1], [ownerId, requestId, 3]]);
+    });
+  });
+  test('returns the owner-scoped question bank for a material', async () => {
+    const calls: unknown[][] = [];
+    await withServer({ questionBank: async (owner, material) => { calls.push([owner, material]); return []; } }, async (baseUrl) => {
+      expect((await fetch(`${baseUrl}/materials/not-a-uuid/questions`)).status).toBe(400);
+      expect((await fetch(`${baseUrl}/materials/${materialId}/questions`)).status).toBe(200);
+      expect(calls).toEqual([[ownerId, materialId]]);
+    });
+  });
+  test('validates a focused drill request before selecting a concept', async () => {
+    const calls: unknown[][] = [];
+    await withServer({ focusedDrill: async (owner, material, concept) => { calls.push([owner, material, concept]); return { materialId: material, conceptId: concept ?? requestId, conceptName: 'Concept', objectiveId: null, objectiveText: 'Explain concept', observedGap: null, sourceExcerpt: 'Source.', sourceOffset: 0, criteria: [], locale: 'en-US', previousEvidenceId: null, questionVariant: 0, activityType: 'APPLICATION', prompt: 'Apply concept.', estimatedMinutes: 10 }; } }, async (baseUrl) => {
+      const path = `${baseUrl}/materials/${materialId}/drill`;
+      expect((await fetch(`${path}?conceptId=invalid`, { method: 'POST' })).status).toBe(400);
+      expect((await fetch(`${path}?conceptId=${requestId}`, { method: 'POST' })).status).toBe(200);
+      expect(calls).toEqual([[ownerId, materialId, requestId]]);
+    });
+  });
+  test('validates outline correction revision and unique unit IDs', async () => {
+    const calls: unknown[][] = [];
+    await withServer({
+      outlineState: async () => ({ revision: 2, units: [] }),
+      updateOutline: async (owner, material, input) => { calls.push([owner, material, input]); return { revision: 3, units: input.units }; },
+    }, async (baseUrl) => {
+      const path = `${baseUrl}/materials/${materialId}/outline`;
+      expect((await fetch(`${path}-state`)).status).toBe(200);
+      expect((await fetch(path, json('PATCH', { expectedRevision: -1, units: [{ id: requestId, title: 'Chapter' }] }))).status).toBe(400);
+      expect((await fetch(path, json('PATCH', { expectedRevision: 2, units: [{ id: requestId, title: 'A' }, { id: requestId, title: 'B' }] }))).status).toBe(400);
+      const result = await fetch(path, json('PATCH', { expectedRevision: 2, units: [{ id: requestId, title: 'Chapter' }] }));
+      expect(result.status).toBe(200);
+      expect(calls).toEqual([[ownerId, materialId, { expectedRevision: 2, units: [{ id: requestId, title: 'Chapter' }] }]]);
+    });
+  });
   test('validates reading positions before updating an owned material', async () => {
     const calls: unknown[][] = [];
     await withServer({
@@ -75,6 +142,11 @@ describe('learning workspace routes', () => {
     }, async (baseUrl) => {
       const invalid = await fetch(`${baseUrl}/plans`, json('POST', { title: 'Reading', materialIds: [materialId, materialId] }));
       expect(invalid.status).toBe(400);
+      expect(calls).toHaveLength(0);
+      const invalidProject = await fetch(`${baseUrl}/tasks`, json('POST', {
+        title: 'Read', activityType: 'READ', projectId: suggestionId,
+      }));
+      expect(invalidProject.status).toBe(400);
       expect(calls).toHaveLength(0);
       expect((await fetch(`${baseUrl}/plans`, json('POST', { title: 'Reading', materialIds: [materialId] }))).status).toBe(201);
       expect((await fetch(`${baseUrl}/plans/${materialId}`, json('PATCH', { materialIds: [] }))).status).toBe(200);
@@ -157,14 +229,14 @@ describe('learning workspace routes', () => {
       expect(calls).toHaveLength(0);
 
       const created = await fetch(`${baseUrl}/tasks`, json('POST', {
-        title: 'Read', activityType: 'READ', materialId,
+        title: 'Read', description: 'Compare both chapters.', activityType: 'READ', materialId,
         scheduledAt: '2026-10-18T10:00:00Z',
       }));
       expect(created.status).toBe(201);
       expect(calls).toHaveLength(1);
       expect(calls[0]?.[0]).toBe(ownerId);
       expect(calls[0]?.[1]).toMatchObject({
-        title: 'Read', activityType: 'READ', materialId,
+        title: 'Read', description: 'Compare both chapters.', activityType: 'READ', materialId,
         scheduledAt: new Date('2026-10-18T10:00:00Z'),
       });
     });
@@ -246,6 +318,9 @@ describe('learning workspace routes', () => {
         hintsUsed: ['Consulted the source'], assisted: false,
       }));
       expect(unassistedHint.status).toBe(400);
+      expect(answerCalls).toHaveLength(1);
+      expect((await fetch(`${baseUrl}/activities/answers`, json('POST', { requestId, activityType: 'REASONING', attemptContext: 'DRILL', answer: 'A sufficiently detailed reasoning answer.' }))).status).toBe(400);
+      expect((await fetch(`${baseUrl}/activities/answers`, json('POST', { requestId, activityType: 'APPLICATION', reviewId: materialId, answer: 'A sufficiently detailed application answer.' }))).status).toBe(400);
       expect(answerCalls).toHaveLength(1);
       const linked = await fetch(`${baseUrl}/activities/answers`, json('POST', {
         requestId, activityType: 'APPLICATION', answer: 'A sufficiently detailed application answer.',

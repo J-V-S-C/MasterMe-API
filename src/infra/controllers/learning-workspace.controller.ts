@@ -1,13 +1,22 @@
 import type { RequestHandler } from 'express';
 import { z } from 'zod';
 import { getValidated } from '../../middleware/validate-request';
-import { Id, MaterialId, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, GoalPatch, Plan, PlanPatch, PlanTaskOrder, TaskBoardOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, Decision, Contestation, DeskQuery, Availability } from '../../schemas/learning-workspace.schema';
+import { Id, MaterialId, OutlinePatch, ReadingPosition, ShelfMaterial, ConceptId, Name, Card, Goal, GoalPatch, Plan, PlanPatch, PlanTaskOrder, TaskBoardOrder, Task, TaskPatch, Relation, Evidence, ActivityAnswer, ActivityPromptQuery, FocusedDrillQuery, Decision, Contestation, DeskQuery, TodayQuery, ReviewReminder, Availability } from '../../schemas/learning-workspace.schema';
 import type { LearningWorkspaceService } from '../../application/services/learning-workspace.service';
 
 const owner = (value: unknown): string => z.uuid().parse(value);
 
 export class LearningWorkspaceController {
   public constructor(private readonly service: LearningWorkspaceService) {}
+  public readonly activityPrompts: RequestHandler = async (_req, res) => {
+    res.json({ data: await this.service.activityPrompts(owner(res.locals.userId), getValidated(res, 'params', ConceptId).conceptId, getValidated(res, 'query', ActivityPromptQuery).variant) });
+  };
+  public readonly questionBank: RequestHandler = async (_req, res) => {
+    res.json({ data: await this.service.questionBank(owner(res.locals.userId), getValidated(res, 'params', MaterialId).materialId) });
+  };
+  public readonly focusedDrill: RequestHandler = async (_req, res) => {
+    res.json({ data: await this.service.focusedDrill(owner(res.locals.userId), getValidated(res, 'params', MaterialId).materialId, getValidated(res, 'query', FocusedDrillQuery).conceptId) });
+  };
   public readonly outline: RequestHandler = async (_req, res) => {
       res.json({
         data: await this.service.outline(
@@ -16,6 +25,16 @@ export class LearningWorkspaceController {
         ),
       });
     };
+  public readonly outlineState: RequestHandler = async (_req, res) => {
+    res.json({ data: await this.service.outlineState(owner(res.locals.userId), getValidated(res, 'params', MaterialId).materialId) });
+  };
+  public readonly updateOutline: RequestHandler = async (_req, res) => {
+    res.json({ data: await this.service.updateOutline(
+      owner(res.locals.userId),
+      getValidated(res, 'params', MaterialId).materialId,
+      getValidated(res, 'body', OutlinePatch),
+    ) });
+  };
   public readonly readingPosition: RequestHandler = async (_req, res) => {
     res.json({ data: await this.service.readingPosition(owner(res.locals.userId), getValidated(res, 'params', MaterialId).materialId) });
   };
@@ -224,6 +243,18 @@ export class LearningWorkspaceController {
         ),
       });
     };
+  public readonly today: RequestHandler = async (_req, res) => {
+    const value = getValidated(res, 'query', TodayQuery);
+    res.set('cache-control', 'private, no-store');
+    res.json({ data: await this.service.today(owner(res.locals.userId), value.date, value.timezone, value.availableMinutes) });
+  };
+  public readonly dueReviews: RequestHandler = async (_req, res) => {
+      res.json({ data: await this.service.dueReviews(owner(res.locals.userId)) });
+    };
+  public readonly decideReviewReminder: RequestHandler = async (_req, res) => {
+    const input = getValidated(res, 'body', ReviewReminder);
+    res.json({ data: await this.service.decideReviewReminder(owner(res.locals.userId), getValidated(res, 'params', Id).id, input.action, input.action === 'POSTPONE' ? input.days : undefined) });
+  };
   public readonly evidence: RequestHandler = async (_req, res) => {
       res.json({
         data: await this.service.evidence(

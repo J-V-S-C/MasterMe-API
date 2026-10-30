@@ -33,13 +33,50 @@ describe('classifyProcessingFailure', () => {
   test('stops retries when the provider daily quota is exhausted', () => {
     const failure = classifyProcessingFailure(
       new Error(
-        '429 Too Many Requests: generate_content_free_tier_requests quota exceeded',
+        '429 Too Many Requests: GenerateRequestsPerDayPerProjectPerModel-FreeTier quota exceeded',
       ),
     );
     expect(failure).toEqual({
       retryable: false,
       message:
         'O limite diário do provedor de IA foi atingido. Aguarde a renovação da cota ou revise a configuração da API.',
+      code: 'AI_QUOTA_EXHAUSTED',
+    });
+  });
+
+  test('retries a per-minute limit after a pause instead of treating it as daily exhaustion', () => {
+    expect(classifyProcessingFailure(new Error(
+      '429 Too Many Requests: generate_content_free_tier_requests quota exceeded',
+    ))).toEqual({
+      retryable: true,
+      message: 'O limite por minuto do provedor de IA foi atingido. A extração será retomada após uma pausa.',
+      code: 'EXTRACTION_FAILED',
+      retryAfterMs: 70_000,
+    });
+  });
+
+  test('uses the provider retryDelay for a per-minute limit', () => {
+    const failure = classifyProcessingFailure(new Error(JSON.stringify({
+      error: {
+        code: 429,
+        status: 'RESOURCE_EXHAUSTED',
+        details: [{
+          retryDelay: '37s',
+          violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' }],
+        }],
+      },
+    })));
+    expect(failure.retryable).toBe(true);
+    expect(failure.retryAfterMs).toBe(42_000);
+  });
+
+  test('classifies a wrapped daily quota without retrying', () => {
+    const failure = classifyProcessingFailure(new Error(
+      'Gemini quota or availability exhausted for all configured models',
+      { cause: new Error('429 GenerateRequestsPerDayPerProjectPerModel-FreeTier') },
+    ));
+    expect(failure).toMatchObject({
+      retryable: false,
       code: 'AI_QUOTA_EXHAUSTED',
     });
   });
@@ -108,11 +145,11 @@ test('worker persists and logs only controlled failure codes, never provider con
     },
   } as unknown as Pool;
   const study = { extractConcepts: async () => { throw new Error(secret); } } as unknown as MasterMeService;
-  const ingestion = { event: async () => undefined } as unknown as IngestionService;
+  const ingestion = { event: async () => undefined, repairPdfIndex: async () => undefined } as unknown as IngestionService;
   const log = spyOn(console, 'error').mockImplementation(() => undefined);
   try {
     expect(await new ProcessingWorker(pool, study, ingestion).processOnce()).toBe(true);
-    expect(stored).toEqual([[job.id, 'EXTRACTION_FAILED', true]]);
+    expect(stored).toEqual([[job.id, 'EXTRACTION_FAILED', true, 30]]);
     const output = log.mock.calls.flat().join(' ');
     expect(output).toContain('EXTRACTION_FAILED');
     expect(output).not.toContain(secret);
@@ -363,9 +400,11 @@ describe('upload guardrails', () => {
 
   test('success commits material, job and event in one transaction', async () => {
     const statements: string[] = [];
+    const insertedValues: unknown[][] = [];
     const client = {
-      query: async (sql: string) => {
+      query: async (sql: string, values?: unknown[]) => {
         statements.push(sql);
+        if (sql.startsWith('INSERT INTO study_materials')) insertedValues.push(values ?? []);
         return { rows: [], rowCount: 1 };
       },
       release: () => undefined,
@@ -388,6 +427,7 @@ describe('upload guardrails', () => {
     expect(
       statements.some((sql) => sql.startsWith('INSERT INTO study_materials')),
     ).toBe(true);
+    expect(insertedValues[0]?.at(-1)).toBe('TEXT');
     expect(
       statements.some((sql) => sql.startsWith('INSERT INTO processing_jobs')),
     ).toBe(true);

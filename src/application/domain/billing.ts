@@ -1,4 +1,5 @@
 export type AiOperation =
+  | 'QUESTION_SET_GENERATION'
   | 'EXTRACTION'
   | 'INITIAL_EVALUATION'
   | 'EDGE_CASE_GENERATION'
@@ -28,6 +29,7 @@ export const BILLING_PLANS = Object.freeze({
 } satisfies Record<BillingPlanId, BillingPlan>)
 
 export const AI_CREDIT_WEIGHTS = Object.freeze({
+  QUESTION_SET_GENERATION: 1,
   INITIAL_EVALUATION: 1,
   STRESS_EVALUATION: 1,
   EDGE_CASE_GENERATION: 1,
