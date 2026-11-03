@@ -33,7 +33,7 @@ import { focusExcerptOnChapter, passesAssessmentQuestionScreen } from '../prompt
 
 const now = (): string => new Date().toISOString();
 const QUESTION_BUNDLE_VERSION = 'question-bundle-v3';
-const PRACTICE_PROMPT_VERSION = 'practice-project-v3';
+const PRACTICE_PROMPT_VERSION = 'practice-project-v4';
 const EVALUATION_PROMPT_VERSION = 'evaluation-v2';
 type RecentLearningGap = { conceptId: string; activityType: string; diagnosis: string; createdAt: string };
 const withActivityNeeds = (performance: ConceptPerformance[], gaps: RecentLearningGap[]): ConceptPerformance[] => {
@@ -334,21 +334,32 @@ export class MasterMeService {
     return session;
   }
 
-  public async getQuestionBundle(conceptId: string, variant = 0, ownerId?: string): Promise<QuestionBundle> {
+  private questionBundleHash(concept: Concept, variant: number, requestedLocale?: SupportedLocale): string {
+    return createHash('sha256').update(JSON.stringify({
+      version: requestedLocale ? 'question-bundle-v3-practice-locale-v1' : QUESTION_BUNDLE_VERSION, conceptId: concept.id, variant,
+      name: concept.name, description: concept.description,
+      sourceExcerpt: concept.sourceExcerpt, locale: requestedLocale ?? concept.generatedLocale,
+    })).digest('hex');
+  }
+
+  public async getCachedQuestionBundle(conceptId: string, variant = 0, ownerId?: string, locale?: SupportedLocale): Promise<QuestionBundle | undefined> {
     if (ownerId && !(await this.repository.conceptBelongsToOwner(conceptId, ownerId)))
       this.throwNotFound('Conceito');
     const concept = (await this.repository.findConcept(conceptId)) ?? this.throwNotFound('Conceito');
-    const inputHash = createHash('sha256').update(JSON.stringify({
-      version: QUESTION_BUNDLE_VERSION, conceptId, variant,
-      name: concept.name, description: concept.description,
-      sourceExcerpt: concept.sourceExcerpt, locale: concept.generatedLocale,
-    })).digest('hex');
+    return this.repository.findQuestionBundle(this.questionBundleHash(concept, variant, locale));
+  }
+
+  public async getQuestionBundle(conceptId: string, variant = 0, ownerId?: string, locale?: SupportedLocale): Promise<QuestionBundle> {
+    if (ownerId && !(await this.repository.conceptBelongsToOwner(conceptId, ownerId)))
+      this.throwNotFound('Conceito');
+    const concept = (await this.repository.findConcept(conceptId)) ?? this.throwNotFound('Conceito');
+    const inputHash = this.questionBundleHash(concept, variant, locale);
     const cached = await this.repository.findQuestionBundle(inputHash);
     if (cached) return cached;
     const pending = this.pendingQuestionBundles.get(inputHash);
     if (pending) return pending;
     const generation = (async () => {
-      const bundle = await this.llm.generateQuestionBundle(concept, variant);
+      const bundle = await this.llm.generateQuestionBundle(concept, variant, locale);
       await this.repository.saveQuestionBundle(concept.materialId, inputHash, bundle);
       return (await this.repository.findQuestionBundle(inputHash)) ?? bundle;
     })();
@@ -708,10 +719,12 @@ export class MasterMeService {
     materialId: string,
     input: PracticeFocusCommand,
   ): Promise<PracticeFocus> {
-    const concepts = await this.getConcepts(materialId);
+    const allConcepts = await this.getConcepts(materialId);
+    const excluded = new Set(input.excludedConceptIds ?? []);
+    const concepts = allConcepts.filter((concept) => !excluded.has(concept.id));
     if (!concepts.length)
       throw new ConflictError(
-        'Extraia os conceitos antes de preparar um Projeto de prática.',
+        allConcepts.length ? 'Restaure um conceito oculto para preparar uma prática.' : 'Extraia os conceitos antes de preparar um Projeto de prática.',
       );
     const confidences = await this.repository.findConfidencesByConceptIds(
       concepts.map(({ id }) => id),

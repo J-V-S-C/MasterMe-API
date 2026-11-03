@@ -420,8 +420,9 @@ curl -N http://localhost:3333/api/events \
 | GET | `/api/materials/:id/performance` | Exposes deterministic performance by concept using initial attempts only. | — |
 | POST | `/api/learning/concepts/:conceptId/activity-prompts` | Returns reasoning, application, challenge, retention, and recall prompts from the same cached set. | 0–1 |
 | GET | `/api/learning/materials/:materialId/questions` | Lists active objectives and immutable versions of answered questions with source and extraction version. | — |
-| POST | `/api/learning/materials/:materialId/drill` | Chooses a focused practice question from the cached set. | 0–1 |
-| POST | `/api/learning/activities/answers` | Evaluates explanation, reasoning, application, or recall with grounded feedback. | 1 |
+| GET | `/api/learning/materials/:materialId/drill` | Returns the saved focused question for a concept and requested `locale` (`pt-BR` or `en-US`), or `null`; no AI call. | — |
+| POST | `/api/learning/materials/:materialId/drill` | Chooses a focused practice question in requested `locale` (`pt-BR` or `en-US`); the source stays original. | 0–1 |
+| POST | `/api/learning/activities/answers` | Evaluates explanation, reasoning, application, or recall with grounded feedback; `promptLocale` is accepted only for DRILL. | 1 |
 | GET | `/api/learning/materials/:materialId/evidence` | Returns distinct evidence history by activity. | — |
 | POST | `/api/learning/evidence` | Records declared or contested evidence; the client cannot approve an evaluation. | — |
 | POST | `/api/learning/evidence/:id/contestations` | Contests a diagnosis without overwriting the original evaluation. | — |
@@ -476,8 +477,8 @@ curl -N http://localhost:3333/api/events \
 | Method | Route | Purpose | AI |
 | --- | --- | --- | --- |
 | GET | `/api/materials/:id/practice-context` | Aggregates map, confidence, performance, and project history in one read. | — |
-| POST | `/api/materials/:id/practice-focus` | Previews up to three active gaps and their reasons without consuming AI. | — |
-| POST | `/api/materials/:id/practice-projects` | Generates or recovers a cached Practice Project. | 0–1 |
+| POST | `/api/materials/:id/practice-focus` | Previews up to three active gaps and their reasons without consuming AI; optional `excludedConceptIds` removes hidden concepts from the focus. | — |
+| POST | `/api/materials/:id/practice-projects` | Generates or recovers a cached self-directed Practice Project; optional `excludedConceptIds` excludes hidden concepts. No project submission or grading. | 0–1 |
 | GET | `/api/materials/:id/practice-projects` | Lists Practice Projects for a material, newest first. | — |
 | GET | `/api/practice-projects/:id` | Retrieves one Practice Project. | — |
 

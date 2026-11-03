@@ -36,6 +36,10 @@ describe('practice HTTP schemas', () => {
         conceptIds: [id, id],
       }).success,
     ).toBeFalse());
+  test('accepts exclusions and rejects duplicate excluded IDs', () => {
+    expect(CreatePracticeProjectBodySchema.safeParse({ focusMode: 'OVERVIEW', excludedConceptIds: [id] }).success).toBeTrue();
+    expect(CreatePracticeProjectBodySchema.safeParse({ focusMode: 'OVERVIEW', excludedConceptIds: [id, id] }).success).toBeFalse();
+  });
 });
 
 describe('material limits', () => {
