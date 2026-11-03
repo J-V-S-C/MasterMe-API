@@ -3,7 +3,7 @@ import type { Concept } from '../domain/concept';
 import type { MasterMeQuestion } from '../domain/assessment';
 import type { EdgeCaseChallenge, Evaluation, IsomorphicProblem } from '../domain/assessment';
 import type { PracticeProjectContent } from '../domain/practice-project';
-import type { StudyMaterial } from '../domain/material';
+import type { StudyMaterial, SupportedLocale } from '../domain/material';
 import type { MaterialOutlineUnit } from '../domain/material';
 import { InMemoryMasterMeRepository } from '../../infra/repositories/in-memory/in-memory.masterme.repository';
 import type { ExtractedKnowledge } from '../../schemas/llm.schema';
@@ -19,8 +19,10 @@ const passed: Evaluation = {
 
 class FakeLlm implements MasterMeLlmGateway {
   public questionBundles = 0;
-  public async generateQuestionBundle(concept: Concept) {
+  public questionLocales: Array<SupportedLocale | undefined> = [];
+  public async generateQuestionBundle(concept: Concept, _variant = 0, locale?: SupportedLocale) {
     this.questionBundles++;
+    this.questionLocales.push(locale);
     return {
       explanation: {
         text: `How does ${concept.name} affect the mechanism described in the selected source?`,
@@ -173,6 +175,14 @@ const setup = async () => {
 };
 
 describe('MasterMeService — free journey', () => {
+  test('practice focus excludes hidden concepts without deleting their history', async () => {
+    const { service, material, concepts } = await setup();
+    const hidden = concepts[0]!.id;
+    const focus = await service.getPracticeFocus(material.id, { focusMode: 'OVERVIEW', excludedConceptIds: [hidden] });
+    expect(focus.priorities.map((item) => item.conceptId)).not.toContain(hidden);
+    expect(focus.priorities.map((item) => item.conceptId)).toContain(concepts[1]!.id);
+    expect((await service.getConcepts(material.id)).map((item) => item.id)).toContain(hidden);
+  });
   test('practice focus uses a recent application gap even before an initial explanation', async () => {
     class GapRepository extends InMemoryMasterMeRepository {
       public override findRecentLearningGaps(conceptIds: string[]) {
@@ -206,6 +216,24 @@ describe('MasterMeService — free journey', () => {
     expect(session.question).toMatchObject({ ...first.explanation, bundleVariant: 0, promptVersion: 'question-bundle-v3' });
     expect(first.practice).toContain(concepts[0]!.name);
     expect(llm.questionBundles).toBe(1);
+  });
+  test('reads a generated question bundle without another provider call', async () => {
+    const { service, llm, concepts } = await setup();
+    const conceptId = concepts[0]!.id;
+    expect(await service.getCachedQuestionBundle(conceptId)).toBeUndefined();
+    const generated = await service.getQuestionBundle(conceptId);
+    expect(await service.getCachedQuestionBundle(conceptId)).toEqual(generated);
+    expect(llm.questionBundles).toBe(1);
+  });
+  test('keeps a requested Practice language separate from the material question cache', async () => {
+    const { service, llm, concepts } = await setup();
+    const conceptId = concepts[0]!.id;
+    await service.getQuestionBundle(conceptId);
+    await service.getQuestionBundle(conceptId, 0, undefined, 'pt-BR');
+    expect(llm.questionBundles).toBe(2);
+    expect(llm.questionLocales).toEqual([undefined, 'pt-BR']);
+    await service.getQuestionBundle(conceptId, 0, undefined, 'pt-BR');
+    expect(llm.questionBundles).toBe(2);
   });
   test('does not generate or spend a question request for a foreign concept', async () => {
     const { service, llm, concepts } = await setup();

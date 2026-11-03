@@ -30,7 +30,7 @@ export type ExtractionProgress = {
 };
 
 export interface MasterMeLlmGateway {
-  generateQuestionBundle(concept: Concept, variant?: number): Promise<QuestionBundle>;
+  generateQuestionBundle(concept: Concept, variant?: number, locale?: SupportedLocale): Promise<QuestionBundle>;
   extractKnowledge(
     material: StudyMaterial,
     onProgress?: (progress: ExtractionProgress) => Promise<void>,

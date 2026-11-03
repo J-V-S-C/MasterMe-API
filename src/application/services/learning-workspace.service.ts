@@ -7,6 +7,7 @@ import { suggestNextAction } from '../domain/learning-cycle';
 import { criteriaForActivity } from '../domain/activity-rubric';
 import { chooseTodayActions } from '../domain/today-policy';
 import type { QuestionBundleProvider } from '../contracts/masterme.service';
+import type { SupportedLocale } from '../domain/material';
 
 export class LearningWorkspaceService {
   public constructor(
@@ -17,13 +18,29 @@ export class LearningWorkspaceService {
 
   public outline(ownerId: string, materialId: string) { return this.repository.outline(ownerId, materialId); }
   public questionBank(ownerId: string, materialId: string) { return this.repository.questionBank(ownerId, materialId); }
-  public async focusedDrill(ownerId: string, materialId: string, conceptId?: string): Promise<FocusedDrillPreview> {
+  public async focusedDrill(ownerId: string, materialId: string, conceptId?: string, requestedLocale?: SupportedLocale): Promise<FocusedDrillPreview> {
     const context = await this.repository.focusedDrillContext(ownerId, materialId, conceptId);
     if (!this.questions) throw new ConflictError('Geração de perguntas indisponível.');
-    const bundle = await this.questions.getQuestionBundle(context.conceptId, context.questionVariant, ownerId);
-    return { ...context, activityType: 'APPLICATION', estimatedMinutes: 10,
+    const locale = requestedLocale ?? context.locale;
+    const bundle = await this.questions.getQuestionBundle(context.conceptId, context.questionVariant, ownerId, locale);
+    return { ...context, locale, activityType: 'APPLICATION', estimatedMinutes: 10,
       prompt: bundle.practice,
-      criteria: criteriaForActivity('APPLICATION', context.locale, context.criteria),
+      criteria: criteriaForActivity('APPLICATION', locale, context.criteria),
+    };
+  }
+  public async savedFocusedDrill(ownerId: string, materialId: string, conceptId?: string, requestedLocale?: SupportedLocale): Promise<FocusedDrillPreview | null> {
+    const context = await this.repository.focusedDrillContext(ownerId, materialId, conceptId);
+    const locale = requestedLocale ?? context.locale;
+    let variant = context.questionVariant;
+    let bundle = await this.questions?.getCachedQuestionBundle?.(context.conceptId, variant, ownerId, locale);
+    while (!bundle && variant > 0) {
+      variant -= 1;
+      bundle = await this.questions?.getCachedQuestionBundle?.(context.conceptId, variant, ownerId, locale);
+    }
+    if (!bundle) return null;
+    return { ...context, locale, questionVariant: variant, activityType: 'APPLICATION', estimatedMinutes: 10,
+      prompt: bundle.practice,
+      criteria: criteriaForActivity('APPLICATION', locale, context.criteria),
     };
   }
   public outlineState(ownerId: string, materialId: string) { return this.repository.outlineState(ownerId, materialId); }
@@ -92,14 +109,15 @@ export class LearningWorkspaceService {
     const context = await this.repository.loadActivityContext(ownerId, input);
     if (!context.conceptId)
       throw new ConflictError('A atividade precisa de um conceito.');
-    const bundle = await this.questions?.getQuestionBundle(context.conceptId, input.questionVariant ?? 0, ownerId);
+    const locale = input.attemptContext === 'DRILL' ? input.promptLocale ?? context.locale : context.locale;
+    const bundle = await this.questions?.getQuestionBundle(context.conceptId, input.questionVariant ?? 0, ownerId, input.attemptContext === 'DRILL' ? locale : undefined);
     if (!bundle)
       throw new ConflictError('Geração de perguntas indisponível.');
     const prompt = input.activityType === 'COMPREHENSION' ? bundle.explanation.text
       : input.activityType === 'REASONING' ? bundle.reasoning
       : input.activityType === 'APPLICATION' ? (input.attemptContext === 'DRILL' ? bundle.practice : bundle.application)
       : bundle.retention;
-    const criteria = criteriaForActivity(input.activityType, context.locale, context.criteria);
+    const criteria = criteriaForActivity(input.activityType, locale, context.criteria);
     const hashFor = (text: string) => createHash('sha256').update(JSON.stringify({
       ownerId,
       conceptId: context.conceptId,
@@ -121,7 +139,7 @@ export class LearningWorkspaceService {
     if (claim.kind === 'REPLAY') return claim.outcome;
     try {
       const evaluation = await this.assessment.evaluateActivity({
-        locale: context.locale,
+        locale,
         activityType: input.activityType,
         conceptName: context.conceptName,
         sourceExcerpt: context.sourceExcerpt,
@@ -152,7 +170,7 @@ export class LearningWorkspaceService {
         evidenceQuote: evaluation.evidenceQuote,
         missingPremises: evaluation.missingPremises,
         logicalBreak: evaluation.logicalBreak,
-        promptVersion: `question-bundle-v3-variant${input.questionVariant ?? 0}`,
+        promptVersion: input.attemptContext === 'DRILL' ? `practice-question-v1-${locale}-variant${input.questionVariant ?? 0}` : `question-bundle-v3-variant${input.questionVariant ?? 0}`,
         criteria,
         sourceExcerpt: context.sourceExcerpt,
         sourceOffset: context.sourceOffset,

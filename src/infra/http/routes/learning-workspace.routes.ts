@@ -22,6 +22,7 @@ export function createLearningWorkspaceRouter(
   router.post('/concepts/:conceptId/activity-prompts', aiBurstRateLimit, validateRequest({ params: ConceptId, query: ActivityPromptQuery }), asyncRoute(controller.activityPrompts));
   router.get('/materials/:materialId/questions', validateRequest({ params: MaterialId }), asyncRoute(controller.questionBank));
   router.post('/materials/:materialId/drill', aiBurstRateLimit, validateRequest({ params: MaterialId, query: FocusedDrillQuery }), asyncRoute(controller.focusedDrill));
+  router.get('/materials/:materialId/drill', validateRequest({ params: MaterialId, query: FocusedDrillQuery }), asyncRoute(controller.savedFocusedDrill));
   router.get('/today', validateRequest({ query: TodayQuery }), asyncRoute(controller.today));
   router.post('/reviews/:id/reminder', validateRequest({ params: Id, body: ReviewReminder }), asyncRoute(controller.decideReviewReminder));
   router.get(

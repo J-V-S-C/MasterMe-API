@@ -12,6 +12,7 @@ import type { ActivityInput, EvidenceInput, FocusedDrillContext, ObjectiveQuesti
 import type { SuggestionDecision } from '../../../application/contracts/learning-workspace.service';
 import { decideReview } from '../../../application/domain/review-policy';
 import type { TodayAction } from '../../../application/domain/today-policy';
+import { MAX_QUESTION_VARIANT } from '../../../application/study-limits';
 
 export class PrismaLearningWorkspaceRepository {
   public constructor(private readonly db: PrismaClient) {}
@@ -77,7 +78,8 @@ export class PrismaLearningWorkspaceRepository {
     const latest = latestByConcept.get(selected.id);
     const observedGap = latest && !latest.evidence_contestations.length && (latest.status === 'INCOMPLETE' || latest.status === 'LOGICAL_BREAK')
       ? (latest.gap ?? latest.logical_break ?? latest.diagnosis).slice(0, 500) : null;
-    const previousApplication = attempts.find((attempt) => attempt.concept_id === selected.id && attempt.activity_type === 'APPLICATION' && !attempt.evidence_contestations.length);
+    const previousApplication = attempts.find((attempt) => attempt.concept_id === selected.id && attempt.activity_type === 'APPLICATION' && attempt.attempt_context === 'DRILL' && !attempt.evidence_contestations.length);
+    const previousVariant = previousApplication?.prompt_version.match(/(?:question-bundle-v3|activity-v4|practice-question-v1-(?:pt-BR|en-US))-variant(\d+)/)?.[1];
     const generated = selected.study_question;
     const fallbackObjective = generated && typeof generated === 'object' && !Array.isArray(generated) && 'learningObjective' in generated && typeof generated.learningObjective === 'string'
       ? generated.learningObjective.trim() || selected.description : selected.description;
@@ -90,7 +92,7 @@ export class PrismaLearningWorkspaceRepository {
       criteria: Array.isArray(selected.fundamental_premises) ? selected.fundamental_premises.filter((item): item is string => typeof item === 'string') : [],
       locale: material.locale === 'en-US' ? 'en-US' : 'pt-BR',
       previousEvidenceId: previousApplication?.id ?? null,
-      questionVariant: previousApplication ? previousApplication.prompt_version === 'activity-v4-variant1' ? 2 : 1 : 0,
+      questionVariant: previousApplication ? ((Number(previousVariant ?? 0) + 1) % (MAX_QUESTION_VARIANT + 1)) : 0,
     };
   }
 
@@ -1185,6 +1187,7 @@ export class PrismaLearningWorkspaceRepository {
           select: {
             id: true,
             material_id: true,
+            concept_id: true,
             prompt: true,
             diagnosis: true,
             source_excerpt: true,

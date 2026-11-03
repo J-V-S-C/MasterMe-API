@@ -94,10 +94,22 @@ describe('learning workspace routes', () => {
   });
   test('validates a focused drill request before selecting a concept', async () => {
     const calls: unknown[][] = [];
-    await withServer({ focusedDrill: async (owner, material, concept) => { calls.push([owner, material, concept]); return { materialId: material, conceptId: concept ?? requestId, conceptName: 'Concept', objectiveId: null, objectiveText: 'Explain concept', observedGap: null, sourceExcerpt: 'Source.', sourceOffset: 0, criteria: [], locale: 'en-US', previousEvidenceId: null, questionVariant: 0, activityType: 'APPLICATION', prompt: 'Apply concept.', estimatedMinutes: 10 }; } }, async (baseUrl) => {
+    await withServer({ focusedDrill: async (owner, material, concept, locale) => { calls.push([owner, material, concept, locale]); return { materialId: material, conceptId: concept ?? requestId, conceptName: 'Concept', objectiveId: null, objectiveText: 'Explain concept', observedGap: null, sourceExcerpt: 'Source.', sourceOffset: 0, criteria: [], locale: locale ?? 'en-US', previousEvidenceId: null, questionVariant: 0, activityType: 'APPLICATION', prompt: 'Apply concept.', estimatedMinutes: 10 }; } }, async (baseUrl) => {
       const path = `${baseUrl}/materials/${materialId}/drill`;
       expect((await fetch(`${path}?conceptId=invalid`, { method: 'POST' })).status).toBe(400);
-      expect((await fetch(`${path}?conceptId=${requestId}`, { method: 'POST' })).status).toBe(200);
+      expect((await fetch(`${path}?conceptId=${requestId}&locale=fr-FR`, { method: 'POST' })).status).toBe(400);
+      expect((await fetch(`${path}?conceptId=${requestId}&locale=pt-BR`, { method: 'POST' })).status).toBe(200);
+      expect(calls).toEqual([[ownerId, materialId, requestId, 'pt-BR']]);
+    });
+  });
+  test('reads a saved focused drill without invoking generation', async () => {
+    const calls: unknown[][] = [];
+    await withServer({ savedFocusedDrill: async (owner, material, concept) => { calls.push([owner, material, concept]); return null; } }, async (baseUrl) => {
+      const path = `${baseUrl}/materials/${materialId}/drill`;
+      expect((await fetch(`${path}?conceptId=invalid`)).status).toBe(400);
+      const response = await fetch(`${path}?conceptId=${requestId}`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ data: null });
       expect(calls).toEqual([[ownerId, materialId, requestId]]);
     });
   });
