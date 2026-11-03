@@ -47,6 +47,7 @@ export const CreatePracticeProjectBodySchema = z
   .object({
     focusMode: PracticeFocusModeSchema,
     conceptIds: z.array(z.string().uuid()).max(5).optional(),
+    excludedConceptIds: z.array(z.string().uuid()).max(500).optional(),
     difficulty: z.enum(['FOUNDATION', 'INTERMEDIATE', 'ADVANCED']).optional(),
     size: z.enum(['SMALL', 'MEDIUM']).optional(),
   })
@@ -58,6 +59,8 @@ export const CreatePracticeProjectBodySchema = z
         message: 'conceptIds não pode conter IDs repetidos.',
         path: ['conceptIds'],
       });
+    if (new Set(value.excludedConceptIds ?? []).size !== (value.excludedConceptIds ?? []).length)
+      context.addIssue({ code: 'custom', message: 'excludedConceptIds não pode conter IDs repetidos.', path: ['excludedConceptIds'] });
     if (value.focusMode === 'OVERVIEW' && value.conceptIds !== undefined)
       context.addIssue({
         code: 'custom',

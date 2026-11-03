@@ -98,7 +98,7 @@ test('records a different, versioned prompt for a drill retry', async () => {
   await service.evaluateActivity(ownerId, { ...input, activityType: 'APPLICATION', attemptContext: 'DRILL', questionVariant: 1, previousEvidenceId: '55555555-5555-4555-8555-555555555555' });
   expect(assess.mock.calls[0]?.[0].prompt).toBe(generated.practice);
   expect(preview.application).toBe(generated.application);
-  expect(save.mock.calls[0]?.[1]).toMatchObject({ attemptContext: 'DRILL', promptVersion: 'question-bundle-v3-variant1', previousEvidenceId: '55555555-5555-4555-8555-555555555555' });
+  expect(save.mock.calls[0]?.[1]).toMatchObject({ attemptContext: 'DRILL', promptVersion: 'practice-question-v1-en-US-variant1', previousEvidenceId: '55555555-5555-4555-8555-555555555555' });
 });
 
 test('focused drill preview states the objective, gap, criterion and exact server prompt', async () => {
@@ -107,6 +107,30 @@ test('focused drill preview states the objective, gap, criterion and exact serve
   expect(preview).toMatchObject({ conceptId, objectiveId: 'objective-1', observedGap: 'Missed the caller role.', activityType: 'APPLICATION', questionVariant: 1, estimatedMinutes: 10 });
   expect(preview.prompt).toBe(generated.practice);
   expect(preview.criteria).toContain('The caller chooses the implementation.');
+});
+test('focused Practice uses the interface locale for its question and feedback', async () => {
+  const requested: Array<string | undefined> = [];
+  const save = mock(async (_owner: string, _input: EvidenceInput, _suggestion: EvidenceSuggestion) => outcome);
+  const assess = mock(async (_input: Parameters<ActivityAssessmentGateway['evaluateActivity']>[0]) => ({ status: 'PASSED' as const, missingPremises: [], logicalBreak: null, feedback: 'Bem explicado.' }));
+  const localizedQuestions = { getQuestionBundle: async (_id: string, _variant = 0, _owner?: string, locale?: 'pt-BR' | 'en-US') => { requested.push(locale); return generated; } };
+  const service = new LearningWorkspaceService(repository({ recordEvidence: save }), { evaluateActivity: assess }, localizedQuestions);
+  const preview = await service.focusedDrill(ownerId, materialId, conceptId, 'pt-BR');
+  expect(preview.locale).toBe('pt-BR');
+  expect(preview.criteria[0]).toContain('Descreva um caso concreto');
+  await service.evaluateActivity(ownerId, { ...input, activityType: 'APPLICATION', attemptContext: 'DRILL', promptLocale: 'pt-BR' });
+  expect(requested).toEqual(['pt-BR', 'pt-BR']);
+  expect(assess.mock.calls[0]?.[0].locale).toBe('pt-BR');
+  expect(save.mock.calls[0]?.[1].promptVersion).toBe('practice-question-v1-pt-BR-variant0');
+});
+test('reads a saved focused question without generating another', async () => {
+  const generate = mock(async () => generated);
+  const service = new LearningWorkspaceService(repository({}), undefined, {
+    getQuestionBundle: generate,
+    getCachedQuestionBundle: async () => generated,
+  });
+  const preview = await service.savedFocusedDrill(ownerId, materialId, conceptId);
+  expect(preview?.prompt).toBe(generated.practice);
+  expect(generate).not.toHaveBeenCalled();
 });
 
 test('rejects mismatched drill and review activity types before model evaluation', async () => {

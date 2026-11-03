@@ -15,7 +15,12 @@ export class LearningWorkspaceController {
     res.json({ data: await this.service.questionBank(owner(res.locals.userId), getValidated(res, 'params', MaterialId).materialId) });
   };
   public readonly focusedDrill: RequestHandler = async (_req, res) => {
-    res.json({ data: await this.service.focusedDrill(owner(res.locals.userId), getValidated(res, 'params', MaterialId).materialId, getValidated(res, 'query', FocusedDrillQuery).conceptId) });
+    const query = getValidated(res, 'query', FocusedDrillQuery);
+    res.json({ data: await this.service.focusedDrill(owner(res.locals.userId), getValidated(res, 'params', MaterialId).materialId, query.conceptId, query.locale) });
+  };
+  public readonly savedFocusedDrill: RequestHandler = async (_req, res) => {
+    const query = getValidated(res, 'query', FocusedDrillQuery);
+    res.json({ data: await this.service.savedFocusedDrill(owner(res.locals.userId), getValidated(res, 'params', MaterialId).materialId, query.conceptId, query.locale) });
   };
   public readonly outline: RequestHandler = async (_req, res) => {
       res.json({

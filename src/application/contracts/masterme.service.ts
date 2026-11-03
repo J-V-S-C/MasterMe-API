@@ -3,7 +3,8 @@ import type { ConceptPerformance, MasterMeQuestion, StudySession } from '../doma
 import type { QuestionBundle } from '../domain/assessment';
 
 export interface QuestionBundleProvider {
-  getQuestionBundle(conceptId: string, variant?: number, ownerId?: string): Promise<QuestionBundle>;
+  getQuestionBundle(conceptId: string, variant?: number, ownerId?: string, locale?: SupportedLocale): Promise<QuestionBundle>;
+  getCachedQuestionBundle?(conceptId: string, variant?: number, ownerId?: string, locale?: SupportedLocale): Promise<QuestionBundle | undefined>;
 }
 import type { MaterialKind, SupportedLocale } from '../domain/material';
 import type { PracticeFocusMode, PracticeProject } from '../domain/practice-project';
@@ -20,6 +21,7 @@ export interface CreateMaterialCommand {
 export interface PracticeFocusCommand {
   focusMode: PracticeFocusMode;
   conceptIds?: string[];
+  excludedConceptIds?: string[];
   difficulty?: 'FOUNDATION' | 'INTERMEDIATE' | 'ADVANCED';
   size?: 'SMALL' | 'MEDIUM';
 }
