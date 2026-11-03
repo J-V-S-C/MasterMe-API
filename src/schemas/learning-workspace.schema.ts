@@ -131,6 +131,7 @@ export const ActivityAnswer = z.object({
     'RETENTION',
   ]),
   attemptContext: z.enum(['STUDY', 'DRILL']).default('STUDY'),
+  promptLocale: z.enum(['pt-BR', 'en-US']).optional(),
   answer: z.string().trim().min(MIN_EXPLANATION_LENGTH).max(MAX_STUDY_ANSWER_LENGTH),
   assisted: z.boolean().default(false),
   assistanceLevel: z.number().int().min(0).max(4).default(0),
@@ -148,9 +149,11 @@ export const ActivityAnswer = z.object({
   message: 'Uma revisão exige atividade de retomada.', path: ['activityType'],
 }).refine((value) => value.attemptContext !== 'DRILL' || value.activityType === 'APPLICATION', {
   message: 'Uma prática focada exige atividade de aplicação.', path: ['activityType'],
+}).refine((value) => !value.promptLocale || value.attemptContext === 'DRILL', {
+  message: 'O idioma da pergunta só pode ser escolhido para prática focada.', path: ['promptLocale'],
 });
 export const ActivityPromptQuery = z.object({ variant: z.coerce.number().int().min(0).max(MAX_QUESTION_VARIANT).default(0) });
-export const FocusedDrillQuery = z.object({ conceptId: z.uuid().optional() });
+export const FocusedDrillQuery = z.object({ conceptId: z.uuid().optional(), locale: z.enum(['pt-BR', 'en-US']).optional() });
 export const Decision = z.object({
   decision: z.enum(['ACCEPTED', 'IGNORED']),
   title: z.string().trim().min(1).max(160).optional(),

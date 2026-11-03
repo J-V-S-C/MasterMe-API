@@ -144,6 +144,7 @@ export interface ActivityInput {
   relationId?: string;
   activityType: EvidenceActivity;
   attemptContext?: 'STUDY' | 'DRILL';
+  promptLocale?: 'pt-BR' | 'en-US';
   answer: string;
   assisted: boolean;
   assistanceLevel?: number;
