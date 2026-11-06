@@ -34,7 +34,7 @@ export const ConceptSchema = z.object({
   sourceExcerpt: z.string().min(1),
   sourceOffset: z.number().int().nonnegative().optional(),
   fundamentalPremises: z.array(z.string().min(1)).min(1),
-  edgeCases: z.array(z.string().min(1)).min(1),
+  edgeCases: z.array(z.string().min(1)),
   edgeCaseQuestion: z.string().min(1).optional(),
   studyQuestion: QuestionSchema.optional(),
   generatedLocale: GeneratedLocaleSchema.default('pt-BR'),

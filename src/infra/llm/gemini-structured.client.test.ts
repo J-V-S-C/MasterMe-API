@@ -20,6 +20,7 @@ describe('GeminiStructuredClient', () => {
   test('sends JSON Schema to the official SDK, validates with Zod and records tokens', async () => {
     const calls: unknown[] = [];
     const usage: AiUsageEvent[] = [];
+    const rawResponses: string[] = [];
     const generator = {
       generateContent: async (request: unknown) => {
         calls.push(request);
@@ -42,9 +43,11 @@ describe('GeminiStructuredClient', () => {
         client.generateStructured(schema, 'prompt', {
           operation: 'INITIAL_EVALUATION',
           maxOutputTokens: 100,
+          onResponseText: (response) => rawResponses.push(response),
         }),
       ),
     ).toEqual({ value: 'ok' });
+    expect(rawResponses).toEqual(['{"value":"ok"}']);
     expect(calls).toEqual([
       {
         model: 'gemini-primary',

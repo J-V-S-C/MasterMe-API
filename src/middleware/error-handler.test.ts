@@ -3,6 +3,7 @@ import { MulterError } from 'multer'
 import type { NextFunction, Request, Response } from 'express'
 import { errorHandler } from './error-handler'
 import { AppError, NotFoundError } from '../application/errors'
+import { ProviderUnavailableError } from '../infra/llm/gemini-structured.client'
 
 describe('errorHandler', () => {
   test('maps application error codes and semantic categories to HTTP status', () => {
@@ -42,6 +43,30 @@ describe('errorHandler', () => {
 
     expect(statusCode).toBe(413)
     expect(payload).toEqual({ code: 'UPLOAD_TOO_LARGE', message: 'Envie um arquivo de até 20 MiB.', requestId: 'request-1' })
+  })
+
+  test('returns a retryable provider error instead of a generic internal error', () => {
+    let statusCode = 0
+    let payload: unknown
+    const response = {
+      locals: { requestId: 'request-provider', routeTemplate: '/concepts/:id/sessions' },
+      status(code: number) { statusCode = code; return this },
+      json(value: unknown) { payload = value; return this },
+    } as unknown as Response
+
+    errorHandler(
+      new ProviderUnavailableError('All configured models failed', { kind: 'unavailable', status: 503 }),
+      { method: 'POST', path: '/api/concepts/123/sessions' } as Request,
+      response,
+      (() => undefined) as NextFunction,
+    )
+
+    expect(statusCode).toBe(503)
+    expect(payload).toEqual({
+      code: 'AI_PROVIDER_UNAVAILABLE',
+      message: 'O serviço de IA está temporariamente indisponível. Tente novamente em instantes.',
+      requestId: 'request-provider',
+    })
   })
 
   test('maps webhook JSON size limit to a stable 413', () => {

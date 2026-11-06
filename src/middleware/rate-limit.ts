@@ -44,7 +44,8 @@ export const createRateLimit = (options: {
     const retryAfter = Math.max(1, Math.ceil((entry.resetAt - now) / 1_000));
     res.setHeader('retry-after', String(retryAfter));
     next(
-      new AppError('RATE_LIMITED',
+      new AppError(
+        'RATE_LIMITED',
         'Muitas solicitações. Aguarde um pouco e tente novamente.',
       ),
     );
@@ -98,7 +99,8 @@ export const uploadConcurrencyLimit = ((): RequestHandler => {
     const limits = [2, 1, 1];
     if (keys.some((key, index) => (active.get(key) ?? 0) >= limits[index]!)) {
       return next(
-        new AppError('UPLOAD_CONCURRENCY_LIMIT',
+        new AppError(
+          'UPLOAD_CONCURRENCY_LIMIT',
           'Já existe um upload em processamento. Aguarde a conclusão antes de enviar outro arquivo.',
         ),
       );
