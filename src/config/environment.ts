@@ -6,7 +6,7 @@ const EnvironmentSchema = z.object({
   MODEL_NAME: z.string().min(1).default('gemini-3.5-flash-lite'),
   GEMINI_MODEL_FALLBACKS: z
     .string()
-    .default('gemini-3.6-flash')
+    .default('gemini-3.6-flash,gemini-3.1-flash-lite')
     .transform((value) => [...new Set(value.split(',').map((model) => model.trim()).filter(Boolean))]),
   EXTRACTION_MAX_CONCEPTS: z.coerce.number().int().min(1).max(30).default(12),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3333),

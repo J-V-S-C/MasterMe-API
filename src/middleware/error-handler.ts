@@ -4,6 +4,7 @@ import { AppError } from '../application/errors';
 import { MAX_UPLOAD_MIB } from '../application/material-limits';
 import { MulterError } from 'multer';
 import { normalizedRoute } from './observability';
+import { ProviderUnavailableError } from '../infra/llm/gemini-structured.client';
 
 const errorStatuses: Readonly<Record<string, number>> = {
   UNAUTHENTICATED: 401,
@@ -64,6 +65,29 @@ export const errorHandler: ErrorRequestHandler = (
     res
       .status(status)
       .json({ code: error.code, message: error.message, requestId });
+    return;
+  }
+  if (error instanceof ProviderUnavailableError) {
+    const rateLimited = error.failure.kind === 'minute' || error.failure.kind === 'day';
+    const invalidResponse = error.failure.kind === 'invalid_output';
+    const status = rateLimited ? 429 : invalidResponse ? 502 : 503;
+    const code = rateLimited
+      ? 'AI_PROVIDER_RATE_LIMITED'
+      : invalidResponse
+        ? 'INVALID_EXTERNAL_RESPONSE'
+        : 'AI_PROVIDER_UNAVAILABLE';
+    const message = rateLimited
+      ? 'O serviço de IA atingiu um limite temporário. Tente novamente mais tarde.'
+      : invalidResponse
+        ? 'O serviço de IA retornou uma resposta inválida. Tente novamente.'
+        : 'O serviço de IA está temporariamente indisponível. Tente novamente em instantes.';
+    console.warn(JSON.stringify({
+      level: 'warn', requestId, method: req.method,
+      route: res.locals.routeTemplate ?? normalizedRoute(req),
+      code, providerKind: error.failure.kind,
+      providerStatus: error.failure.status,
+    }));
+    res.status(status).json({ code, message, requestId });
     return;
   }
   if (error instanceof MulterError) {

@@ -304,6 +304,7 @@ model processing_jobs {
   run_after            DateTime               @default(now()) @db.Timestamptz(6)
   locked_at            DateTime?              @db.Timestamptz(6)
   last_error           String?
+  failure_responses    Json?
   created_at           DateTime               @default(now()) @db.Timestamptz(6)
   updated_at           DateTime               @default(now()) @db.Timestamptz(6)
   stage                String                 @default("QUEUED") @db.VarChar(16)

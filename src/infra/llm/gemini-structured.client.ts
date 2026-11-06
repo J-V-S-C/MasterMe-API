@@ -5,7 +5,7 @@ import { currentAiUsageOwner } from '../context/ai-usage-context';
 import type { AiOperation } from '../../application/domain/billing';
 import type { AiUsageEvent } from '../../application/ports/llm.gateway';
 
-type GenerateOptions = { operation: AiOperation; maxOutputTokens: number; maxModelAttempts?: number };
+type GenerateOptions = { operation: AiOperation; maxOutputTokens: number; maxModelAttempts?: number; onResponseText?: (text: string) => void };
 type ContentGenerator = Pick<GoogleGenAI['models'], 'generateContent'>;
 
 // Provider limits for the two configured models:
@@ -336,7 +336,8 @@ export class GeminiStructuredClient {
     let lastError: unknown;
     let lastFailure: ProviderFailure | undefined;
 
-    for (const modelName of this.models.slice(0, options.maxModelAttempts ?? this.models.length)) {
+    const attemptedModels = this.models.slice(0, options.maxModelAttempts ?? this.models.length);
+    for (const [modelIndex, modelName] of attemptedModels.entries()) {
       const blocked = this.blockedModels.get(modelName);
       if (blocked) {
         if (blocked.until > Date.now()) {
@@ -379,6 +380,7 @@ export class GeminiStructuredClient {
           throw new InvalidStructuredOutputError(
             'Gemini returned no response text',
           );
+        options.onResponseText?.(response.text);
         let json: unknown;
         try {
           json = JSON.parse(response.text);
@@ -445,9 +447,10 @@ export class GeminiStructuredClient {
         console.warn(
           JSON.stringify({
             level: 'warn',
-            operation: 'gemini-fallback',
+            operation: modelIndex + 1 < attemptedModels.length ? 'gemini-fallback' : 'gemini-attempt-failed',
             model: modelName,
             reason: classifyError(error),
+            providerStatus: failure.status,
             retryAfterMs: failure.retryAfterMs,
             blockedUntilRestart: failure.kind === 'model_not_found',
           }),
