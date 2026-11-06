@@ -15,6 +15,8 @@ import {
 } from './ingestion.service';
 import { AppError } from '../../application/errors';
 import type { MasterMeService } from '../../application/services/masterme.service';
+import { ExtractionReductionError } from '../llm/gemini.gateway';
+import { ExtractedKnowledgeSchema } from '../../schemas/llm.schema';
 
 describe('classifyProcessingFailure', () => {
   test('does not retry extraction blocked by credits before the provider', () => {
@@ -149,12 +151,55 @@ test('worker persists and logs only controlled failure codes, never provider con
   const log = spyOn(console, 'error').mockImplementation(() => undefined);
   try {
     expect(await new ProcessingWorker(pool, study, ingestion).processOnce()).toBe(true);
-    expect(stored).toEqual([[job.id, 'EXTRACTION_FAILED', true, 30]]);
+    expect(stored).toEqual([[job.id, 'EXTRACTION_FAILED', true, 30, null]]);
     const output = log.mock.calls.flat().join(' ');
     expect(output).toContain('EXTRACTION_FAILED');
     expect(output).not.toContain(secret);
     expect(output).not.toContain(job.id);
     expect(output).not.toContain(job.material_id);
+  } finally {
+    log.mockRestore();
+  }
+});
+
+test('worker saves failed reduction responses in the job without logging their content', async () => {
+  const job = {
+    id: '22222222-2222-4222-8222-222222222222',
+    material_id: '33333333-3333-4333-8333-333333333333',
+    owner_id: '11111111-1111-4111-8111-111111111111',
+  };
+  const invalid = ExtractedKnowledgeSchema.safeParse({ fragments: [], relations: [] });
+  if (invalid.success) throw new Error('Expected an empty fragment list to fail validation.');
+  const responses = [{ batchIndex: 0, chapterIndex: null, validParagraphIds: ['P0001'], response: { fragments: [], relations: [] } }];
+  const counts = { batches: 1, fragmentsReturned: 0, validParagraphIds: 0, afterDedup: 0, afterNameFilters: 0, withSource: 0, selected: 0 };
+  const failure = new ExtractionReductionError(invalid.error, responses, counts);
+  let stored: unknown[] | undefined;
+  const client = {
+    query: async (sql: string) => ({ rows: sql.startsWith('SELECT j.id') ? [job] : [] }),
+    release: () => undefined,
+  };
+  const pool = {
+    connect: async () => client,
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.includes('failure_responses=$5::jsonb')) {
+        stored = values;
+        return { rows: [{ status: 'FAILED' }] };
+      }
+      if (sql.startsWith('SELECT 1 FROM processing_jobs')) return { rows: [{ exists: true }] };
+      return { rows: [] };
+    },
+  } as unknown as Pool;
+  const study = { extractConcepts: async () => { throw failure; } } as unknown as MasterMeService;
+  const ingestion = { event: async () => undefined, repairPdfIndex: async () => undefined } as unknown as IngestionService;
+  const log = spyOn(console, 'error').mockImplementation(() => undefined);
+  try {
+    expect(await new ProcessingWorker(pool, study, ingestion).processOnce()).toBe(true);
+    expect(stored?.[4]).toBe(JSON.stringify(responses));
+    const output = log.mock.calls.flat().join(' ');
+    expect(output).toContain('fragments:too_small');
+    expect(output).toContain('"fragmentsReturned":0');
+    expect(output).not.toContain('P0001');
+    expect(output).not.toContain(job.id);
   } finally {
     log.mockRestore();
   }

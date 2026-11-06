@@ -1,9 +1,20 @@
 import { GeminiStructuredClient } from './gemini-structured.client';
 import type { Concept } from '../../application/domain/concept';
 import type { MasterMeQuestion } from '../../application/domain/assessment';
-import type { Evaluation, IsomorphicProblem, EdgeCaseChallenge } from '../../application/domain/assessment';
-import type { PracticeProjectContent, PrioritizedConcept } from '../../application/domain/practice-project';
-import type { MaterialOutlineUnit, StudyMaterial, SupportedLocale } from '../../application/domain/material';
+import type {
+  Evaluation,
+  IsomorphicProblem,
+  EdgeCaseChallenge,
+} from '../../application/domain/assessment';
+import type {
+  PracticeProjectContent,
+  PrioritizedConcept,
+} from '../../application/domain/practice-project';
+import type {
+  MaterialOutlineUnit,
+  StudyMaterial,
+  SupportedLocale,
+} from '../../application/domain/material';
 import {
   EvaluationSchema,
   GeminiEvaluationResponseSchema,
@@ -17,31 +28,62 @@ import {
   type QuestionBundle,
   type ExtractedKnowledge,
   type LocalizedKnowledgeResponse,
+  type SinglePassKnowledgeResponse,
 } from '../../schemas/llm.schema';
-import type { ExtractionProgress, MasterMeLlmGateway } from '../../application/ports/llm.gateway';
+import type {
+  ExtractionProgress,
+  MasterMeLlmGateway,
+} from '../../application/ports/llm.gateway';
 import { focusExcerptOnChapter } from '../../application/prompts/assessment-question';
 import { derivePrintedChapterUnits } from '../parsers/editorial-structure';
-import { MAX_BOOK_CONCEPTS_PER_CHAPTER, MIN_RELIABLE_BOOK_OUTLINE_UNITS } from '../../application/study-limits';
+import {
+  MAX_BOOK_CONCEPTS_PER_CHAPTER,
+  MIN_RELIABLE_BOOK_OUTLINE_UNITS,
+} from '../../application/study-limits';
 import type { ActivityAssessmentGateway } from '../../application/ports/activity-assessment.gateway';
 
 const asJson = (value: unknown): string => JSON.stringify(value);
 const EXTRACTION_CHUNK_SIZE = 12_000;
 const MAX_EVIDENCE_SPAN_CHARS = 1_600;
 const MAX_EXTRACTION_PROMPT_CHARS = 100_000;
-const lowLevelCatalogName = /(?:\bparticipant\b|\bcollaboration\b|^(?:client|subject|invoker|receiver|originator|caretaker|contents|element|handler|subsystem|real\s*subject|concrete\w*|\w+exp))$/i;
-const canonicalTopicName = (value: string): string => value
-  .replace(/^(?:chapter|cap[ií]tulo)\s+\d+[.:\s-]*/i, '')
-  .replace(/([a-z])([A-Z])/g, '$1 $2')
-  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-  .toLocaleLowerCase().replace(/\b(pattern|padrao)\b/g, '')
-  .replace(/[^a-z0-9]+/g, ' ').trim();
-const selectCentralCandidates = <T extends { name: string }>(candidates: T[], limit: number, chapterTitle?: string): T[] => {
+const lowLevelCatalogName =
+  /(?:\bparticipant\b|\bcollaboration\b|^(?:client|subject|invoker|receiver|originator|caretaker|contents|element|handler|subsystem|real\s*subject|concrete\w*|\w+exp))$/i;
+const canonicalTopicName = (value: string): string =>
+  value
+    .replace(/^(?:chapter|cap[ií]tulo)\s+\d+[.:\s-]*/i, '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase()
+    .replace(/\b(pattern|padrao)\b/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+const selectCentralCandidates = <T extends { name: string }>(
+  candidates: T[],
+  limit: number,
+  chapterTitle?: string,
+): T[] => {
   if (candidates.length <= limit) return candidates;
   const theme = chapterTitle ? canonicalTopicName(chapterTitle) : '';
-  const lead = theme ? candidates.find((candidate) => canonicalTopicName(candidate.name) === theme) : undefined;
-  if (!lead) return Array.from({ length: limit }, (_, index) => candidates[Math.floor(index * candidates.length / limit)]!);
+  const lead = theme
+    ? candidates.find(
+        (candidate) => canonicalTopicName(candidate.name) === theme,
+      )
+    : undefined;
+  if (!lead)
+    return Array.from(
+      { length: limit },
+      (_, index) =>
+        candidates[Math.floor((index * candidates.length) / limit)]!,
+    );
   const others = candidates.filter((candidate) => candidate !== lead);
-  return [lead, ...Array.from({ length: limit - 1 }, (_, index) => others[Math.floor(index * others.length / (limit - 1))]!)];
+  return [
+    lead,
+    ...Array.from(
+      { length: limit - 1 },
+      (_, index) => others[Math.floor((index * others.length) / (limit - 1))]!,
+    ),
+  ];
 };
 const localeName = (locale: SupportedLocale): string =>
   locale === 'pt-BR' ? 'português do Brasil' : 'English (United States)';
@@ -64,7 +106,14 @@ export const indexMaterialParagraphs = (
           const sentence = text.lastIndexOf('. ', end - 1);
           const line = text.lastIndexOf('\n', end - 1);
           const space = text.lastIndexOf(' ', end - 1);
-          end = sentence >= minimum ? sentence + 2 : line >= minimum ? line + 1 : space >= minimum ? space + 1 : end;
+          end =
+            sentence >= minimum
+              ? sentence + 2
+              : line >= minimum
+                ? line + 1
+                : space >= minimum
+                  ? space + 1
+                  : end;
         }
         paragraphs.push({
           id: `P${String(paragraphs.length + 1).padStart(4, '0')}`,
@@ -78,9 +127,21 @@ export const indexMaterialParagraphs = (
   // PDF text often uses one newline per printed line. A chapter heading must
   // still start a new evidence span even when the previous page has no blank line.
   const separators = [
-    ...Array.from(content.matchAll(/\n\s*\n+|(?=^#{1,6}\s+\S)|(?=^(?:chapter|cap[ií]tulo)\s+\d{1,3}(?:[.:]|\s)\s*\S)|(?<=[.!?]\s)(?=(?:chapter|cap[ií]tulo)\s+\d{1,3}(?:[.:]|\s)\s*\S)/gim), (match) => ({ index: match.index, length: match[0].length })),
-    ...editorialBoundaries.filter((offset) => Number.isInteger(offset) && offset > 0 && offset < content.length).map((index) => ({ index, length: 0 })),
-  ].sort((left, right) => left.index - right.index || right.length - left.length);
+    ...Array.from(
+      content.matchAll(
+        /\n\s*\n+|(?=^#{1,6}\s+\S)|(?=^(?:chapter|cap[ií]tulo)\s+\d{1,3}(?:[.:]|\s)\s*\S)|(?<=[.!?]\s)(?=(?:chapter|cap[ií]tulo)\s+\d{1,3}(?:[.:]|\s)\s*\S)/gim,
+      ),
+      (match) => ({ index: match.index, length: match[0].length }),
+    ),
+    ...editorialBoundaries
+      .filter(
+        (offset) =>
+          Number.isInteger(offset) && offset > 0 && offset < content.length,
+      )
+      .map((index) => ({ index, length: 0 })),
+  ].sort(
+    (left, right) => left.index - right.index || right.length - left.length,
+  );
   for (const separator of separators) {
     if (separator.index < start) continue;
     add(separator.index);
@@ -112,39 +173,150 @@ export const batchIndexedParagraphs = <T extends { id: string; text: string }>(
 };
 
 type IndexedParagraph = ReturnType<typeof indexMaterialParagraphs>[number];
-type PlannedBatch = { paragraphs: IndexedParagraph[]; conceptLimit: number; editorialGuide: string; chapterIndex: number | null };
+export type CapturedExtractionResponse = {
+  batchIndex: number;
+  chapterIndex: number | null;
+  validParagraphIds: string[];
+  rawResponseText?: string;
+  response: SinglePassKnowledgeResponse;
+};
+export type ExtractionReductionCounts = {
+  batches: number;
+  fragmentsReturned: number;
+  validParagraphIds: number;
+  afterDedup: number;
+  afterNameFilters: number;
+  withSource: number;
+  selected: number;
+};
 
-export function planExtractionBatches(material: StudyMaterial, paragraphs: IndexedParagraph[], outline: MaterialOutlineUnit[] = [], maxConcepts = 12): { book: boolean; batches: PlannedBatch[]; chapterLimits: Map<number, number>; chapterTitles: Map<number, string> } {
-  const saved = outline.filter((unit) => unit.title?.trim() && unit.provenance !== 'UNSTRUCTURED');
-  const printed = material.sourceType === 'PDF' || material.materialKind === 'BOOK' ? derivePrintedChapterUnits(material.content) : [];
-  const flatOutline = saved.length >= 2 && new Set(saved.map((unit) => unit.level)).size === 1;
-  const reliable = (flatOutline && saved.length < MIN_RELIABLE_BOOK_OUTLINE_UNITS && printed.length >= 2 ? printed : saved.length >= 2 ? saved : printed.length >= 2 ? printed : saved).sort((a, b) => a.startOffset - b.startOffset);
-  const numbered = reliable.filter((unit) => /^(?:chapter|cap[ií]tulo)\s+\d+/i.test(unit.title!));
-  const chapterLevel = [...new Set(reliable.map((unit) => unit.level))].sort((a, b) => a - b)
-    .find((level) => reliable.filter((unit) => unit.level === level).length >= 2) ?? Infinity;
-  const chapters = numbered.length >= 2 ? numbered : reliable.filter((unit) => unit.level === chapterLevel);
-  const book = chapters.length >= 2 && (material.materialKind === 'BOOK' || (
-    material.materialKind === undefined &&
-    (material.sourceType === 'PDF' || material.sourceType === 'MARKDOWN' && material.content.length > 20_000)
-  ));
+export class ExtractionReductionError extends Error {
+  public constructor(
+    cause: Error,
+    public readonly responses: CapturedExtractionResponse[],
+    public readonly counts: ExtractionReductionCounts,
+  ) {
+    super('The extracted knowledge failed final validation.', { cause });
+    this.name = 'ExtractionReductionError';
+  }
+}
+
+type PlannedBatch = {
+  paragraphs: IndexedParagraph[];
+  conceptLimit: number;
+  editorialGuide: string;
+  chapterIndex: number | null;
+};
+
+export function planExtractionBatches(
+  material: StudyMaterial,
+  paragraphs: IndexedParagraph[],
+  outline: MaterialOutlineUnit[] = [],
+  maxConcepts = 12,
+): {
+  book: boolean;
+  batches: PlannedBatch[];
+  chapterLimits: Map<number, number>;
+  chapterTitles: Map<number, string>;
+} {
+  const saved = outline.filter(
+    (unit) => unit.title?.trim() && unit.provenance !== 'UNSTRUCTURED',
+  );
+  const printed =
+    material.sourceType === 'PDF' || material.materialKind === 'BOOK'
+      ? derivePrintedChapterUnits(material.content)
+      : [];
+  const flatOutline =
+    saved.length >= 2 && new Set(saved.map((unit) => unit.level)).size === 1;
+  const reliable = (
+    flatOutline &&
+    saved.length < MIN_RELIABLE_BOOK_OUTLINE_UNITS &&
+    printed.length >= 2
+      ? printed
+      : saved.length >= 2
+        ? saved
+        : printed.length >= 2
+          ? printed
+          : saved
+  ).sort((a, b) => a.startOffset - b.startOffset);
+  const numbered = reliable.filter((unit) =>
+    /^(?:chapter|cap[ií]tulo)\s+\d+/i.test(unit.title!),
+  );
+  const chapterLevel =
+    [...new Set(reliable.map((unit) => unit.level))]
+      .sort((a, b) => a - b)
+      .find(
+        (level) => reliable.filter((unit) => unit.level === level).length >= 2,
+      ) ?? Infinity;
+  const chapters =
+    numbered.length >= 2
+      ? numbered
+      : reliable.filter((unit) => unit.level === chapterLevel);
+  const book =
+    chapters.length >= 2 &&
+    (material.materialKind === 'BOOK' ||
+      (material.materialKind === undefined &&
+        (material.sourceType === 'PDF' ||
+          (material.sourceType === 'MARKDOWN' &&
+            material.content.length > 20_000))));
   if (!book) {
     const batches = batchIndexedParagraphs(paragraphs);
-    return { book: false, chapterLimits: new Map(), chapterTitles: new Map(), batches: batches.map((batch) => ({ paragraphs: batch, conceptLimit: batches.length === 1 ? maxConcepts : Math.max(1, Math.ceil(maxConcepts / batches.length)), editorialGuide: '', chapterIndex: null })) };
+    return {
+      book: false,
+      chapterLimits: new Map(),
+      chapterTitles: new Map(),
+      batches: batches.map((batch) => ({
+        paragraphs: batch,
+        conceptLimit:
+          batches.length === 1
+            ? maxConcepts
+            : Math.max(1, Math.ceil(maxConcepts / batches.length)),
+        editorialGuide: '',
+        chapterIndex: null,
+      })),
+    };
   }
   const batches: PlannedBatch[] = [];
   const chapterLimits = new Map<number, number>();
   const chapterTitles = new Map<number, string>();
   for (const [chapterIndex, chapter] of chapters.entries()) {
-    const end = chapters[chapterIndex + 1]?.startOffset ?? material.content.length;
-    const chapterParagraphs = paragraphs.filter((paragraph) => paragraph.offset >= chapter.startOffset && paragraph.offset < end);
+    const end =
+      chapters[chapterIndex + 1]?.startOffset ?? material.content.length;
+    const chapterParagraphs = paragraphs.filter(
+      (paragraph) =>
+        paragraph.offset >= chapter.startOffset && paragraph.offset < end,
+    );
     if (!chapterParagraphs.length) continue;
-    const sections = reliable.filter((unit) => unit.startOffset > chapter.startOffset && unit.startOffset < end);
-    const guide = [chapter.title!, ...sections.map((unit) => unit.title!)].slice(0, 40).join('\n');
+    const sections = reliable.filter(
+      (unit) =>
+        unit.startOffset > chapter.startOffset && unit.startOffset < end,
+    );
+    const guide = [chapter.title!, ...sections.map((unit) => unit.title!)]
+      .slice(0, 40)
+      .join('\n');
     const chunked = batchIndexedParagraphs(chapterParagraphs);
-    const chapterLimit = Math.min(maxConcepts, MAX_BOOK_CONCEPTS_PER_CHAPTER, Math.max(1, Math.ceil(chapterParagraphs.reduce((sum, paragraph) => sum + paragraph.text.length, 0) / 6_000)));
+    const chapterLimit = Math.min(
+      maxConcepts,
+      MAX_BOOK_CONCEPTS_PER_CHAPTER,
+      Math.max(
+        1,
+        Math.ceil(
+          chapterParagraphs.reduce(
+            (sum, paragraph) => sum + paragraph.text.length,
+            0,
+          ) / 6_000,
+        ),
+      ),
+    );
     chapterLimits.set(chapterIndex, chapterLimit);
     chapterTitles.set(chapterIndex, chapter.title!);
-    for (const batch of chunked) batches.push({ paragraphs: batch, conceptLimit: Math.max(1, Math.ceil(chapterLimit / chunked.length)), editorialGuide: guide, chapterIndex });
+    for (const batch of chunked)
+      batches.push({
+        paragraphs: batch,
+        conceptLimit: Math.max(1, Math.ceil(chapterLimit / chunked.length)),
+        editorialGuide: guide,
+        chapterIndex,
+      });
   }
   return { book: true, batches, chapterLimits, chapterTitles };
 }
@@ -175,11 +347,12 @@ export const splitMaterialForExtraction = (
   return chunks;
 };
 
-const sourceWords = (value: string): string[] => value
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .toLocaleLowerCase()
-  .match(/[a-z0-9]+/g) ?? [];
+const sourceWords = (value: string): string[] =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase()
+    .match(/[a-z0-9]+/g) ?? [];
 
 const termStem = (word: string): string => {
   if (word.endsWith('ing') && word.length > 6) return word.slice(0, -3);
@@ -189,10 +362,16 @@ const termStem = (word: string): string => {
   return word;
 };
 
-export const relationNamesInExcerpt = (fromName: string, toName: string, excerpt: string): boolean => {
+export const relationNamesInExcerpt = (
+  fromName: string,
+  toName: string,
+  excerpt: string,
+): boolean => {
   const source = new Set(sourceWords(excerpt).map(termStem));
   const namePresent = (name: string) => {
-    const term = sourceWords(name).filter((word) => word.length >= 4).at(-1);
+    const term = sourceWords(name)
+      .filter((word) => word.length >= 4)
+      .at(-1);
     return Boolean(term && source.has(termStem(term)));
   };
   return namePresent(fromName) && namePresent(toName);
@@ -201,9 +380,18 @@ export const relationNamesInExcerpt = (fromName: string, toName: string, excerpt
 export class GeminiMasterMeGateway
   implements MasterMeLlmGateway, ActivityAssessmentGateway
 {
-  public async generateQuestionBundle(concept: Concept, variant = 0, requestedLocale?: SupportedLocale): Promise<QuestionBundle> {
-    const excerpt = focusExcerptOnChapter(concept.sourceExcerpt, concept.name).text;
-    const locale = requestedLocale ?? (concept.generatedLocale === 'en-US' ? 'en-US' : 'pt-BR');
+  public async generateQuestionBundle(
+    concept: Concept,
+    variant = 0,
+    requestedLocale?: SupportedLocale,
+  ): Promise<QuestionBundle> {
+    const excerpt = focusExcerptOnChapter(
+      concept.sourceExcerpt,
+      concept.name,
+    ).text;
+    const locale =
+      requestedLocale ??
+      (concept.generatedLocale === 'en-US' ? 'en-US' : 'pt-BR');
     const prompt = [
       `Create six distinct source-grounded study questions in ${localeName(locale)} for the same concept.`,
       'The question text must test the learner, not teach the answer. Do not copy or paraphrase the DESCRIPTION or PREMISES into a question. Do not state the mechanism, steps, conditions, or conclusion that the learner should supply. Put those details only in targetPremise, expectedReasoningSteps, requiredIdeas, and commonMisconceptions.',
@@ -220,11 +408,11 @@ export class GeminiMasterMeGateway
       `PREMISES: ${asJson(concept.fundamentalPremises)}`,
       `SOURCE: ${excerpt}`,
     ].join('\n');
-    return this.client.generateStructured(
-      QuestionBundleSchema,
-      prompt,
-      { operation: 'QUESTION_SET_GENERATION', maxOutputTokens: 2500, maxModelAttempts: 1 },
-    );
+    return this.client.generateStructured(QuestionBundleSchema, prompt, {
+      operation: 'QUESTION_SET_GENERATION',
+      maxOutputTokens: 2500,
+      maxModelAttempts: 1,
+    });
   }
   public constructor(
     private readonly client: GeminiStructuredClient,
@@ -235,31 +423,61 @@ export class GeminiMasterMeGateway
     material: StudyMaterial,
     onProgress?: (progress: ExtractionProgress) => Promise<void>,
     outline: MaterialOutlineUnit[] = [],
-    options: { maxConcepts?: number; isBookChapter?: boolean; chapterTitle?: string } = {},
+    options: {
+      maxConcepts?: number;
+      isBookChapter?: boolean;
+      chapterTitle?: string;
+    } = {},
   ): Promise<ExtractedKnowledge> {
-    const paragraphs = indexMaterialParagraphs(material.content, MAX_EVIDENCE_SPAN_CHARS, outline.map((unit) => unit.startOffset));
+    const paragraphs = indexMaterialParagraphs(
+      material.content,
+      MAX_EVIDENCE_SPAN_CHARS,
+      outline.map((unit) => unit.startOffset),
+    );
     const conceptLimit = options.maxConcepts ?? this.maxConcepts;
-    const plan = planExtractionBatches(material, paragraphs, outline, conceptLimit);
+    const plan = planExtractionBatches(
+      material,
+      paragraphs,
+      outline,
+      conceptLimit,
+    );
     const batches = plan.batches;
     await onProgress?.({
       stage: 'PREPARING',
       totalChunks: batches.length,
       completedChunks: 0,
     });
-    const responses: Array<{ response: Awaited<ReturnType<GeminiMasterMeGateway['extractMaterial']>>; ids: Set<string>; chapterIndex: number | null }> = [];
+    const responses: Array<{
+      response: Awaited<ReturnType<GeminiMasterMeGateway['extractMaterial']>>;
+      ids: Set<string>;
+      chapterIndex: number | null;
+      rawResponseText?: string;
+    }> = [];
     for (const [index, batch] of batches.entries()) {
       await onProgress?.({
         stage: 'EXTRACTING',
         totalChunks: batches.length,
         completedChunks: index,
       });
-      responses.push({ response: await this.extractMaterial(
+      let rawResponseText: string | undefined;
+      const response = await this.extractMaterial(
         batch.paragraphs,
         material.locale,
         batch.conceptLimit,
         options.isBookChapter || plan.book || batches.length > 1,
-        options.chapterTitle ? [options.chapterTitle, batch.editorialGuide].filter(Boolean).join('\n') : batch.editorialGuide,
-      ), ids: new Set(batch.paragraphs.map((paragraph) => paragraph.id)), chapterIndex: batch.chapterIndex });
+        options.chapterTitle
+          ? [options.chapterTitle, batch.editorialGuide]
+              .filter(Boolean)
+              .join('\n')
+          : batch.editorialGuide,
+        (text) => { rawResponseText = text; },
+      );
+      responses.push({
+        response,
+        ids: new Set(batch.paragraphs.map((paragraph) => paragraph.id)),
+        chapterIndex: batch.chapterIndex,
+        rawResponseText,
+      });
     }
     await onProgress?.({
       stage: 'REDUCING',
@@ -267,67 +485,108 @@ export class GeminiMasterMeGateway
       completedChunks: batches.length,
     });
 
-    const paragraphById = new Map(paragraphs.map((paragraph) => [paragraph.id, paragraph]));
-    const candidates = responses.flatMap(({ response, ids, chapterIndex }) => response.fragments.filter((fragment) => ids.has(fragment.sourceParagraphId.trim().toUpperCase())).map((fragment) => ({ ...fragment, chapterIndex })));
-    const validCandidates = this.uniqueFragments(candidates)
-      .filter((fragment) => !(plan.book || options.isBookChapter) || !lowLevelCatalogName.test(fragment.name.replace(/([a-z])([A-Z])/g, '$1 $2').trim()))
-      .flatMap((fragment) => {
-        const source = paragraphById.get(
-          fragment.sourceParagraphId.trim().toUpperCase(),
-        );
-        return source ? [{ ...fragment, sourceExcerpt: source.text, sourceOffset: source.offset }] : [];
-      })
+    const paragraphById = new Map(
+      paragraphs.map((paragraph) => [paragraph.id, paragraph]),
+    );
+    const candidates = responses.flatMap(({ response, ids, chapterIndex }) =>
+      response.fragments
+        .filter((fragment) =>
+          ids.has(fragment.sourceParagraphId.trim().toUpperCase()),
+        )
+        .map((fragment) => ({ ...fragment, chapterIndex })),
+    );
+    const uniqueCandidates = this.uniqueFragments(candidates);
+    const namedCandidates = uniqueCandidates.filter(
+      (fragment) =>
+        !(plan.book || options.isBookChapter) ||
+        !lowLevelCatalogName.test(
+          fragment.name.replace(/([a-z])([A-Z])/g, '$1 $2').trim(),
+        ),
+    );
+    const validCandidates = namedCandidates.flatMap((fragment) => {
+      const source = paragraphById.get(
+        fragment.sourceParagraphId.trim().toUpperCase(),
+      );
+      return source
+        ? [
+            {
+              ...fragment,
+              sourceExcerpt: source.text,
+              sourceOffset: source.offset,
+            },
+          ]
+        : [];
+    });
     const selected = plan.book
       ? [...plan.chapterLimits].flatMap(([chapterIndex, limit]) => {
-          const chapterCandidates = validCandidates.filter((fragment) => fragment.chapterIndex === chapterIndex);
-          return selectCentralCandidates(chapterCandidates, limit, plan.chapterTitles.get(chapterIndex));
+          const chapterCandidates = validCandidates.filter(
+            (fragment) => fragment.chapterIndex === chapterIndex,
+          );
+          return selectCentralCandidates(
+            chapterCandidates,
+            limit,
+            plan.chapterTitles.get(chapterIndex),
+          );
         })
-      : selectCentralCandidates(validCandidates, conceptLimit, options.chapterTitle);
-    const fragments = selected
-      .map(
-        ({
-          sourceParagraphId: _sourceParagraphId,
-          chapterIndex: _chapterIndex,
-          ...fragment
-        }) => ({
-          ...fragment,
-          prerequisiteNames: fragment.prerequisiteNames ?? [],
-        }),
-      );
+      : selectCentralCandidates(
+          validCandidates,
+          conceptLimit,
+          options.chapterTitle,
+        );
+    const fragments = selected.map(
+      ({
+        sourceParagraphId: _sourceParagraphId,
+        chapterIndex: _chapterIndex,
+        ...fragment
+      }) => ({
+        ...fragment,
+        prerequisiteNames: fragment.prerequisiteNames ?? [],
+      }),
+    );
     const availableNames = new Set(
       fragments.map((fragment) => fragment.name.trim().toLocaleLowerCase()),
     );
     const seenRelations = new Set<string>();
-    const relations = responses.flatMap(({ response, ids }) => response.relations.filter((relation) => ids.has(relation.sourceParagraphId.trim().toUpperCase()))).flatMap((relation) => {
-      const fromName = relation.fromName.trim().toLocaleLowerCase();
-      const toName = relation.toName.trim().toLocaleLowerCase();
-      const source = paragraphById.get(
-        relation.sourceParagraphId.trim().toUpperCase(),
-      );
-      const key = `${fromName}:${toName}:${relation.relationType}`;
-      if (
-        !availableNames.has(fromName) ||
-        !availableNames.has(toName) ||
-        fromName === toName ||
-        !source ||
-        !relationNamesInExcerpt(relation.fromName, relation.toName, source.text) ||
-        seenRelations.has(key)
+    const relations = responses
+      .flatMap(({ response, ids }) =>
+        response.relations.filter((relation) =>
+          ids.has(relation.sourceParagraphId.trim().toUpperCase()),
+        ),
       )
-        return [];
-      seenRelations.add(key);
-      return [
-        {
-          fromName: relation.fromName,
-          toName: relation.toName,
-          relationType: relation.relationType,
-          statement: relation.statement,
-          justification: relation.justification,
-          sourceExcerpt: source.text,
-          sourceOffset: source.offset,
-        },
-      ];
-    });
-    return ExtractedKnowledgeSchema.parse({
+      .flatMap((relation) => {
+        const fromName = relation.fromName.trim().toLocaleLowerCase();
+        const toName = relation.toName.trim().toLocaleLowerCase();
+        const source = paragraphById.get(
+          relation.sourceParagraphId.trim().toUpperCase(),
+        );
+        const key = `${fromName}:${toName}:${relation.relationType}`;
+        if (
+          !availableNames.has(fromName) ||
+          !availableNames.has(toName) ||
+          fromName === toName ||
+          !source ||
+          !relationNamesInExcerpt(
+            relation.fromName,
+            relation.toName,
+            source.text,
+          ) ||
+          seenRelations.has(key)
+        )
+          return [];
+        seenRelations.add(key);
+        return [
+          {
+            fromName: relation.fromName,
+            toName: relation.toName,
+            relationType: relation.relationType,
+            statement: relation.statement,
+            justification: relation.justification,
+            sourceExcerpt: source.text,
+            sourceOffset: source.offset,
+          },
+        ];
+      });
+    const result = ExtractedKnowledgeSchema.safeParse({
       fragments: fragments.map((fragment) => ({
         ...fragment,
         prerequisiteNames: fragment.prerequisiteNames.filter((name) => {
@@ -340,6 +599,28 @@ export class GeminiMasterMeGateway
       })),
       relations,
     });
+    if (!result.success) {
+      throw new ExtractionReductionError(
+        result.error,
+        responses.map(({ response, ids, chapterIndex, rawResponseText }, batchIndex) => ({
+          batchIndex,
+          chapterIndex,
+          validParagraphIds: [...ids],
+          ...(rawResponseText === undefined ? {} : { rawResponseText }),
+          response,
+        })),
+        {
+          batches: batches.length,
+          fragmentsReturned: responses.reduce((sum, item) => sum + item.response.fragments.length, 0),
+          validParagraphIds: candidates.length,
+          afterDedup: uniqueCandidates.length,
+          afterNameFilters: namedCandidates.length,
+          withSource: validCandidates.length,
+          selected: fragments.length,
+        },
+      );
+    }
+    return result.data;
   }
 
   private extractMaterial(
@@ -348,14 +629,15 @@ export class GeminiMasterMeGateway
     conceptLimit: number,
     isPartOfBook: boolean,
     editorialGuide = '',
+    onResponseText?: (text: string) => void,
   ) {
     const indexedMaterial = paragraphs
       .map(({ id, text }) => `[${id}]\n${text}`)
       .join('\n\n');
     return this.client.generateStructured(
       SinglePassKnowledgeResponseSchema,
-      `Você extrai um índice curto dos assuntos CENTRAIS de ${isPartOfBook ? 'um capítulo de livro' : 'um material técnico'} em ${localeName(locale)}. O sumário editorial orienta a escolha dos temas, mas a evidência deve vir do texto indexado. Retorne no máximo ${conceptLimit} conceitos; menos é melhor quando o capítulo é coeso. Em livros, dê prioridade ao tema do próprio capítulo (por exemplo, "Creational Patterns" ou "Structural Patterns") e a no máximo dois mecanismos realmente indispensáveis para compreendê-lo. Se um capítulo lista dezenas de padrões, participantes, classes ou exemplos, NÃO crie um conceito para cada item. Exclua títulos de seção genéricos, papéis como Client/Participant/Subject, nomes de classes e detalhes de implementação, salvo se forem o objetivo central do capítulo. Não repita nomes ou sinônimos entre conceitos. Para cada conceito, retorne nome legível, descrição de até 500 caracteres, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, premissas fundamentais, casos de borda e prerequisiteNames apenas entre os nomes retornados. Não produza perguntas nesta tarefa: elas são geradas separadamente quando o estudante abre o conceito. Escolha como sourceParagraphId o parágrafo que melhor explica o mecanismo, a condição ou a consequência central do conceito; prefácios, sumários, listas de nomes e exemplos incidentais não bastam. Cada premissa fundamental deve poder ser justificada pelo parágrafo escolhido. Se nenhum parágrafo sustentar o conceito, omita-o. Descrições e premissas devem ser sustentadas pelo trecho indicado, não pelo título isolado. Em relations, inclua apenas ligações com proposição e justificativa sustentadas por um único sourceParagraphId que mencione os dois conceitos. Se não houver evidência, retorne relations vazio. Não invente IDs, conteúdo ou relações.${editorialGuide ? `\n\nSUMÁRIO EDITORIAL (guia, não evidência):\n${editorialGuide}` : ''}\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
-      { operation: 'EXTRACTION', maxOutputTokens: 6000 },
+      `Você extrai um índice curto dos assuntos CENTRAIS de ${isPartOfBook ? 'um capítulo de livro' : 'um material técnico'} em ${localeName(locale)}. O sumário editorial orienta a escolha dos temas, mas a evidência deve vir do texto indexado. Retorne no máximo ${conceptLimit} conceitos; menos é melhor quando o capítulo é coeso. Em livros, dê prioridade ao tema do próprio capítulo (por exemplo, "Creational Patterns" ou "Structural Patterns") e a no máximo dois mecanismos realmente indispensáveis para compreendê-lo. Se um capítulo lista dezenas de padrões, participantes, classes ou exemplos, NÃO crie um conceito para cada item. Exclua títulos de seção genéricos, papéis como Client/Participant/Subject, nomes de classes e detalhes de implementação, salvo se forem o objetivo central do capítulo. Não repita nomes ou sinônimos entre conceitos. Para cada conceito, retorne nome legível, descrição de até 500 caracteres, kind AXIOM/NODE/EDGE, sourceParagraphId com exatamente um dos IDs fornecidos, premissas fundamentais, casos de borda e prerequisiteNames apenas entre os nomes retornados. Em edgeCases, inclua apenas casos de borda sustentados pelo parágrafo escolhido; se não houver nenhum, retorne []. Não produza perguntas nesta tarefa: elas são geradas separadamente quando o estudante abre o conceito. Escolha como sourceParagraphId o parágrafo que melhor explica o mecanismo, a condição ou a consequência central do conceito; prefácios, sumários, listas de nomes e exemplos incidentais não bastam. Cada premissa fundamental deve poder ser justificada pelo parágrafo escolhido. Se nenhum parágrafo sustentar o conceito, omita-o. Descrições e premissas devem ser sustentadas pelo trecho indicado, não pelo título isolado. Em relations, inclua apenas ligações com proposição e justificativa sustentadas por um único sourceParagraphId que mencione os dois conceitos. Se não houver evidência, retorne relations vazio. Não invente IDs, conteúdo ou relações.${editorialGuide ? `\n\nSUMÁRIO EDITORIAL (guia, não evidência):\n${editorialGuide}` : ''}\n\nMATERIAL INDEXADO:\n${indexedMaterial}`,
+      { operation: 'EXTRACTION', maxOutputTokens: 6000, onResponseText },
     );
   }
 
@@ -437,7 +719,12 @@ export class GeminiMasterMeGateway
     material: StudyMaterial,
     concepts: Concept[],
     priorities: PrioritizedConcept[],
-    preferences: { difficulty?: 'FOUNDATION' | 'INTERMEDIATE' | 'ADVANCED'; size?: 'SMALL' | 'MEDIUM'; observedGaps?: string[]; chapterTitles?: string[] } = {},
+    preferences: {
+      difficulty?: 'FOUNDATION' | 'INTERMEDIATE' | 'ADVANCED';
+      size?: 'SMALL' | 'MEDIUM';
+      observedGaps?: string[];
+      chapterTitles?: string[];
+    } = {},
   ): Promise<PracticeProjectContent> {
     const context = concepts.map((concept) => ({
       name: concept.name,

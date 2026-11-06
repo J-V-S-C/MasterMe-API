@@ -30,7 +30,7 @@ export const ExtractedFragmentSchema = z.object({
   sourceExcerpt: z.string().min(1),
   sourceOffset: z.number().int().nonnegative().optional(),
   fundamentalPremises: z.array(z.string().min(1)).min(1),
-  edgeCases: z.array(z.string().min(1)).min(1),
+  edgeCases: z.array(z.string().min(1)),
   edgeCaseQuestion: z.string().min(1).optional(),
   studyQuestion: QuestionSchema.optional(),
   prerequisiteNames: z.array(z.string().min(1)),
@@ -77,7 +77,7 @@ export const LocalizedKnowledgeResponseSchema = z.object({
     name: z.string().min(1).max(160),
     description: z.string().min(1).max(600),
     fundamentalPremises: z.array(z.string().min(1).max(500)).min(1).max(6),
-    edgeCases: z.array(z.string().min(1).max(500)).min(1).max(6),
+    edgeCases: z.array(z.string().min(1).max(500)).max(6),
   })).min(1).max(30),
 })
 export type LocalizedKnowledgeResponse = z.infer<typeof LocalizedKnowledgeResponseSchema>

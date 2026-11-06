@@ -13,6 +13,12 @@ export const startWorker = (environment: Environment): void => {
   const ingestion = makeIngestionService(pool, environment);
   const study = makeMasterMeService(pool, environment, metrics, billing);
   const worker = new ProcessingWorker(pool, study.service, ingestion);
+  const cleanupFailureResponses = () => {
+    void pool.query("UPDATE processing_jobs SET failure_responses=NULL WHERE failure_responses IS NOT NULL AND COALESCE(finished_at,updated_at) < now() - interval '30 days'")
+      .catch(() => console.error(JSON.stringify({ level: 'error', operation: 'extraction-failure-response-cleanup', code: 'CLEANUP_FAILED' })));
+  };
+  cleanupFailureResponses();
+  setInterval(cleanupFailureResponses, 24 * 60 * 60_000);
   setInterval(() => {
     void ingestion.cleanupDeletedFileOnce().catch(() => console.error(JSON.stringify({ level: 'error', operation: 'material-file-cleanup', code: 'FILE_CLEANUP_FAILED' })));
   }, 5_000);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { batchIndexedParagraphs, GeminiMasterMeGateway, indexMaterialParagraphs, planExtractionBatches, relationNamesInExcerpt, splitMaterialForExtraction } from './gemini.gateway'
+import { batchIndexedParagraphs, ExtractionReductionError, GeminiMasterMeGateway, indexMaterialParagraphs, planExtractionBatches, relationNamesInExcerpt, splitMaterialForExtraction } from './gemini.gateway'
 import type { GeminiStructuredClient } from './gemini-structured.client'
 import type { Concept } from '../../application/domain/concept'
 
@@ -78,6 +78,41 @@ test('checkpointed book chapters keep the same small concept budget', async () =
   expect(result.fragments.every((fragment) => fragment.studyQuestion === undefined && fragment.edgeCaseQuestion === undefined)).toBe(true);
   expect(prompts[0]).toContain('Chapter 3 Creational Patterns');
   expect(prompts[0]?.toLowerCase()).toContain('não produza perguntas');
+});
+
+test('keeps each parsed Gemini batch response when final reduction fails', async () => {
+  const response = { fragments: [{
+    name: 'Dependency inversion', description: 'A source-derived description', kind: 'NODE' as const,
+    sourceParagraphId: 'P9999', fundamentalPremises: ['A premise'], edgeCases: ['An edge case'], prerequisiteNames: [],
+  }], relations: [] };
+  const client = { generateStructured: async (_schema: unknown, _prompt: string, options: { onResponseText?: (text: string) => void }) => {
+    options.onResponseText?.(JSON.stringify(response));
+    return response;
+  } } as unknown as GeminiStructuredClient;
+  const material = { id: 'material', title: 'Reading', content: 'A dependency can be inverted by depending on abstractions.', locale: 'en-US' as const, createdAt: new Date().toISOString() };
+  try {
+    await new GeminiMasterMeGateway(client).extractKnowledge(material);
+    throw new Error('Expected final validation to fail.');
+  } catch (error) {
+    expect(error).toBeInstanceOf(ExtractionReductionError);
+    const failure = error as ExtractionReductionError;
+    expect(failure.responses).toEqual([{ batchIndex: 0, chapterIndex: null, validParagraphIds: ['P0001'], rawResponseText: JSON.stringify(response), response }]);
+    expect(failure.counts).toEqual({ batches: 1, fragmentsReturned: 1, validParagraphIds: 0, afterDedup: 0, afterNameFilters: 0, withSource: 0, selected: 0 });
+    expect(failure.cause).toMatchObject({ issues: [{ path: ['fragments'], code: 'too_small' }] });
+  }
+});
+
+test('keeps a sourced concept when no edge case is supported', async () => {
+  const response = { fragments: [{
+    name: 'Unix', description: 'A family of operating systems with a common API.', kind: 'NODE' as const,
+    sourceParagraphId: 'P0001', fundamentalPremises: ['Unix systems share an API.'], edgeCases: [], prerequisiteNames: [],
+  }], relations: [] };
+  const client = { generateStructured: async () => response } as unknown as GeminiStructuredClient;
+  const material = { id: 'material', title: 'Unix', content: 'Unix is a family of operating systems with shared design decisions and a common API.', locale: 'en-US' as const, createdAt: new Date().toISOString() };
+
+  const result = await new GeminiMasterMeGateway(client).extractKnowledge(material);
+  expect(result.fragments).toHaveLength(1);
+  expect(result.fragments[0]?.edgeCases).toEqual([]);
 });
 
 describe('splitMaterialForExtraction', () => {

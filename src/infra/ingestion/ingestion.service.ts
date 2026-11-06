@@ -4,12 +4,32 @@ import { basename, join } from 'node:path';
 import type { Pool, PoolClient } from 'pg';
 import { ZodError } from 'zod';
 import type { MasterMeService } from '../../application/services/masterme.service';
-import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MIB, MIN_READABLE_TEXT_LENGTH } from '../../application/material-limits';
-import { DENSE_BOOK_CONCEPTS_PER_TOPIC, DENSE_BOOK_TOPIC_THRESHOLD, EXTRACTION_PREVIEW_CHUNK_CHARS, MIN_RELIABLE_BOOK_OUTLINE_UNITS } from '../../application/study-limits';
-import { selectBookOutlineTopics, selectExtractableChapters, type ExtractableChapter } from './chapter-selection';
-import { AppError, ConflictError, NotFoundError } from '../../application/errors';
+import {
+  MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_MIB,
+  MIN_READABLE_TEXT_LENGTH,
+} from '../../application/material-limits';
+import {
+  DENSE_BOOK_CONCEPTS_PER_TOPIC,
+  DENSE_BOOK_TOPIC_THRESHOLD,
+  EXTRACTION_PREVIEW_CHUNK_CHARS,
+  MIN_RELIABLE_BOOK_OUTLINE_UNITS,
+} from '../../application/study-limits';
+import {
+  selectBookOutlineTopics,
+  selectExtractableChapters,
+  type ExtractableChapter,
+} from './chapter-selection';
+import {
+  AppError,
+  ConflictError,
+  NotFoundError,
+} from '../../application/errors';
 import { withAiUsageOwner } from '../context/ai-usage-context';
-import type { MaterialKind, SupportedLocale } from '../../application/domain/material';
+import type {
+  MaterialKind,
+  SupportedLocale,
+} from '../../application/domain/material';
 import { ActivityEventHub } from '../events/activity-event-hub';
 import {
   deriveEditorialUnits,
@@ -18,6 +38,7 @@ import {
 } from '../parsers/editorial-structure';
 import { extractPdfDocument, MAX_PDF_PAGES } from '../parsers/poppler-pdf';
 import { classifyProviderError } from '../llm/gemini-structured.client';
+import { ExtractionReductionError } from '../llm/gemini.gateway';
 export { extractPdfDocument, MAX_PDF_PAGES };
 
 const allowed = new Map([
@@ -63,7 +84,8 @@ export const classifyProcessingFailure = (
   if (providerFailure.kind === 'minute')
     return {
       retryable: true,
-      message: 'O limite por minuto do provedor de IA foi atingido. A extração será retomada após uma pausa.',
+      message:
+        'O limite por minuto do provedor de IA foi atingido. A extração será retomada após uma pausa.',
       code: 'EXTRACTION_FAILED',
       retryAfterMs: providerFailure.retryAfterMs,
     };
@@ -97,34 +119,83 @@ export const classifyProcessingFailure = (
   };
 };
 
-const processingFailureDiagnostic = (error: unknown): Record<string, string | number> => {
+const processingFailureDiagnostic = (
+  error: unknown,
+): Record<string, string | number> => {
   const details = String(error).toLowerCase();
   const providerFailure = classifyProviderError(error);
-  const reason = error instanceof AppError && [
-    'AI_DISABLED', 'AI_GLOBAL_LIMIT_REACHED', 'AI_DAILY_CREDIT_LIMIT_REACHED',
-    'AI_PERIOD_CREDIT_LIMIT_REACHED',
-  ].includes(error.code) ? 'credit_limit'
-    : providerFailure.kind === 'day' ? 'provider_daily_quota'
-    : providerFailure.kind === 'minute' ? 'provider_rate_limit'
-    : providerFailure.kind === 'unavailable' || providerFailure.kind === 'invalid_output' ? 'provider_unavailable_or_invalid_response'
-    : details.includes('unable to connect') || details.includes('fetch failed') || details.includes('network') ? 'network'
-    : error instanceof AppError ? 'application_error' : 'unexpected_error';
+  const reason =
+    error instanceof AppError &&
+    [
+      'AI_DISABLED',
+      'AI_GLOBAL_LIMIT_REACHED',
+      'AI_DAILY_CREDIT_LIMIT_REACHED',
+      'AI_PERIOD_CREDIT_LIMIT_REACHED',
+    ].includes(error.code)
+      ? 'credit_limit'
+      : error instanceof ExtractionReductionError
+        ? 'extraction_reduction_invalid_output'
+      : providerFailure.kind === 'day'
+        ? 'provider_daily_quota'
+        : providerFailure.kind === 'minute'
+          ? 'provider_rate_limit'
+          : providerFailure.kind === 'unavailable' ||
+              providerFailure.kind === 'invalid_output'
+            ? 'provider_unavailable_or_invalid_response'
+            : details.includes('unable to connect') ||
+                details.includes('fetch failed') ||
+                details.includes('network')
+              ? 'network'
+              : error instanceof AppError
+                ? 'application_error'
+                : 'unexpected_error';
   const diagnostic: Record<string, string | number> = { reason };
-  if (providerFailure.retryAfterMs !== undefined) diagnostic.retryAfterMs = providerFailure.retryAfterMs;
-  if (error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)) diagnostic.errorType = error.name;
-  if (error instanceof AppError && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)) diagnostic.appCode = error.code;
-  if (error instanceof ZodError) {
-    diagnostic.schemaIssues = error.issues.slice(0, 3)
+  if (error instanceof ExtractionReductionError && error.counts.selected === 0)
+    Object.assign(diagnostic, error.counts);
+  if (providerFailure.retryAfterMs !== undefined)
+    diagnostic.retryAfterMs = providerFailure.retryAfterMs;
+  if (error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name))
+    diagnostic.errorType = error.name;
+  if (error instanceof AppError && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code))
+    diagnostic.appCode = error.code;
+  const schemaError = error instanceof ZodError
+    ? error
+    : error instanceof ExtractionReductionError && error.cause instanceof ZodError
+      ? error.cause
+      : undefined;
+  if (schemaError) {
+    diagnostic.schemaIssues = schemaError.issues
+      .slice(0, 3)
       .map((issue) => `${issue.path.join('.')}:${issue.code}`)
       .join(',');
   }
   if (error && typeof error === 'object') {
-    const candidate = error as { status?: unknown; statusCode?: unknown; code?: unknown };
+    const candidate = error as {
+      status?: unknown;
+      statusCode?: unknown;
+      code?: unknown;
+    };
     const status = candidate.status ?? candidate.statusCode;
-    if (typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599) diagnostic.httpStatus = status;
-    if (!(error instanceof AppError) && typeof candidate.code === 'string' && /^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE)$/.test(candidate.code)) diagnostic.systemCode = candidate.code;
+    if (
+      typeof status === 'number' &&
+      Number.isInteger(status) &&
+      status >= 100 &&
+      status <= 599
+    )
+      diagnostic.httpStatus = status;
+    if (
+      !(error instanceof AppError) &&
+      typeof candidate.code === 'string' &&
+      /^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE)$/.test(
+        candidate.code,
+      )
+    )
+      diagnostic.systemCode = candidate.code;
   }
-  const source = error instanceof Error ? error.stack?.match(/\/app\/src\/[a-zA-Z0-9_./-]+\.ts:\d+:\d+/)?.[0] : undefined;
+  const source =
+    error instanceof Error
+      ? error.stack?.match(/\/app\/src\/[a-zA-Z0-9_./-]+\.ts:\d+:\d+/)?.[0]
+      : undefined;
   if (source) diagnostic.source = source;
   return diagnostic;
 };
@@ -196,32 +267,50 @@ export class IngestionService {
     private readonly storage: LocalMaterialStorage,
     private readonly eventHub = new ActivityEventHub(pool),
   ) {}
-  public async originalPdf(materialId: string, ownerId: string): Promise<Buffer> {
-    const result = await this.pool.query<{ storage_key: string | null; mime_type: string | null }>(
+  public async originalPdf(
+    materialId: string,
+    ownerId: string,
+  ): Promise<Buffer> {
+    const result = await this.pool.query<{
+      storage_key: string | null;
+      mime_type: string | null;
+    }>(
       'SELECT storage_key,mime_type FROM study_materials WHERE id=$1 AND owner_id=$2',
       [materialId, ownerId],
     );
     const file = result.rows[0];
-    if (!file || file.mime_type !== 'application/pdf' || !file.storage_key) throw new NotFoundError('PDF');
+    if (!file || file.mime_type !== 'application/pdf' || !file.storage_key)
+      throw new NotFoundError('PDF');
     try {
       return await this.storage.read(file.storage_key);
     } catch (error: unknown) {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') throw new NotFoundError('PDF');
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
+        throw new NotFoundError('PDF');
       throw error;
     }
   }
-  public async repairPdfIndex(materialId: string, ownerId: string): Promise<void> {
-    const current = await this.pool.query<{ content: string; source_type: string | null }>(
-      'SELECT content,source_type FROM study_materials WHERE id=$1 AND owner_id=$2', [materialId, ownerId],
+  public async repairPdfIndex(
+    materialId: string,
+    ownerId: string,
+  ): Promise<void> {
+    const current = await this.pool.query<{
+      content: string;
+      source_type: string | null;
+    }>(
+      'SELECT content,source_type FROM study_materials WHERE id=$1 AND owner_id=$2',
+      [materialId, ownerId],
     );
     if (current.rows[0]?.source_type !== 'PDF') return;
-    const parsed = await extractPdfDocument(await this.originalPdf(materialId, ownerId));
+    const parsed = await extractPdfDocument(
+      await this.originalPdf(materialId, ownerId),
+    );
     if (parsed.text === current.rows[0].content) return;
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       const locked = await client.query<{ content: string }>(
-        'SELECT content FROM study_materials WHERE id=$1 AND owner_id=$2 FOR UPDATE', [materialId, ownerId],
+        'SELECT content FROM study_materials WHERE id=$1 AND owner_id=$2 FOR UPDATE',
+        [materialId, ownerId],
       );
       if (!locked.rows[0]) throw new NotFoundError('Material');
       if (locked.rows[0].content !== parsed.text) {
@@ -236,42 +325,134 @@ export class IngestionService {
            ON CONFLICT (extraction_job_id) DO NOTHING`,
           [materialId, locked.rows[0].content, JSON.stringify(outline.rows)],
         );
-        await client.query('DELETE FROM material_units WHERE material_id=$1', [materialId]);
-        for (const unit of parsed.units) await client.query(
-          'INSERT INTO material_units(id,material_id,ordinal,title,level,start_offset,end_offset,provenance,page_number,original_title,original_ordinal) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
-          [randomUUID(), materialId, unit.order, unit.title, unit.level, unit.startOffset, unit.endOffset, unit.provenance, unit.pageNumber ?? null, unit.title, unit.order],
+        await client.query('DELETE FROM material_units WHERE material_id=$1', [
+          materialId,
+        ]);
+        for (const unit of parsed.units)
+          await client.query(
+            'INSERT INTO material_units(id,material_id,ordinal,title,level,start_offset,end_offset,provenance,page_number,original_title,original_ordinal) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+            [
+              randomUUID(),
+              materialId,
+              unit.order,
+              unit.title,
+              unit.level,
+              unit.startOffset,
+              unit.endOffset,
+              unit.provenance,
+              unit.pageNumber ?? null,
+              unit.title,
+              unit.order,
+            ],
+          );
+        await client.query(
+          'UPDATE study_materials SET content=$2 WHERE id=$1',
+          [materialId, parsed.text],
         );
-        await client.query('UPDATE study_materials SET content=$2 WHERE id=$1', [materialId, parsed.text]);
       }
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
-    } finally { client.release(); }
+    } finally {
+      client.release();
+    }
   }
-  public async extractionPreview(materialId: string, ownerId: string): Promise<{ plannedTopics: number; estimatedCredits: number; repairsTextIndex: boolean }> {
-    const result = await this.pool.query<{ content: string; source_type: string | null; material_kind: string | null }>(
-      'SELECT content,source_type,material_kind FROM study_materials WHERE id=$1 AND owner_id=$2', [materialId, ownerId],
+  public async extractionPreview(
+    materialId: string,
+    ownerId: string,
+  ): Promise<{
+    plannedTopics: number;
+    estimatedCredits: number;
+    repairsTextIndex: boolean;
+  }> {
+    const result = await this.pool.query<{
+      content: string;
+      source_type: string | null;
+      material_kind: string | null;
+    }>(
+      'SELECT content,source_type,material_kind FROM study_materials WHERE id=$1 AND owner_id=$2',
+      [materialId, ownerId],
     );
     const material = result.rows[0];
     if (!material) throw new NotFoundError('Material');
-    const parsed = material.source_type === 'PDF'
-      ? await extractPdfDocument(await this.originalPdf(materialId, ownerId))
-      : { text: material.content, units: (await this.pool.query<EditorialUnit & { ordinal: number; start_offset: number; end_offset: number }>(
-          'SELECT title,level,start_offset,end_offset,provenance,ordinal FROM material_units WHERE material_id=$1 ORDER BY ordinal', [materialId],
-        )).rows.map((unit) => ({ title: unit.title, level: unit.level, startOffset: unit.start_offset, endOffset: unit.end_offset, provenance: unit.provenance, order: unit.ordinal })) };
-    const topics = material.material_kind === 'BOOK'
-      ? selectBookOutlineTopics(parsed.units.filter((unit) => unit.title && unit.provenance !== 'UNSTRUCTURED').map((unit, index) => ({ id: String(index), title: unit.title!, level: unit.level, start_offset: unit.startOffset, end_offset: unit.endOffset })))
-      : [];
-    const printed = topics.length < MIN_RELIABLE_BOOK_OUTLINE_UNITS && new Set(topics.map((unit) => unit.level)).size === 1
-      ? derivePrintedChapterUnits(parsed.text).map((unit, index) => ({ id: `printed-${index}`, title: unit.title!, level: unit.level, start_offset: unit.startOffset, end_offset: unit.endOffset }))
-      : [];
-    const selection = selectExtractableChapters(parsed.text, printed.length >= 2 ? printed : topics);
-    const lengths = selection.units.map((unit) => (selection.sourceEnds.get(unit.id) ?? parsed.text.length) - unit.start_offset);
+    const parsed =
+      material.source_type === 'PDF'
+        ? await extractPdfDocument(await this.originalPdf(materialId, ownerId))
+        : {
+            text: material.content,
+            units: (
+              await this.pool.query<
+                EditorialUnit & {
+                  ordinal: number;
+                  start_offset: number;
+                  end_offset: number;
+                }
+              >(
+                'SELECT title,level,start_offset,end_offset,provenance,ordinal FROM material_units WHERE material_id=$1 ORDER BY ordinal',
+                [materialId],
+              )
+            ).rows.map((unit) => ({
+              title: unit.title,
+              level: unit.level,
+              startOffset: unit.start_offset,
+              endOffset: unit.end_offset,
+              provenance: unit.provenance,
+              order: unit.ordinal,
+            })),
+          };
+    const topics =
+      material.material_kind === 'BOOK'
+        ? selectBookOutlineTopics(
+            parsed.units
+              .filter(
+                (unit) => unit.title && unit.provenance !== 'UNSTRUCTURED',
+              )
+              .map((unit, index) => ({
+                id: String(index),
+                title: unit.title!,
+                level: unit.level,
+                start_offset: unit.startOffset,
+                end_offset: unit.endOffset,
+              })),
+          )
+        : [];
+    const printed =
+      topics.length < MIN_RELIABLE_BOOK_OUTLINE_UNITS &&
+      new Set(topics.map((unit) => unit.level)).size === 1
+        ? derivePrintedChapterUnits(parsed.text).map((unit, index) => ({
+            id: `printed-${index}`,
+            title: unit.title!,
+            level: unit.level,
+            start_offset: unit.startOffset,
+            end_offset: unit.endOffset,
+          }))
+        : [];
+    const selection = selectExtractableChapters(
+      parsed.text,
+      printed.length >= 2 ? printed : topics,
+    );
+    const lengths = selection.units.map(
+      (unit) =>
+        (selection.sourceEnds.get(unit.id) ?? parsed.text.length) -
+        unit.start_offset,
+    );
     const estimatedCredits = lengths.length
-      ? lengths.reduce((total, length) => total + Math.max(1, Math.ceil(length / EXTRACTION_PREVIEW_CHUNK_CHARS)), 0)
-      : Math.max(1, Math.ceil(parsed.text.length / EXTRACTION_PREVIEW_CHUNK_CHARS));
-    return { plannedTopics: selection.units.length, estimatedCredits, repairsTextIndex: parsed.text !== material.content };
+      ? lengths.reduce(
+          (total, length) =>
+            total +
+            Math.max(1, Math.ceil(length / EXTRACTION_PREVIEW_CHUNK_CHARS)),
+          0,
+        )
+      : Math.max(
+          1,
+          Math.ceil(parsed.text.length / EXTRACTION_PREVIEW_CHUNK_CHARS),
+        );
+    return {
+      plannedTopics: selection.units.length,
+      estimatedCredits,
+      repairsTextIndex: parsed.text !== material.content,
+    };
   }
   public async upload(
     file: Express.Multer.File,
@@ -282,11 +463,13 @@ export class IngestionService {
   ): Promise<{ id: string; title: string; status: string }> {
     const kind = allowed.get(file.mimetype);
     if (!kind)
-      throw new AppError('INVALID_FILE',
+      throw new AppError(
+        'INVALID_FILE',
         'Envie um PDF, Markdown ou TXT válido.',
       );
     if (file.size > MAX_UPLOAD_BYTES)
-      throw new AppError('UPLOAD_TOO_LARGE',
+      throw new AppError(
+        'UPLOAD_TOO_LARGE',
         `Envie um arquivo de até ${MAX_UPLOAD_MIB} MiB.`,
       );
     let parsed: { text: string; units: EditorialUnit[] };
@@ -294,20 +477,24 @@ export class IngestionService {
       parsed = await textFromFile(file.mimetype, file.buffer);
     } catch (error: unknown) {
       if (error instanceof AppError) throw error;
-      throw new AppError('INVALID_FILE',
+      throw new AppError(
+        'INVALID_FILE',
         'Não foi possível ler o arquivo. PDFs escaneados sem texto não são suportados.',
       );
     }
     const content = parsed.text;
     if (content.length < MIN_READABLE_TEXT_LENGTH)
-      throw new AppError('INVALID_FILE',
+      throw new AppError(
+        'INVALID_FILE',
         'O arquivo não possui texto legível suficiente. Envie um PDF com camada de texto.',
       );
-    const materialKind: MaterialKind = requestedKind ?? (
-      parsed.units.filter((unit) => unit.level === 1 && unit.title).length >= 2
+    const materialKind: MaterialKind =
+      requestedKind ??
+      (parsed.units.filter((unit) => unit.level === 1 && unit.title).length >= 2
         ? 'BOOK'
-        : kind === 'TXT' ? 'TEXT' : 'ARTICLE'
-    );
+        : kind === 'TXT'
+          ? 'TEXT'
+          : 'ARTICLE');
     const id = randomUUID();
     const storageKey = await this.storage.save(
       id,
@@ -390,7 +577,8 @@ export class IngestionService {
               code: 'COMMIT_STATUS_UNKNOWN',
             }),
           );
-          throw new AppError('UPLOAD_COMMIT_UNKNOWN',
+          throw new AppError(
+            'UPLOAD_COMMIT_UNKNOWN',
             'Não foi possível confirmar o upload. Tente consultar seus materiais antes de reenviar.',
           );
         }
@@ -416,7 +604,10 @@ export class IngestionService {
       client?.release();
     }
   }
-  public async deleteMaterial(materialId: string, ownerId: string): Promise<void> {
+  public async deleteMaterial(
+    materialId: string,
+    ownerId: string,
+  ): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -429,13 +620,20 @@ export class IngestionService {
         "SELECT 1 FROM processing_jobs WHERE material_id=$1 AND status IN ('PENDING','PROCESSING') LIMIT 1",
         [materialId],
       );
-      if (active.rows[0]) throw new ConflictError('Cancele a extração antes de apagar o material.');
+      if (active.rows[0])
+        throw new ConflictError(
+          'Cancele a extração antes de apagar o material.',
+        );
       const storageKey = owned.rows[0].storage_key;
-      if (storageKey) await client.query(
-        'INSERT INTO material_file_deletions (material_id,storage_key) VALUES ($1,$2)',
-        [materialId, storageKey],
+      if (storageKey)
+        await client.query(
+          'INSERT INTO material_file_deletions (material_id,storage_key) VALUES ($1,$2)',
+          [materialId, storageKey],
+        );
+      await client.query(
+        'DELETE FROM study_materials WHERE id=$1 AND owner_id=$2',
+        [materialId, ownerId],
       );
-      await client.query('DELETE FROM study_materials WHERE id=$1 AND owner_id=$2', [materialId, ownerId]);
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
@@ -446,7 +644,13 @@ export class IngestionService {
     try {
       await this.event('material.deleted', { materialId }, ownerId);
     } catch {
-      console.error(JSON.stringify({ level: 'error', operation: 'publish-material-deleted', code: 'ACTIVITY_PUBLISH_FAILED' }));
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          operation: 'publish-material-deleted',
+          code: 'ACTIVITY_PUBLISH_FAILED',
+        }),
+      );
     }
   }
 
@@ -454,7 +658,10 @@ export class IngestionService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      const pending = await client.query<{ material_id: string; storage_key: string }>(
+      const pending = await client.query<{
+        material_id: string;
+        storage_key: string;
+      }>(
         'SELECT material_id,storage_key FROM material_file_deletions WHERE run_after<=now() ORDER BY run_after,created_at FOR UPDATE SKIP LOCKED LIMIT 1',
       );
       const file = pending.rows[0];
@@ -472,7 +679,10 @@ export class IngestionService {
         await client.query('COMMIT');
         return false;
       }
-      await client.query('DELETE FROM material_file_deletions WHERE material_id=$1', [file.material_id]);
+      await client.query(
+        'DELETE FROM material_file_deletions WHERE material_id=$1',
+        [file.material_id],
+      );
       await client.query('COMMIT');
       return true;
     } catch (error) {
@@ -497,9 +707,14 @@ export class IngestionService {
          AND EXISTS(SELECT 1 FROM processing_job_units u WHERE u.job_id=j.id)`,
       [materialId, ownerId],
     );
-    const requiresFreshPdfIndex = unfinished.rows[0]?.source_type === 'PDF'
-      && (await this.extractionPreview(materialId, ownerId)).repairsTextIndex;
-    const resumed = await this.pool.query<{ id: string; stage: string; progressPercent: number }>(
+    const requiresFreshPdfIndex =
+      unfinished.rows[0]?.source_type === 'PDF' &&
+      (await this.extractionPreview(materialId, ownerId)).repairsTextIndex;
+    const resumed = await this.pool.query<{
+      id: string;
+      stage: string;
+      progressPercent: number;
+    }>(
       `UPDATE processing_jobs SET status='PENDING',stage='RETRYING',attempts=0,run_after=now(),locked_at=NULL,finished_at=NULL,last_error=NULL,updated_at=now()
        WHERE id=(SELECT j.id FROM processing_jobs j JOIN study_materials m ON m.id=j.material_id
          WHERE j.material_id=$1 AND m.owner_id=$2 AND m.material_kind='BOOK' AND j.type='EXTRACT' AND j.status='FAILED'
@@ -511,8 +726,20 @@ export class IngestionService {
       [materialId, ownerId, requiresFreshPdfIndex],
     );
     if (resumed.rows[0]) {
-      await this.pool.query("UPDATE study_materials SET processing_status='PENDING',processing_error=NULL WHERE id=$1 AND owner_id=$2", [materialId, ownerId]);
-      await this.event('material.queued', { materialId, jobId: resumed.rows[0].id, stage: 'RETRYING', progressPercent: resumed.rows[0].progressPercent }, ownerId);
+      await this.pool.query(
+        "UPDATE study_materials SET processing_status='PENDING',processing_error=NULL WHERE id=$1 AND owner_id=$2",
+        [materialId, ownerId],
+      );
+      await this.event(
+        'material.queued',
+        {
+          materialId,
+          jobId: resumed.rows[0].id,
+          stage: 'RETRYING',
+          progressPercent: resumed.rows[0].progressPercent,
+        },
+        ownerId,
+      );
       return resumed.rows[0];
     }
     const id = randomUUID();
@@ -538,7 +765,8 @@ export class IngestionService {
       [materialId],
     );
     if (!result.rows[0])
-      throw new AppError('EXTRACTION_NOT_ACTIVE',
+      throw new AppError(
+        'EXTRACTION_NOT_ACTIVE',
         'Não há extração ativa para cancelar.',
       );
     await this.pool.query(
@@ -611,14 +839,22 @@ export class ProcessingWorker {
   ) {}
   public async processOnce(): Promise<boolean> {
     const client = await this.pool.connect();
-    let job: { id: string; material_id: string; owner_id: string; material_kind: string | null; attempts?: number } | undefined;
+    let job:
+      | {
+          id: string;
+          material_id: string;
+          owner_id: string;
+          material_kind: string | null;
+          attempts?: number;
+        }
+      | undefined;
     try {
       await client.query('BEGIN');
       await client.query(
         "UPDATE processing_jobs SET status='PENDING',stage='RETRYING',locked_at=NULL WHERE status='PROCESSING' AND locked_at < now() - interval '5 minutes'",
       );
       const result = await client.query(
-          "SELECT j.id,j.material_id,j.attempts,m.owner_id,m.material_kind FROM processing_jobs j JOIN study_materials m ON m.id=j.material_id WHERE j.status='PENDING' AND run_after<=now() ORDER BY j.created_at FOR UPDATE SKIP LOCKED LIMIT 1",
+        "SELECT j.id,j.material_id,j.attempts,m.owner_id,m.material_kind FROM processing_jobs j JOIN study_materials m ON m.id=j.material_id WHERE j.status='PENDING' AND run_after<=now() ORDER BY j.created_at FOR UPDATE SKIP LOCKED LIMIT 1",
       );
       job = result.rows[0] as typeof job;
       if (job)
@@ -664,73 +900,142 @@ export class ProcessingWorker {
     );
     try {
       await this.ingestion.repairPdfIndex(job.material_id, job.owner_id);
-      const bookUnits = job.material_kind === 'BOOK'
-        ? await this.pool.query<ExtractableChapter>(
-          `SELECT id,title,level,start_offset,end_offset FROM material_units
+      const bookUnits =
+        job.material_kind === 'BOOK'
+          ? await this.pool.query<ExtractableChapter>(
+              `SELECT id,title,level,start_offset,end_offset FROM material_units
            WHERE material_id=$1 AND title IS NOT NULL AND provenance<>'UNSTRUCTURED'
            ORDER BY start_offset`,
-          [job.material_id],
-        ) : null;
+              [job.material_id],
+            )
+          : null;
       let units: ExtractableChapter[] = [];
       let sourceEnds = new Map<string, number>();
       if (bookUnits?.rows.length) {
         const material = await this.study.getMaterial(job.material_id);
         const topics = selectBookOutlineTopics(bookUnits.rows);
-        const flatOutline = new Set(topics.map((unit) => unit.level)).size === 1;
-        const printedChapters = flatOutline && topics.length < MIN_RELIABLE_BOOK_OUTLINE_UNITS ? derivePrintedChapterUnits(material.content) : [];
+        const flatOutline =
+          new Set(topics.map((unit) => unit.level)).size === 1;
+        const printedChapters =
+          flatOutline && topics.length < MIN_RELIABLE_BOOK_OUTLINE_UNITS
+            ? derivePrintedChapterUnits(material.content)
+            : [];
         if (printedChapters.length < 2) {
-          ({ units, sourceEnds } = selectExtractableChapters(material.content, topics));
-          if (!units.length) throw new ConflictError('O material não possui capítulos com texto suficiente para extrair conceitos.');
+          ({ units, sourceEnds } = selectExtractableChapters(
+            material.content,
+            topics,
+          ));
+          if (!units.length)
+            throw new ConflictError(
+              'O material não possui capítulos com texto suficiente para extrair conceitos.',
+            );
         }
       }
-      const report = async (progress: { stage: 'PREPARING' | 'EXTRACTING' | 'REDUCING'; totalChunks: number; completedChunks: number }, unitIndex?: number) => {
+      const report = async (
+        progress: {
+          stage: 'PREPARING' | 'EXTRACTING' | 'REDUCING';
+          totalChunks: number;
+          completedChunks: number;
+        },
+        unitIndex?: number,
+      ) => {
         stage = progress.stage;
         const total = units.length || progress.totalChunks;
-        const completed = unitIndex === undefined ? progress.completedChunks : unitIndex;
-        const percent = unitIndex === undefined && progress.stage === 'REDUCING' ? 90
-          : Math.max(1, Math.round((completed / Math.max(total, 1)) * 85));
+        const completed =
+          unitIndex === undefined ? progress.completedChunks : unitIndex;
+        const percent =
+          unitIndex === undefined && progress.stage === 'REDUCING'
+            ? 90
+            : Math.max(1, Math.round((completed / Math.max(total, 1)) * 85));
         const updated = await this.pool.query(
           "UPDATE processing_jobs SET stage=$2,total_chunks=$3,completed_chunks=$4,progress_percent=$5,started_at=COALESCE(started_at,now()),updated_at=now() WHERE id=$1 AND status='PROCESSING' RETURNING id",
           [job!.id, progress.stage, total, completed, percent],
         );
-        if (!updated.rows[0]) throw new ConflictError('A extração foi cancelada.');
-        await this.ingestion.event('material.progress', {
-          materialId: job!.material_id, stage: progress.stage,
-          totalChunks: total, completedChunks: completed, progressPercent: percent,
-        }, job!.owner_id);
+        if (!updated.rows[0])
+          throw new ConflictError('A extração foi cancelada.');
+        await this.ingestion.event(
+          'material.progress',
+          {
+            materialId: job!.material_id,
+            stage: progress.stage,
+            totalChunks: total,
+            completedChunks: completed,
+            progressPercent: percent,
+          },
+          job!.owner_id,
+        );
       };
       if (units.length) {
         const done = await this.pool.query<{ unit_id: string }>(
-          'SELECT unit_id FROM processing_job_units WHERE job_id=$1', [job.id],
+          'SELECT unit_id FROM processing_job_units WHERE job_id=$1',
+          [job.id],
         );
         const completed = new Set(done.rows.map((row) => row.unit_id));
         for (const [index, unit] of units.entries()) {
           if (completed.has(unit.id)) continue;
           const endOffset = sourceEnds.get(unit.id);
-          if (endOffset === undefined || endOffset <= unit.start_offset) throw new ConflictError('O capítulo não possui trecho legível.');
-          await withAiUsageOwner(job.owner_id, () => this.study.extractConcepts(
-            job!.material_id,
-            async (progress) => report(progress, index),
-            async () => this.isActive(job!.id),
-            job!.id,
-            { id: unit.id, title: unit.title, startOffset: unit.start_offset, endOffset, maxConcepts: units.length >= DENSE_BOOK_TOPIC_THRESHOLD ? DENSE_BOOK_CONCEPTS_PER_TOPIC : undefined },
-          ));
-          await report({ stage: 'EXTRACTING', totalChunks: units.length, completedChunks: index + 1 }, index + 1);
+          if (endOffset === undefined || endOffset <= unit.start_offset)
+            throw new ConflictError('O capítulo não possui trecho legível.');
+          await withAiUsageOwner(job.owner_id, () =>
+            this.study.extractConcepts(
+              job!.material_id,
+              async (progress) => report(progress, index),
+              async () => this.isActive(job!.id),
+              job!.id,
+              {
+                id: unit.id,
+                title: unit.title,
+                startOffset: unit.start_offset,
+                endOffset,
+                maxConcepts:
+                  units.length >= DENSE_BOOK_TOPIC_THRESHOLD
+                    ? DENSE_BOOK_CONCEPTS_PER_TOPIC
+                    : undefined,
+              },
+            ),
+          );
+          await report(
+            {
+              stage: 'EXTRACTING',
+              totalChunks: units.length,
+              completedChunks: index + 1,
+            },
+            index + 1,
+          );
         }
         const finish = await this.pool.connect();
         try {
           await finish.query('BEGIN');
-          const active = await finish.query("SELECT 1 FROM processing_jobs WHERE id=$1 AND status='PROCESSING' FOR UPDATE", [job.id]);
-          if (!active.rows[0]) throw new ConflictError('A extração foi cancelada.');
-          await finish.query("UPDATE processing_jobs SET status='DONE',stage='READY',progress_percent=100,completed_chunks=$2,total_chunks=$2,finished_at=now(),updated_at=now() WHERE id=$1", [job.id, units.length]);
-          await finish.query("UPDATE study_materials SET active_extraction_job_id=$2,processing_status='READY',processed_at=now(),processing_error=NULL WHERE id=$1", [job.material_id, job.id]);
+          const active = await finish.query(
+            "SELECT 1 FROM processing_jobs WHERE id=$1 AND status='PROCESSING' FOR UPDATE",
+            [job.id],
+          );
+          if (!active.rows[0])
+            throw new ConflictError('A extração foi cancelada.');
+          await finish.query(
+            "UPDATE processing_jobs SET status='DONE',stage='READY',progress_percent=100,completed_chunks=$2,total_chunks=$2,finished_at=now(),updated_at=now() WHERE id=$1",
+            [job.id, units.length],
+          );
+          await finish.query(
+            "UPDATE study_materials SET active_extraction_job_id=$2,processing_status='READY',processed_at=now(),processing_error=NULL WHERE id=$1",
+            [job.material_id, job.id],
+          );
           await finish.query('COMMIT');
-        } catch (error) { await finish.query('ROLLBACK'); throw error; }
-        finally { finish.release(); }
+        } catch (error) {
+          await finish.query('ROLLBACK');
+          throw error;
+        } finally {
+          finish.release();
+        }
       } else {
-        await withAiUsageOwner(job.owner_id, () => this.study.extractConcepts(
-          job!.material_id, report, async () => this.isActive(job!.id), job!.id,
-        ));
+        await withAiUsageOwner(job.owner_id, () =>
+          this.study.extractConcepts(
+            job!.material_id,
+            report,
+            async () => this.isActive(job!.id),
+            job!.id,
+          ),
+        );
       }
       await this.ingestion.event(
         'material.ready',
@@ -745,8 +1050,9 @@ export class ProcessingWorker {
         Math.ceil((failure.retryAfterMs ?? 30_000) / 1_000),
       );
       const retried = await this.pool.query(
-        "UPDATE processing_jobs SET status=CASE WHEN $3::boolean OR attempts>=3 THEN 'FAILED' ELSE 'PENDING' END,run_after=now()+($4::int * interval '1 second'),last_error=$2,updated_at=now() WHERE id=$1 AND status='PROCESSING' RETURNING status",
-        [job.id, failure.code, !failure.retryable, retryAfterSeconds],
+        "UPDATE processing_jobs SET status=CASE WHEN $3::boolean OR attempts>=3 THEN 'FAILED' ELSE 'PENDING' END,run_after=now()+($4::int * interval '1 second'),last_error=$2,failure_responses=$5::jsonb,updated_at=now() WHERE id=$1 AND status='PROCESSING' RETURNING status",
+        [job.id, failure.code, !failure.retryable, retryAfterSeconds,
+          error instanceof ExtractionReductionError ? JSON.stringify(error.responses) : null],
       );
       const status =
         retried.rows[0]?.status === 'FAILED' ? 'FAILED' : 'PENDING';
@@ -760,7 +1066,8 @@ export class ProcessingWorker {
           operation: 'extract-material',
           code: failure.code,
           stage,
-          attempt: typeof job.attempts === 'number' ? job.attempts + 1 : undefined,
+          attempt:
+            typeof job.attempts === 'number' ? job.attempts + 1 : undefined,
           retryable: failure.retryable,
           nextStatus: status,
           ...processingFailureDiagnostic(error),
